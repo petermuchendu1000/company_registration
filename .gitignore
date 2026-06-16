@@ -1,0 +1,43 @@
+# Secrets
+.env
+apps/generator/.master_secret
+apps/template-shift-journal/app/keystores/
+pipeline_output/apps/*/signing.json
+pipeline_output/apps/*/*.jks
+
+# Generated pipeline output (data, not code)
+pipeline_output/companies/
+pipeline_output/icon_test/
+pipeline_output/logs/
+pipeline_output/~$*
+pipeline_outputlogsserver.log
+
+# Certificates and downloads
+certificates/
+downloads/
+
+# Browser automation artefacts
+.browser_profiles/
+debug_screenshots/
+.build_log.txt
+*.log
+
+# Python artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Gradle build
+**/build/
+.gradle/
+
+# Local gradle properties
+apps/template-shift-journal/local.properties
+
+# Editor / OS
+.venv/
+*.tmp
+Thumbs.db
+.env
+.venv/
+__pycache__/

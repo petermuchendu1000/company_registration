@@ -1,0 +1,1 @@
+"""apps.generator package"""

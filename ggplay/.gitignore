@@ -1,0 +1,18 @@
+# Ignore keystores and secrets
+apps/generator/.master_secret
+apps/template-shift-journal/app/keystores/
+pipeline_output/apps/*/signing.json
+pipeline_output/apps/*/*.jks
+
+# Python artifacts
+__pycache__/
+.pytest_cache/
+
+# Gradle build
+**/build/
+.gradle/
+.gradle-home/
+
+# Local gradle properties
+apps/template-shift-journal/local.properties
+apps/template-shift-journal/app/generated-signing.properties
