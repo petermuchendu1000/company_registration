@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-04-27T13:58:29Z",
+  "return_code": 0,
+  "count": 2,
+  "apps": [
+    {
+      "company_number": "13510663",
+      "display_name": "Swift Plus Personnel",
+      "application_id": "uk.c13510663.shift",
+      "flavor": "c13510663",
+      "archetype": "shift",
+      "support_email": "drscholarysophia408@gmail.com",
+      "domain": "",
+      "apk": "D:\\Company Registrations\\ggplay\\pipeline_output\\apps\\13510663\\swift-plus-personnel-release.apk",
+      "aab": "D:\\Company Registrations\\ggplay\\pipeline_output\\apps\\13510663\\swift-plus-personnel-release.aab"
+    },
+    {
+      "company_number": "02591663",
+      "display_name": "51 St Margarets Road Mgmt",
+      "application_id": "uk.c02591663.shift",
+      "flavor": "c02591663",
+      "archetype": "shift",
+      "support_email": "abdulelahhabib060@gmail.com",
+      "domain": "",
+      "apk": "D:\\Company Registrations\\ggplay\\pipeline_output\\apps\\02591663\\51-st-margarets-road-managemen-release.apk",
+      "aab": "D:\\Company Registrations\\ggplay\\pipeline_output\\apps\\02591663\\51-st-margarets-road-managemen-release.aab"
+    }
+  ]
+}

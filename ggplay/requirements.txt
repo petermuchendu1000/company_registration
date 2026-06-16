@@ -1,0 +1,9 @@
+flask
+openpyxl
+Pillow
+playwright
+playwright-stealth
+python-dotenv
+qrcode
+requests
+urllib3

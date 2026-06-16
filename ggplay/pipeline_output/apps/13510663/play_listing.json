@@ -1,0 +1,125 @@
+{
+  "app_identity": {
+    "app_name": "Swift Plus Personnel",
+    "package_name": "uk.c13510663.shift",
+    "default_language": "English (United Kingdom) - en-GB",
+    "app_or_game": "App",
+    "free_or_paid": "Free",
+    "contains_ads": false,
+    "play_category": "Business",
+    "tags": [
+      "Productivity",
+      "Business",
+      "Tools"
+    ]
+  },
+  "store_listing": {
+    "short_description": "Offline shift toolkit for log, plan, handover, notes, and summaries.",
+    "full_description": "Swift Plus Personnel is a lightweight offline shift toolkit designed for straightforward daily record keeping on Android.\n\nThe app helps users organize practical work activity through a focused set of local tools. It is intentionally minimal: no account, no ads, no network connection, no location access, and no personal data sent off the device.\n\nKey features:\n- Work Log: Capture local session entries with a clear start and finish flow.\n- Daily Plan: Outline the next few local tasks for the day.\n- Handover: Prepare a concise end-of-session handover note.\n- Notes: Write local notes for handover, visit context, or follow-up reminders.\n- Insights: Summarize local counts and completion status.\n\nPrivacy:\nSwift Plus Personnel does not collect, share, or transmit user data. Any notes or counters are kept locally on the device and can be removed by clearing app storage or uninstalling the app.\n\nSuggested Play category: Business.\nSuggested release title: Shift Log 1.0.",
+    "privacy_policy_url": "PENDING_DOMAIN/app/privacy.html",
+    "developer_email": "drscholarysophia408@gmail.com",
+    "developer_website": "PENDING_DOMAIN",
+    "developer_phone": "PENDING_ORGANIZATION_PHONE"
+  },
+  "graphics": {
+    "app_icon": "icon-512.png",
+    "feature_graphic": "feature-graphic.png",
+    "phone_screenshots": [
+      "phone-screenshot-1.png",
+      "phone-screenshot-2.png"
+    ],
+    "notes": [
+      "Icon must be 512x512 PNG and under 1024KB.",
+      "Phone screenshots should be reviewed against the actual built app before upload.",
+      "Feature graphic should be reviewed for text legibility before upload."
+    ]
+  },
+  "app_content": {
+    "privacy_policy_required": true,
+    "data_safety_required": true,
+    "ads": "No ads",
+    "app_access": "All functionality is available without login.",
+    "target_audience": "Adults/general business users; not designed for children.",
+    "content_rating_notes": [
+      "No violence.",
+      "No sexual content.",
+      "No user-generated public content.",
+      "No online interaction between users.",
+      "No gambling.",
+      "No location access."
+    ],
+    "permissions": "Zero Android permissions declared in AndroidManifest.xml."
+  },
+  "release": {
+    "initial_version_code": 1,
+    "initial_version_name": "1.0",
+    "release_name": "1.0 initial internal test",
+    "release_notes": "Initial release with five offline work tools, local notes, recent activity, and privacy-first zero-permission design.",
+    "recommended_first_track": "Internal testing",
+    "artifact_required_for_play": "AAB",
+    "selected_modules": [
+      {
+        "key": "work_log",
+        "title": "Work Log",
+        "nav_label": "Log",
+        "short_description": "Capture local session entries with a clear start and finish flow.",
+        "detail": "Record each work session as a simple local entry with status, count, and notes.",
+        "primary_action": "Start Entry",
+        "secondary_action": "Close Entry",
+        "metric_label": "Entries",
+        "sample_value": "3"
+      },
+      {
+        "key": "daily_plan",
+        "title": "Daily Plan",
+        "nav_label": "Plan",
+        "short_description": "Outline the next few local tasks for the day.",
+        "detail": "Keep a short work plan visible so repeated actions stay organized.",
+        "primary_action": "Add Plan",
+        "secondary_action": "Review Plan",
+        "metric_label": "Planned",
+        "sample_value": "5"
+      },
+      {
+        "key": "handover",
+        "title": "Handover",
+        "nav_label": "Handover",
+        "short_description": "Prepare a concise end-of-session handover note.",
+        "detail": "Capture what is complete, what remains open, and what needs attention next.",
+        "primary_action": "Prepare",
+        "secondary_action": "Complete",
+        "metric_label": "Open",
+        "sample_value": "2"
+      },
+      {
+        "key": "notes",
+        "title": "Notes",
+        "nav_label": "Notes",
+        "short_description": "Write local notes for handover, visit context, or follow-up reminders.",
+        "detail": "Notes are stored only on the device and can be cleared with app storage.",
+        "primary_action": "Save Note",
+        "secondary_action": "Clear Draft",
+        "metric_label": "Drafts",
+        "sample_value": "1"
+      },
+      {
+        "key": "insights",
+        "title": "Insights",
+        "nav_label": "Insights",
+        "short_description": "Summarize local counts and completion status.",
+        "detail": "A small dashboard highlights today's count, open items, and completion ratio.",
+        "primary_action": "Refresh",
+        "secondary_action": "Compare",
+        "metric_label": "Score",
+        "sample_value": "82%"
+      }
+    ]
+  },
+  "manual_blockers": [
+    "Build and verify signed AAB once Android SDK build-tools are installed.",
+    "Confirm final developer email is dev@registered-domain after domain setup.",
+    "Confirm developer phone number and OTP readiness.",
+    "Upload screenshots only after reviewing against a real/emulated build.",
+    "Complete Play Console Data safety and Content rating forms manually."
+  ]
+}

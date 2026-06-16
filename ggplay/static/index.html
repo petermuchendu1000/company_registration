@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UK Companies House Search</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #1d2939; }
+
+  header { background: #003078; color: #fff; padding: 16px 24px; }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header span { font-size: 13px; opacity: .8; }
+
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+  .search-bar { display: flex; gap: 10px; margin-bottom: 16px; }
+  .search-bar input[type=text] { flex: 1; padding: 10px 14px; font-size: 15px; border: 2px solid #b1b4b6; border-radius: 4px; }
+  .search-bar input[type=text]:focus { border-color: #003078; outline: none; }
+  .search-bar button { padding: 10px 24px; font-size: 15px; background: #003078; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
+  .search-bar button:hover { background: #001d4a; }
+
+  .filters { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; flex-wrap: wrap; }
+  .filters label { font-size: 13px; font-weight: 600; color: #505a6e; }
+  .filters input, .filters select { padding: 7px 10px; font-size: 14px; border: 1.5px solid #b1b4b6; border-radius: 4px; }
+  .filters input:focus, .filters select:focus { border-color: #003078; outline: none; }
+  .filters .filter-group { display: flex; align-items: center; gap: 6px; }
+
+  .status-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; color: #505a6e; }
+  .status-bar .count { font-weight: 600; color: #1d2939; }
+
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  thead { background: #f0f3f5; }
+  th { text-align: left; padding: 10px 14px; font-size: 12px; font-weight: 700; text-transform: uppercase; color: #505a6e; letter-spacing: .3px; border-bottom: 2px solid #dde1e5; }
+  td { padding: 10px 14px; font-size: 14px; border-bottom: 1px solid #eef0f2; }
+  tr:hover { background: #f8f9fb; }
+  tr:last-child td { border-bottom: none; }
+
+  .company-link { color: #003078; text-decoration: none; font-weight: 600; }
+  .company-link:hover { text-decoration: underline; }
+
+  .status-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+  .status-active { background: #cce2d8; color: #005a30; }
+  .status-dissolved { background: #f6d7d2; color: #942514; }
+  .status-other { background: #e8e8e8; color: #505a6e; }
+
+  .spinner { display: none; text-align: center; padding: 40px; color: #505a6e; font-size: 15px; }
+  .spinner.active { display: block; }
+
+  .empty { text-align: center; padding: 60px 20px; color: #909aab; font-size: 15px; }
+
+  /* Detail modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 100; justify-content: center; align-items: flex-start; padding-top: 60px; }
+  .modal-overlay.active { display: flex; }
+  .modal { background: #fff; border-radius: 8px; width: 900px; max-width: 95vw; max-height: 85vh; overflow-y: auto; padding: 24px; box-shadow: 0 8px 30px rgba(0,0,0,.2); }
+  .modal h2 { font-size: 18px; margin-bottom: 16px; }
+  .modal .close-btn { float: right; background: none; border: none; font-size: 22px; cursor: pointer; color: #505a6e; }
+  .modal table { box-shadow: none; }
+  .modal th { background: #f8f9fb; }
+  .detail-section { margin-bottom: 20px; }
+  .detail-section h3 { font-size: 14px; color: #003078; margin-bottom: 8px; border-bottom: 2px solid #003078; padding-bottom: 4px; }
+  .detail-row { display: flex; padding: 5px 0; font-size: 13px; }
+  .detail-label { width: 180px; font-weight: 600; color: #505a6e; flex-shrink: 0; }
+  .detail-value { flex: 1; }
+
+  .section-error { color: #942514; font-size: 13px; padding: 8px 0; font-style: italic; }
+  .section-loading { color: #505a6e; font-size: 13px; padding: 8px 0; }
+
+  .dl-btn { display: inline-block; padding: 4px 10px; background: #003078; color: #fff; border-radius: 3px; text-decoration: none; font-size: 12px; font-weight: 600; }
+  .dl-btn:hover { background: #001d4a; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .fade-in { animation: fadeIn .25s ease-out; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>UK Companies House</h1>
+  <span>Company Search & Intelligence - Officer Nationality Filter</span>
+</header>
+
+<div class="container">
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="Company name (optional - select nationality to search by nationality alone)" autofocus>
+    <button id="searchBtn">Search</button>
+  </div>
+
+  <div class="filters">
+    <div class="filter-group">
+      <label>Year from</label>
+      <input type="number" id="yearFrom" min="1800" max="2026" placeholder="e.g. 2000" style="width:100px">
+    </div>
+    <div class="filter-group">
+      <label>Year to</label>
+      <input type="number" id="yearTo" min="1800" max="2026" placeholder="e.g. 2025" style="width:100px">
+    </div>
+    <div class="filter-group">
+      <label>Officer Nationality</label>
+      <select id="nationality">
+        <option value="">All</option>
+        <option value="kenyan" selected>Kenyan</option>
+        <option value="british">British</option>
+        <option value="nigerian">Nigerian</option>
+        <option value="south african">South African</option>
+        <option value="indian">Indian</option>
+        <option value="american">American</option>
+        <option value="chinese">Chinese</option>
+        <option value="other">Other (type below)</option>
+      </select>
+      <input type="text" id="nationalityCustom" placeholder="e.g. Ugandan" style="width:130px;display:none">
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <span id="resultCount"></span>
+    <span id="filterInfo"></span>
+  </div>
+
+  <div class="spinner" id="spinner">Searching...</div>
+
+  <div id="resultsArea"></div>
+</div>
+
+<!-- Detail modal -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <button class="close-btn" id="modalClose">&times;</button>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+
+let allResults = [];
+
+// Search on Enter
+$('#searchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+$('#searchBtn').addEventListener('click', doSearch);
+
+// Real-time filter on change
+$('#yearFrom').addEventListener('input', applyFilters);
+$('#yearTo').addEventListener('input', applyFilters);
+$('#nationality').addEventListener('change', () => {
+  const sel = $('#nationality').value;
+  $('#nationalityCustom').style.display = sel === 'other' ? '' : 'none';
+  // Nationality filter requires server call, re-search
+  doSearch();
+});
+$('#nationalityCustom').addEventListener('change', doSearch);
+
+let currentSource = null;
+
+function doSearch() {
+  const q = $('#searchInput').value.trim();
+  let nat = $('#nationality').value;
+  if (nat === 'other') nat = $('#nationalityCustom').value.trim();
+
+  if (!q && !nat) {
+    $('#resultsArea').innerHTML = '<div class="empty">Select a nationality or enter a search term.</div>';
+    return;
+  }
+
+  // Abort any existing stream
+  if (currentSource) { currentSource.close(); currentSource = null; }
+
+  allResults = [];
+  $('#resultsArea').innerHTML = '';
+  $('#resultCount').textContent = '';
+  $('#spinner').classList.add('active');
+  $('#spinner').textContent = nat ? `Searching for companies with ${nat} officers...` : 'Searching...';
+
+  // Build table shell
+  $('#resultsArea').innerHTML = `<table id="resultsTable">
+    <thead><tr>
+      <th>#</th>
+      <th>Search Name</th>
+      <th>Company No.</th>
+      <th>Company Name</th>
+      <th>Incorporated</th>
+      <th>Officers</th>
+      <th>Nationalities</th>
+      <th>Certificate</th>
+    </tr></thead><tbody id="resultsBody"></tbody></table>`;
+
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  const yf = $('#yearFrom').value;
+  const yt = $('#yearTo').value;
+  if (yf) params.set('year_from', yf);
+  if (yt) params.set('year_to', yt);
+  if (nat) params.set('nationality', nat);
+
+  const source = new EventSource(`/api/search/stream?${params}`);
+  currentSource = source;
+
+  source.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    if (data.status) {
+      const total = data.total_names || '';
+      $('#spinner').textContent = total ? `Searching ${total} names...` : data.status;
+      return;
+    }
+
+    if (data.skip) {
+      // Name tried but no match
+      $('#spinner').textContent = `${data.names_checked}/${data.total_names} names checked - ${data.matched} found (no match for "${data.skip}")`;
+      $('#resultCount').textContent = `${data.matched} of ${data.total_names} names matched`;
+      return;
+    }
+
+    if (data.progress) {
+      $('#spinner').textContent = data.note || `${data.names_checked}/${data.total_names} names checked`;
+      $('#resultCount').textContent = `${data.matched} of ${data.total_names} names matched`;
+      return;
+    }
+
+    if (data.item) {
+      const item = data.item;
+      allResults.push(item);
+      const nats = (item.officer_nationalities || []).join(', ') || '-';
+      const oCount = item.officer_count != null ? item.officer_count : '-';
+      const searchName = item.search_name || '-';
+      const row = document.createElement('tr');
+      row.classList.add('fade-in');
+      row.innerHTML = `
+        <td style="text-align:center;color:#505a6e;font-size:12px">${allResults.length}</td>
+        <td><strong>${esc(searchName)}</strong></td>
+        <td><a class="company-link" href="#" onclick="showDetail('${item.company_number}');return false;">${item.company_number}</a></td>
+        <td><a class="company-link" href="#" onclick="showDetail('${item.company_number}');return false;">${esc(item.title)}</a></td>
+        <td>${item.date_of_creation || 'N/A'}</td>
+        <td style="text-align:center">${oCount}</td>
+        <td>${esc(nats)}</td>
+        <td><a class="dl-btn" href="/api/company/${item.company_number}/incorporation-certificate" target="_blank">&#x2B07; PDF</a></td>`;
+      document.getElementById('resultsBody').appendChild(row);
+      $('#resultCount').textContent = data.total_names ? `${data.matched} of ${data.total_names} names matched` : `${data.matched} found`;
+      $('#spinner').textContent = data.total_names ? `${data.names_checked}/${data.total_names} names checked - ${data.matched} found` : `Searching... ${data.matched} found`;
+    }
+
+    if (data.done) {
+      source.close();
+      currentSource = null;
+      $('#spinner').classList.remove('active');
+      const total = data.total_names || '';
+      $('#resultCount').textContent = total ? `${data.total} companies found from ${data.total_names} names (${data.names_checked} checked)` : `${data.total} companies found`;
+      if (data.total === 0 && !document.getElementById('resultsBody').children.length) {
+        $('#resultsArea').innerHTML = '<div class="empty">No companies found matching your criteria.</div>';
+      }
+    }
+  };
+
+  source.onerror = () => {
+    source.close();
+    currentSource = null;
+    $('#spinner').classList.remove('active');
+    if (!allResults.length) {
+      $('#resultsArea').innerHTML = '<div class="empty">Search ended. No results or connection error.</div>';
+    }
+  };
+}
+
+function applyFilters() {
+  const yf = $('#yearFrom').value;
+  const yt = $('#yearTo').value;
+
+  let filtered = allResults;
+
+  if (yf) filtered = filtered.filter(r => r.year >= yf);
+  if (yt) filtered = filtered.filter(r => r.year <= yt);
+
+  renderTable(filtered);
+
+  let nat = $('#nationality').value;
+  if (nat === 'other') nat = $('#nationalityCustom').value.trim();
+  const parts = [];
+  if (yf || yt) parts.push(`Year: ${yf || '...'} - ${yt || '...'}`);
+  if (nat) parts.push(`Nationality: ${nat}`);
+  $('#filterInfo').textContent = parts.length ? parts.join(' | ') : '';
+  $('#resultCount').textContent = `${filtered.length} of ${allResults.length} results`;
+}
+
+function renderTable(items) {
+  if (!items.length) {
+    $('#resultsArea').innerHTML = '<div class="empty">No companies found matching your criteria.</div>';
+    return;
+  }
+
+  let html = `<table>
+    <thead><tr>
+      <th>#</th>
+      <th>Search Name</th>
+      <th>Company No.</th>
+      <th>Company Name</th>
+      <th>Incorporated</th>
+      <th>Officers</th>
+      <th>Nationalities</th>
+      <th>Certificate</th>
+    </tr></thead><tbody>`;
+
+  let idx = 0;
+  for (const item of items) {
+    idx++;
+    const nats = (item.officer_nationalities || []).join(', ') || '-';
+    const oCount = item.officer_count != null ? item.officer_count : '-';
+    const searchName = item.search_name || '-';
+
+    html += `<tr>
+      <td style="text-align:center;color:#505a6e;font-size:12px">${idx}</td>
+      <td><strong>${esc(searchName)}</strong></td>
+      <td><a class="company-link" href="#" onclick="showDetail('${item.company_number}');return false;">${item.company_number}</a></td>
+      <td><a class="company-link" href="#" onclick="showDetail('${item.company_number}');return false;">${esc(item.title)}</a></td>
+      <td>${item.date_of_creation || 'N/A'}</td>
+      <td style="text-align:center">${oCount}</td>
+      <td>${esc(nats)}</td>
+      <td><a class="dl-btn" href="/api/company/${item.company_number}/incorporation-certificate" target="_blank" title="Download Certificate of Incorporation">&#x2B07; PDF</a></td>
+    </tr>`;
+  }
+
+  html += '</tbody></table>';
+  $('#resultsArea').innerHTML = html;
+}
+
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Detail modal
+$('#modalClose').addEventListener('click', () => $('#modalOverlay').classList.remove('active'));
+$('#modalOverlay').addEventListener('click', (e) => { if (e.target === $('#modalOverlay')) $('#modalOverlay').classList.remove('active'); });
+
+async function showDetail(cn) {
+  $('#modalContent').innerHTML = '<p>Loading company details...</p>';
+  $('#modalOverlay').classList.add('active');
+
+  // Fetch profile first (required), then load supplementary sections in parallel
+  let profile;
+  try {
+    const resp = await fetch(`/api/company/${cn}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    profile = await resp.json();
+    if (profile.error) throw new Error(profile.error);
+  } catch (err) {
+    $('#modalContent').innerHTML = `<p style="color:#942514">Failed to load company profile: ${esc(err.message)}</p><p style="font-size:13px;color:#505a6e;margin-top:8px">This may be due to API rate limiting. Please wait a moment and try again.</p>`;
+    return;
+  }
+
+  // Render profile immediately
+  let html = `<h2>${esc(profile.company_name || cn)}</h2>`;
+  html += `<div class="detail-section"><h3>Company Profile</h3>`;
+
+  const addr = formatAddress(profile.registered_office_address);
+  const sicCodes = (profile.sic_codes || []).join(', ');
+  const accounts = profile.accounts || {};
+  const lastAccDate = accounts.last_accounts ? accounts.last_accounts.made_up_to : '';
+  const nextAccDue = accounts.next_due || accounts.next_made_up_to || '';
+  const confStmt = profile.confirmation_statement || {};
+
+  const fields = [
+    ['Company Number', profile.company_number],
+    ['Status', profile.company_status],
+    ['Type', profile.type],
+    ['Sub-type', profile.subtype],
+    ['Incorporated', profile.date_of_creation],
+    ['Dissolved', profile.date_of_cessation],
+    ['Jurisdiction', profile.jurisdiction],
+    ['SIC Codes', sicCodes],
+    ['Registered Address', addr],
+    ['Last Accounts To', lastAccDate],
+    ['Next Accounts Due', nextAccDue],
+    ['Last Confirmation', confStmt.last_made_up_to],
+    ['Next Confirmation Due', confStmt.next_due],
+    ['Has Charges', profile.has_charges ? 'Yes' : 'No'],
+    ['Has Insolvency', profile.has_insolvency_history ? 'Yes' : 'No'],
+    ['Can File', profile.can_file ? 'Yes' : 'No'],
+    ['External Link', profile.company_number ? `<a href="https://find-and-update.company-information.service.gov.uk/company/${profile.company_number}" target="_blank" style="color:#003078">View on Companies House</a>` : ''],
+  ];
+  for (const [label, val] of fields) {
+    if (val) html += `<div class="detail-row"><div class="detail-label">${label}</div><div class="detail-value">${label === 'External Link' ? val : esc(String(val))}</div></div>`;
+  }
+  html += '</div>';
+
+  // Placeholders for async sections
+  html += `<div id="detailOfficers" class="detail-section"><h3>Officers</h3><p class="section-loading">Loading officers...</p></div>`;
+  html += `<div id="detailPscs" class="detail-section"><h3>Persons with Significant Control</h3><p class="section-loading">Loading...</p></div>`;
+  html += `<div id="detailFilings" class="detail-section"><h3>Recent Filings</h3><p class="section-loading">Loading filings...</p></div>`;
+
+  // Download button
+  html += `<div style="margin-top:16px"><a class="dl-btn" href="/api/company/${cn}/incorporation-certificate" target="_blank" style="padding:8px 18px;font-size:14px">&#x2B07; Download Certificate of Incorporation</a></div>`;
+
+  $('#modalContent').innerHTML = html;
+
+  // Load supplementary sections in parallel
+  loadOfficersSection(cn);
+  loadPscsSection(cn);
+  loadFilingsSection(cn);
+}
+
+async function loadOfficersSection(cn) {
+  const container = document.getElementById('detailOfficers');
+  if (!container) return;
+  try {
+    const resp = await fetch(`/api/company/${cn}/officers`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    const items = data.items || [];
+    const active = items.filter(o => !o.resigned_on);
+    const resigned = items.filter(o => o.resigned_on);
+
+    let h = `<h3>Officers (${active.length} active${resigned.length ? ', ' + resigned.length + ' resigned' : ''})</h3>`;
+    if (!items.length) {
+      h += '<p style="color:#505a6e;font-size:13px">No officers on record.</p>';
+    } else {
+      h += `<table><thead><tr><th>Name</th><th>Role</th><th>Nationality</th><th>Occupation</th><th>Appointed</th><th>Resigned</th><th>DOB</th></tr></thead><tbody>`;
+      for (const o of items) {
+        const dob = o.date_of_birth ? `${o.date_of_birth.month || ''}/${o.date_of_birth.year || ''}` : '';
+        const rowStyle = o.resigned_on ? ' style="color:#909aab"' : '';
+        h += `<tr${rowStyle}>
+          <td>${esc(o.name || '')}</td>
+          <td>${esc(o.officer_role || '')}</td>
+          <td>${esc(o.nationality || '')}</td>
+          <td>${esc(o.occupation || '')}</td>
+          <td>${o.appointed_on || ''}</td>
+          <td>${o.resigned_on || '<b>Current</b>'}</td>
+          <td>${dob}</td>
+        </tr>`;
+      }
+      h += '</tbody></table>';
+    }
+    container.innerHTML = h;
+  } catch (err) {
+    container.innerHTML = `<h3>Officers</h3><p class="section-error">Failed to load officers: ${esc(err.message)}. Try clicking the company again in a moment.</p>`;
+  }
+}
+
+async function loadPscsSection(cn) {
+  const container = document.getElementById('detailPscs');
+  if (!container) return;
+  try {
+    const resp = await fetch(`/api/company/${cn}/pscs`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    const items = data.items || [];
+    let h = `<h3>Persons with Significant Control (${items.length})</h3>`;
+    if (!items.length) {
+      h += '<p style="color:#505a6e;font-size:13px">No PSCs on record.</p>';
+    } else {
+      h += `<table><thead><tr><th>Name</th><th>Nationality</th><th>Natures of Control</th><th>Notified On</th><th>Country of Residence</th></tr></thead><tbody>`;
+      for (const p of items) {
+        const natures = (p.natures_of_control || []).map(n => n.replace(/-/g, ' ')).join('; ');
+        h += `<tr>
+          <td>${esc(p.name || p.name_elements ? [p.name_elements?.title, p.name_elements?.forename, p.name_elements?.surname].filter(Boolean).join(' ') : '')}</td>
+          <td>${esc(p.nationality || '')}</td>
+          <td style="font-size:12px">${esc(natures)}</td>
+          <td>${p.notified_on || ''}</td>
+          <td>${esc(p.country_of_residence || '')}</td>
+        </tr>`;
+      }
+      h += '</tbody></table>';
+    }
+    container.innerHTML = h;
+  } catch (err) {
+    container.innerHTML = `<h3>Persons with Significant Control</h3><p class="section-error">Failed to load PSCs: ${esc(err.message)}</p>`;
+  }
+}
+
+async function loadFilingsSection(cn) {
+  const container = document.getElementById('detailFilings');
+  if (!container) return;
+  try {
+    const resp = await fetch(`/api/company/${cn}/filings`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    const items = data.items || [];
+    let h = `<h3>Recent Filings (${items.length})</h3>`;
+    if (!items.length) {
+      h += '<p style="color:#505a6e;font-size:13px">No filings on record.</p>';
+    } else {
+      h += `<table><thead><tr><th>Date</th><th>Category</th><th>Type</th><th>Description</th></tr></thead><tbody>`;
+      for (const f of items.slice(0, 20)) {
+        h += `<tr>
+          <td style="white-space:nowrap">${f.date || ''}</td>
+          <td>${esc(f.category || '')}</td>
+          <td>${esc(f.type || '')}</td>
+          <td style="font-size:12px">${esc(f.description || '')}</td>
+        </tr>`;
+      }
+      h += '</tbody></table>';
+    }
+    container.innerHTML = h;
+  } catch (err) {
+    container.innerHTML = `<h3>Recent Filings</h3><p class="section-error">Failed to load filings: ${esc(err.message)}</p>`;
+  }
+}
+
+function formatAddress(addr) {
+  if (!addr) return '';
+  return [addr.address_line_1, addr.address_line_2, addr.locality, addr.region, addr.postal_code, addr.country].filter(Boolean).join(', ');
+}
+</script>
+</body>
+</html>

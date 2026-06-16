@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Defaults. Per-flavor overlays override these. -->
+    <color name="brand_primary">#0A4D68</color>
+    <color name="brand_primary_dark">#073F54</color>
+    <color name="brand_accent">#05BFDB</color>
+    <color name="brand_background">#FAFAFA</color>
+    <color name="brand_surface">#FFFFFF</color>
+    <color name="brand_on_primary">#FFFFFF</color>
+    <color name="brand_on_background">#1C1B1F</color>
+</resources>

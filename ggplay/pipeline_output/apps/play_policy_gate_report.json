@@ -1,0 +1,43 @@
+{
+  "company_count": 2,
+  "blockers": 6,
+  "warnings": 0,
+  "findings": [
+    {
+      "severity": "blocker",
+      "code": "privacy_policy_url",
+      "message": "Privacy policy must be a live public HTTPS URL, not a placeholder.",
+      "source": "13510663"
+    },
+    {
+      "severity": "blocker",
+      "code": "developer_email",
+      "message": "Developer email should be dev@registered-domain, not a Gmail placeholder.",
+      "source": "13510663"
+    },
+    {
+      "severity": "blocker",
+      "code": "developer_phone",
+      "message": "Developer phone is missing or still a placeholder.",
+      "source": "13510663"
+    },
+    {
+      "severity": "blocker",
+      "code": "privacy_policy_url",
+      "message": "Privacy policy must be a live public HTTPS URL, not a placeholder.",
+      "source": "02591663"
+    },
+    {
+      "severity": "blocker",
+      "code": "developer_email",
+      "message": "Developer email should be dev@registered-domain, not a Gmail placeholder.",
+      "source": "02591663"
+    },
+    {
+      "severity": "blocker",
+      "code": "developer_phone",
+      "message": "Developer phone is missing or still a placeholder.",
+      "source": "02591663"
+    }
+  ]
+}

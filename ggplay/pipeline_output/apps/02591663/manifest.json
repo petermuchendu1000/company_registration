@@ -1,0 +1,76 @@
+{
+  "generated_at": "2026-04-27T13:58:29Z",
+  "display_name": "51 St Margarets Road Mgmt",
+  "company": "51 St Margarets Road Mgmt",
+  "legal_company_name": "51 ST MARGARETS ROAD MANAGEMENT LIMITED",
+  "company_number": "02591663",
+  "archetype": "shift",
+  "modules": [
+    {
+      "key": "checklist",
+      "title": "Checklist",
+      "nav_label": "Tasks",
+      "short_description": "Track routine checks without needing an account or network access.",
+      "detail": "Use a compact checklist for pre-work, handover, site, or delivery checks.",
+      "primary_action": "Mark Done",
+      "secondary_action": "Reset List",
+      "metric_label": "Done",
+      "sample_value": "4/6"
+    },
+    {
+      "key": "incident",
+      "title": "Incident Notes",
+      "nav_label": "Incident",
+      "short_description": "Capture a private local note when something needs follow-up.",
+      "detail": "Incident notes are plain local text for internal memory, not reporting automation.",
+      "primary_action": "Add Note",
+      "secondary_action": "Mark Stable",
+      "metric_label": "Open",
+      "sample_value": "0"
+    },
+    {
+      "key": "reference",
+      "title": "Reference",
+      "nav_label": "Reference",
+      "short_description": "Keep a short local reference panel for repeated work reminders.",
+      "detail": "Reference cards help users remember routine steps without leaving the app.",
+      "primary_action": "Open Card",
+      "secondary_action": "Review",
+      "metric_label": "Cards",
+      "sample_value": "6"
+    },
+    {
+      "key": "history",
+      "title": "History",
+      "nav_label": "History",
+      "short_description": "Review recent activity in a calm chronological view.",
+      "detail": "Recent entries make it easier to confirm what happened during the session.",
+      "primary_action": "Review",
+      "secondary_action": "Pin Item",
+      "metric_label": "Recent",
+      "sample_value": "8"
+    },
+    {
+      "key": "handover",
+      "title": "Handover",
+      "nav_label": "Handover",
+      "short_description": "Prepare a concise end-of-session handover note.",
+      "detail": "Capture what is complete, what remains open, and what needs attention next.",
+      "primary_action": "Prepare",
+      "secondary_action": "Complete",
+      "metric_label": "Open",
+      "sample_value": "2"
+    }
+  ],
+  "flavor": "c02591663",
+  "package": "uk.c02591663.shift",
+  "apk": "51-st-margarets-road-managemen-release.apk",
+  "aab": "51-st-margarets-road-managemen-release.aab",
+  "domain": "",
+  "install_page": "install.html",
+  "privacy_page": "privacy.html",
+  "apk_sha256": "efc094da3daaf01c723c3058be7ea7392375837f54061152216ed2937a9f75a2",
+  "aab_sha256": "990769340acedf8ae0431fac0d230fd78c62d5b8bae01b33f17ac659a7ab3187",
+  "support_email": "abdulelahhabib060@gmail.com",
+  "application_id": "uk.c02591663.shift"
+}

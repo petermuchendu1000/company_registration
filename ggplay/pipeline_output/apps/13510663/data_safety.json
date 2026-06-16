@@ -1,0 +1,11 @@
+{
+  "collects_user_data": false,
+  "shares_user_data": false,
+  "data_types_collected": [],
+  "data_types_shared": [],
+  "data_encryption_in_transit": "Not applicable; app does not transmit user data.",
+  "users_can_request_data_deletion": "Not applicable; no server-side user data is collected.",
+  "local_data_note": "Session counts and notes stay on device only and can be removed by clearing app storage or uninstalling.",
+  "third_party_sdks_collect_data": false,
+  "ads_or_analytics_sdks": false
+}

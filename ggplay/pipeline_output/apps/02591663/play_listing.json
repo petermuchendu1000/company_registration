@@ -1,0 +1,125 @@
+{
+  "app_identity": {
+    "app_name": "51 St Margarets Road Mgmt",
+    "package_name": "uk.c02591663.shift",
+    "default_language": "English (United Kingdom) - en-GB",
+    "app_or_game": "App",
+    "free_or_paid": "Free",
+    "contains_ads": false,
+    "play_category": "Business",
+    "tags": [
+      "Productivity",
+      "Business",
+      "Tools"
+    ]
+  },
+  "store_listing": {
+    "short_description": "Offline visit toolkit for tasks, incident, reference, notes, and summaries.",
+    "full_description": "51 St Margarets Road Mgmt is a lightweight offline visit toolkit designed for straightforward daily record keeping on Android.\n\nThe app helps users organize practical work activity through a focused set of local tools. It is intentionally minimal: no account, no ads, no network connection, no location access, and no personal data sent off the device.\n\nKey features:\n- Checklist: Track routine checks without needing an account or network access.\n- Incident Notes: Capture a private local note when something needs follow-up.\n- Reference: Keep a short local reference panel for repeated work reminders.\n- History: Review recent activity in a calm chronological view.\n- Handover: Prepare a concise end-of-session handover note.\n\nPrivacy:\n51 St Margarets Road Mgmt does not collect, share, or transmit user data. Any notes or counters are kept locally on the device and can be removed by clearing app storage or uninstalling the app.\n\nSuggested Play category: Business.\nSuggested release title: Site Visit Log 1.0.",
+    "privacy_policy_url": "PENDING_DOMAIN/app/privacy.html",
+    "developer_email": "abdulelahhabib060@gmail.com",
+    "developer_website": "PENDING_DOMAIN",
+    "developer_phone": "PENDING_ORGANIZATION_PHONE"
+  },
+  "graphics": {
+    "app_icon": "icon-512.png",
+    "feature_graphic": "feature-graphic.png",
+    "phone_screenshots": [
+      "phone-screenshot-1.png",
+      "phone-screenshot-2.png"
+    ],
+    "notes": [
+      "Icon must be 512x512 PNG and under 1024KB.",
+      "Phone screenshots should be reviewed against the actual built app before upload.",
+      "Feature graphic should be reviewed for text legibility before upload."
+    ]
+  },
+  "app_content": {
+    "privacy_policy_required": true,
+    "data_safety_required": true,
+    "ads": "No ads",
+    "app_access": "All functionality is available without login.",
+    "target_audience": "Adults/general business users; not designed for children.",
+    "content_rating_notes": [
+      "No violence.",
+      "No sexual content.",
+      "No user-generated public content.",
+      "No online interaction between users.",
+      "No gambling.",
+      "No location access."
+    ],
+    "permissions": "Zero Android permissions declared in AndroidManifest.xml."
+  },
+  "release": {
+    "initial_version_code": 1,
+    "initial_version_name": "1.0",
+    "release_name": "1.0 initial internal test",
+    "release_notes": "Initial release with five offline work tools, local notes, recent activity, and privacy-first zero-permission design.",
+    "recommended_first_track": "Internal testing",
+    "artifact_required_for_play": "AAB",
+    "selected_modules": [
+      {
+        "key": "checklist",
+        "title": "Checklist",
+        "nav_label": "Tasks",
+        "short_description": "Track routine checks without needing an account or network access.",
+        "detail": "Use a compact checklist for pre-work, handover, site, or delivery checks.",
+        "primary_action": "Mark Done",
+        "secondary_action": "Reset List",
+        "metric_label": "Done",
+        "sample_value": "4/6"
+      },
+      {
+        "key": "incident",
+        "title": "Incident Notes",
+        "nav_label": "Incident",
+        "short_description": "Capture a private local note when something needs follow-up.",
+        "detail": "Incident notes are plain local text for internal memory, not reporting automation.",
+        "primary_action": "Add Note",
+        "secondary_action": "Mark Stable",
+        "metric_label": "Open",
+        "sample_value": "0"
+      },
+      {
+        "key": "reference",
+        "title": "Reference",
+        "nav_label": "Reference",
+        "short_description": "Keep a short local reference panel for repeated work reminders.",
+        "detail": "Reference cards help users remember routine steps without leaving the app.",
+        "primary_action": "Open Card",
+        "secondary_action": "Review",
+        "metric_label": "Cards",
+        "sample_value": "6"
+      },
+      {
+        "key": "history",
+        "title": "History",
+        "nav_label": "History",
+        "short_description": "Review recent activity in a calm chronological view.",
+        "detail": "Recent entries make it easier to confirm what happened during the session.",
+        "primary_action": "Review",
+        "secondary_action": "Pin Item",
+        "metric_label": "Recent",
+        "sample_value": "8"
+      },
+      {
+        "key": "handover",
+        "title": "Handover",
+        "nav_label": "Handover",
+        "short_description": "Prepare a concise end-of-session handover note.",
+        "detail": "Capture what is complete, what remains open, and what needs attention next.",
+        "primary_action": "Prepare",
+        "secondary_action": "Complete",
+        "metric_label": "Open",
+        "sample_value": "2"
+      }
+    ]
+  },
+  "manual_blockers": [
+    "Build and verify signed AAB once Android SDK build-tools are installed.",
+    "Confirm final developer email is dev@registered-domain after domain setup.",
+    "Confirm developer phone number and OTP readiness.",
+    "Upload screenshots only after reviewing against a real/emulated build.",
+    "Complete Play Console Data safety and Content rating forms manually."
+  ]
+}

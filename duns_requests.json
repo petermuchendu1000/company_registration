@@ -1,0 +1,960 @@
+{
+  "13510663": {
+    "company_number": "13510663",
+    "company_name": "SWIFT PLUS PERSONNEL LTD",
+    "company_data": {
+      "company_number": "13510663",
+      "legal_name": "SWIFT PLUS PERSONNEL LTD",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2021-07-14",
+      "year_started": "2021",
+      "sic_codes": [
+        "78200"
+      ],
+      "address": {
+        "line_1": "13510663 - COMPANIES HOUSE DEFAULT ADDRESS",
+        "line_2": "",
+        "locality": "Cardiff",
+        "region": "",
+        "postal_code": "CF14 8LH",
+        "country": "United Kingdom",
+        "full": "13510663 - COMPANIES HOUSE DEFAULT ADDRESS, Cardiff, CF14 8LH, United Kingdom"
+      },
+      "directors": [
+        {
+          "name": "MWANGI, Alice",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2021-07-14"
+        },
+        {
+          "name": "MWANGI, Jane",
+          "role": "director",
+          "nationality": "British",
+          "appointed_on": "2022-01-20"
+        }
+      ],
+      "primary_director": {
+        "name": "MWANGI, Alice",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2021-07-14"
+      },
+      "duns_application": {
+        "business_name": "SWIFT PLUS PERSONNEL LTD",
+        "street_address": "13510663 - COMPANIES HOUSE DEFAULT ADDRESS",
+        "street_address_2": "",
+        "city": "Cardiff",
+        "state_province": "",
+        "postal_code": "CF14 8LH",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "MWANGI, Alice",
+        "year_started": "2021",
+        "employees": "",
+        "sic_code": "78200",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "a8jyx0g1ev6z@deltajohnsons.com",
+      "password": "oez4g278i9t90nnk",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1Njc1MTcsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoiYThqeXgwZzFldjZ6QGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ0ZGY5OGRkMjEwZmIwNjQwMWY2YjQiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNGRmOThkZDIxMGZiMDY0MDFmNmI0Il19fQ.AY8H2bI9gicXvzNSi5KX69TDu2PaBMEbOi-7Wk-RJMytEFa-Ka2LzYA-oTKBfN0aowOFu9jPYxGRcCtS7jw-6A",
+      "account_id": "69d4df98dd210fb06401f6b4"
+    },
+    "duns_application_data": {
+      "business_name": "SWIFT PLUS PERSONNEL LTD",
+      "street_address": "13510663 - COMPANIES HOUSE DEFAULT ADDRESS",
+      "street_address_2": "",
+      "city": "Cardiff",
+      "state_province": "",
+      "postal_code": "CF14 8LH",
+      "country": "GB",
+      "country_name": "United Kingdom",
+      "phone": "",
+      "ceo_name": "MWANGI, Alice",
+      "year_started": "2021",
+      "employees": "",
+      "sic_code": "78200",
+      "legal_structure": "Limited Company",
+      "email": "a8jyx0g1ev6z@deltajohnsons.com"
+    },
+    "lookup_result": {
+      "found": false,
+      "source": "dnb_search",
+      "note": "No results or endpoint unavailable"
+    },
+    "duns_number": "227880210",
+    "status": "completed",
+    "initiated_at": "2026-04-07T10:42:34.059543",
+    "last_checked": "2026-04-07T13:12:47.360895",
+    "emails_received": [
+      {
+        "id": "69d502c2a4f941697871ffd9",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T13:12:33+00:00"
+      }
+    ],
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "a8jyx0g1ev6z@deltajohnsons.com",
+      "confirmed": false,
+      "message": "DUNS request submitted. D&B will email the DUNS number to a8jyx0g1ev6z@deltajohnsons.com. Check inbox shortly."
+    },
+    "last_action": "2026-04-07T13:12:35.361226",
+    "completed_at": "2026-04-07T13:12:47.360878"
+  },
+  "15637471": {
+    "company_number": "15637471",
+    "company_name": "DEMANDA LTD",
+    "company_data": {
+      "company_number": "15637471",
+      "legal_name": "DEMANDA LTD",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2024-04-11",
+      "year_started": "2024",
+      "sic_codes": [
+        "47910"
+      ],
+      "address": {
+        "line_1": "Suite G04 1 Quality Court, Chancery Lane",
+        "line_2": "",
+        "locality": "London",
+        "region": "",
+        "postal_code": "WC2A 1HR",
+        "country": "England",
+        "full": "Suite G04 1 Quality Court, Chancery Lane, London, WC2A 1HR, England"
+      },
+      "directors": [
+        {
+          "name": "ODHIAMBO, Deogracious Manu, Mr.",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2024-04-11"
+        }
+      ],
+      "primary_director": {
+        "name": "ODHIAMBO, Deogracious Manu, Mr.",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2024-04-11"
+      },
+      "duns_application": {
+        "business_name": "DEMANDA LTD",
+        "street_address": "Suite G04 1 Quality Court, Chancery Lane",
+        "street_address_2": "",
+        "city": "London",
+        "state_province": "",
+        "postal_code": "WC2A 1HR",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "ODHIAMBO, Deogracious Manu, Mr.",
+        "year_started": "2024",
+        "employees": "",
+        "sic_code": "47910",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "tmkijuccgu9u@deltajohnsons.com",
+      "password": "jrxputbjc2es197t",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1NjQ1MzEsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoidG1raWp1Y2NndTl1QGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ0ZjZmMjdlNGQ0MmRlNDcwNDZjZTciLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNGY2ZjI3ZTRkNDJkZTQ3MDQ2Y2U3Il19fQ.1u5ihNPfryiIzX0uVkGwzi9xfIxqGGGoVlzBwuEiPftvRLalY5z2ybqlqjbKBvJQBcGtD79RoXanLRNtC8va2w",
+      "account_id": "69d4f6f27e4d42de47046ce7"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "tmkijuccgu9u@deltajohnsons.com",
+      "confirmed": false,
+      "message": "DUNS request submitted. D&B will email the DUNS number to tmkijuccgu9u@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T12:22:55.607149",
+    "last_action": "2026-04-07T12:22:55.607160",
+    "duns_number": "231678711",
+    "emails_received": [
+      {
+        "id": "69d4f71fa4f941697871cbb1",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T12:22:53+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T12:23:07.725415",
+    "last_checked": "2026-04-07T12:23:07.725456"
+  },
+  "02591663": {
+    "company_number": "02591663",
+    "company_name": "51 ST MARGARETS ROAD MANAGEMENT LIMITED",
+    "company_data": {
+      "company_number": "02591663",
+      "legal_name": "51 ST MARGARETS ROAD MANAGEMENT LIMITED",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "1991-03-14",
+      "year_started": "1991",
+      "sic_codes": [
+        "98000"
+      ],
+      "address": {
+        "line_1": "Flat 1 St. Margarets Road",
+        "line_2": "",
+        "locality": "Twickenham",
+        "region": "",
+        "postal_code": "TW1 2LL",
+        "country": "England",
+        "full": "Flat 1 St. Margarets Road, Twickenham, TW1 2LL, England"
+      },
+      "directors": [
+        {
+          "name": "ADAM, Gordon Herbert",
+          "role": "director",
+          "nationality": "British",
+          "appointed_on": "2025-08-22"
+        },
+        {
+          "name": "MWANGI, Annabel Namik",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2024-05-08"
+        }
+      ],
+      "primary_director": {
+        "name": "ADAM, Gordon Herbert",
+        "role": "director",
+        "nationality": "British",
+        "appointed_on": "2025-08-22"
+      },
+      "duns_application": {
+        "business_name": "51 ST MARGARETS ROAD MANAGEMENT LIMITED",
+        "street_address": "Flat 1 St. Margarets Road",
+        "street_address_2": "",
+        "city": "Twickenham",
+        "state_province": "",
+        "postal_code": "TW1 2LL",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "ADAM, Gordon Herbert",
+        "year_started": "1991",
+        "employees": "",
+        "sic_code": "98000",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "pslnsc4z1snq@deltajohnsons.com",
+      "password": "00bq8dfhws47yy1x",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTIzMjcsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoicHNsbnNjNHoxc25xQGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NWU0MTE0Mjk3MTFmMzIwYTIwMWMiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTVlNDExNDI5NzExZjMyMGEyMDFjIl19fQ.J_mKltOVoswf0TWhjvCU3hcralZAgKjrAy0DfKgcn1TrVlb96lVbwDQwGC3kBuSAuv9J4iRcvBAT6dYhkmgU-w",
+      "account_id": "69d55e411429711f320a201c"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "pslnsc4z1snq@deltajohnsons.com",
+      "confirmed": true,
+      "message": "DUNS request submitted. D&B will email the DUNS number to pslnsc4z1snq@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T19:46:38.254406",
+    "last_action": "2026-04-07T20:06:04.628753",
+    "duns_number": "766956957",
+    "emails_received": [
+      {
+        "id": "69d563a97285b2a7a497a7f5",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T20:06:00+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T20:06:17.784097",
+    "last_checked": "2026-04-07T20:06:17.784112"
+  },
+  "15046885": {
+    "company_number": "15046885",
+    "company_name": "KENUK AUTOSPARES LTD",
+    "company_data": {
+      "company_number": "15046885",
+      "legal_name": "KENUK AUTOSPARES LTD",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2023-08-03",
+      "year_started": "2023",
+      "sic_codes": [
+        "45320"
+      ],
+      "address": {
+        "line_1": "7 Upper Ox Hill",
+        "line_2": "Purton",
+        "locality": "Swindon",
+        "region": "",
+        "postal_code": "SN5 4GG",
+        "country": "England",
+        "full": "7 Upper Ox Hill, Purton, Swindon, SN5 4GG, England"
+      },
+      "directors": [
+        {
+          "name": "KAMORI, Newton Mburu",
+          "role": "director",
+          "nationality": "Finnish",
+          "appointed_on": "2023-08-03"
+        },
+        {
+          "name": "MWANGI, Daniel Muiruri",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2023-08-03"
+        },
+        {
+          "name": "MWANGI, Mutahi",
+          "role": "director",
+          "nationality": "British",
+          "appointed_on": "2023-08-03"
+        }
+      ],
+      "primary_director": {
+        "name": "KAMORI, Newton Mburu",
+        "role": "director",
+        "nationality": "Finnish",
+        "appointed_on": "2023-08-03"
+      },
+      "duns_application": {
+        "business_name": "KENUK AUTOSPARES LTD",
+        "street_address": "7 Upper Ox Hill",
+        "street_address_2": "Purton",
+        "city": "Swindon",
+        "state_province": "",
+        "postal_code": "SN5 4GG",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "KAMORI, Newton Mburu",
+        "year_started": "2023",
+        "employees": "",
+        "sic_code": "45320",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "7eiuyfwqyy7f@deltajohnsons.com",
+      "password": "8hndv4766gvklux8",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTIyNDQsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoiN2VpdXlmd3F5eTdmQGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NjAwOWZhNTIxOTkzMDEwMzYzNTkiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTYwMDlmYTUyMTk5MzAxMDM2MzU5Il19fQ.-TcTU4beV5TVjLGUNu_Ab58hqwxHGLr3DOoY6_bpo9ql7SCegtBkbpYX_lYiJ5_KiX36TKVlGK8no222IBrRzw",
+      "account_id": "69d56009fa52199301036359"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "7eiuyfwqyy7f@deltajohnsons.com",
+      "confirmed": false,
+      "message": "DUNS request submitted. D&B will email the DUNS number to 7eiuyfwqyy7f@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T19:53:57.821046",
+    "last_action": "2026-04-07T20:04:39.952187",
+    "duns_number": "230876320",
+    "emails_received": [
+      {
+        "id": "69d56357cee9bb300006bebe",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T20:04:38+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T20:04:52.582936",
+    "last_checked": "2026-04-07T20:04:52.582950"
+  },
+  "08699016": {
+    "company_number": "08699016",
+    "company_name": "T- QUO LTD",
+    "company_data": {
+      "company_number": "08699016",
+      "legal_name": "T- QUO LTD",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2013-09-20",
+      "year_started": "2013",
+      "sic_codes": [
+        "53202"
+      ],
+      "address": {
+        "line_1": "6 Lynmouth Road",
+        "line_2": "",
+        "locality": "Coventry",
+        "region": "",
+        "postal_code": "CV2 1AN",
+        "country": "England",
+        "full": "6 Lynmouth Road, Coventry, CV2 1AN, England"
+      },
+      "directors": [
+        {
+          "name": "KINYANJUI, Harriet",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2023-06-27"
+        },
+        {
+          "name": "MWANGI, Antony Gakuo",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2013-09-20"
+        }
+      ],
+      "primary_director": {
+        "name": "KINYANJUI, Harriet",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2023-06-27"
+      },
+      "duns_application": {
+        "business_name": "T- QUO LTD",
+        "street_address": "6 Lynmouth Road",
+        "street_address_2": "",
+        "city": "Coventry",
+        "state_province": "",
+        "postal_code": "CV2 1AN",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "KINYANJUI, Harriet",
+        "year_started": "2013",
+        "employees": "",
+        "sic_code": "53202",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "9rh1szotgqrg@deltajohnsons.com",
+      "password": "6b13hx9uytgh73dn",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTIzODQsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoiOXJoMXN6b3RncXJnQGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NjNiZWI0NTA4YWJmZTQwZDhmODQiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTYzYmViNDUwOGFiZmU0MGQ4Zjg0Il19fQ.hU-KLImbSvXOg6Y5F4AXMOoifiGgaAUSNREQy1neQTRQgIzYAhUEuFS4gAigf8Gze2PaqwPtys1br-af4ilZAA",
+      "account_id": "69d563beb4508abfe40d8f84"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "9rh1szotgqrg@deltajohnsons.com",
+      "confirmed": true,
+      "message": "DUNS request submitted. D&B will email the DUNS number to 9rh1szotgqrg@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T20:07:14.233105",
+    "last_action": "2026-04-07T20:07:14.233149",
+    "duns_number": "219645476",
+    "emails_received": [
+      {
+        "id": "69d563f1338efe3f3ba7af2c",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T20:07:11+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T20:07:27.846599",
+    "last_checked": "2026-04-07T20:07:27.846629"
+  },
+  "16553958": {
+    "company_number": "16553958",
+    "company_name": "JIKELELE LIMITED",
+    "company_data": {
+      "company_number": "16553958",
+      "legal_name": "JIKELELE LIMITED",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2025-07-01",
+      "year_started": "2025",
+      "sic_codes": [
+        "62020"
+      ],
+      "address": {
+        "line_1": "4 Osprey Place",
+        "line_2": "",
+        "locality": "Didcot",
+        "region": "",
+        "postal_code": "OX11 6BX",
+        "country": "England",
+        "full": "4 Osprey Place, Didcot, OX11 6BX, England"
+      },
+      "directors": [
+        {
+          "name": "MWANGI, Daniel Ngugi",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2025-07-01"
+        }
+      ],
+      "primary_director": {
+        "name": "MWANGI, Daniel Ngugi",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2025-07-01"
+      },
+      "duns_application": {
+        "business_name": "JIKELELE LIMITED",
+        "street_address": "4 Osprey Place",
+        "street_address_2": "",
+        "city": "Didcot",
+        "state_province": "",
+        "postal_code": "OX11 6BX",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "MWANGI, Daniel Ngugi",
+        "year_started": "2025",
+        "employees": "",
+        "sic_code": "62020",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "5agaeahg5xcg@deltajohnsons.com",
+      "password": "vzd3x32owuvfu9ao",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTI0NTUsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoiNWFnYWVhaGc1eGNnQGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NjQwNTI0YTc2Y2Y3ZTkwMzhiZTkiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTY0MDUyNGE3NmNmN2U5MDM4YmU5Il19fQ.T5eEGBtfwC_ImHAgVrQYg4dMqJotz6jI3BFLZnU7aeVJgSPysX7Iomu94D45_rhSxdEoOtmxY9R3TdkO1Gs6xA",
+      "account_id": "69d5640524a76cf7e9038be9"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "5agaeahg5xcg@deltajohnsons.com",
+      "confirmed": true,
+      "message": "DUNS request submitted. D&B will email the DUNS number to 5agaeahg5xcg@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T20:08:13.068654",
+    "last_action": "2026-04-07T20:08:13.068680",
+    "duns_number": "233938584",
+    "emails_received": [
+      {
+        "id": "69d5642bdacc365207d0274b",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T20:08:09+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T20:08:25.794844",
+    "last_checked": "2026-04-07T20:08:25.794868"
+  },
+  "16738322": {
+    "company_number": "16738322",
+    "company_name": "AREGO KAWERE LIMITED",
+    "company_data": {
+      "company_number": "16738322",
+      "legal_name": "AREGO KAWERE LIMITED",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2025-09-23",
+      "year_started": "2025",
+      "sic_codes": [
+        "86102"
+      ],
+      "address": {
+        "line_1": "25 Hamilton Road",
+        "line_2": "",
+        "locality": "Derby",
+        "region": "",
+        "postal_code": "DE23 6RU",
+        "country": "England",
+        "full": "25 Hamilton Road, Derby, DE23 6RU, England"
+      },
+      "directors": [
+        {
+          "name": "ODHIAMBO, Duncan Arego",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2025-09-23"
+        }
+      ],
+      "primary_director": {
+        "name": "ODHIAMBO, Duncan Arego",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2025-09-23"
+      },
+      "duns_application": {
+        "business_name": "AREGO KAWERE LIMITED",
+        "street_address": "25 Hamilton Road",
+        "street_address_2": "",
+        "city": "Derby",
+        "state_province": "",
+        "postal_code": "DE23 6RU",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "ODHIAMBO, Duncan Arego",
+        "year_started": "2025",
+        "employees": "",
+        "sic_code": "86102",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "du9xpi0hanav@deltajohnsons.com",
+      "password": "qlitaty7aogqe7br",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTI1MTEsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoiZHU5eHBpMGhhbmF2QGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NjQzZTVmYmQyMDI0NDAwNjMzZDkiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTY0M2U1ZmJkMjAyNDQwMDYzM2Q5Il19fQ.1xB5t5CacxWhAzMpehWwIkxovAkI3kg1IYaC3SXYGMsLemtHU2oeVSD6ClHF86B-gwWe6v_lZQ5Kyc-_4O_zhw",
+      "account_id": "69d5643e5fbd2024400633d9"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "du9xpi0hanav@deltajohnsons.com",
+      "confirmed": true,
+      "message": "DUNS request submitted. D&B will email the DUNS number to du9xpi0hanav@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T20:09:08.064771",
+    "last_action": "2026-04-07T20:09:08.064818",
+    "duns_number": "234194683",
+    "emails_received": [
+      {
+        "id": "69d56461dacc365207d0288b",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T20:09:03+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T20:09:20.782295",
+    "last_checked": "2026-04-07T20:09:20.782326"
+  },
+  "09838835": {
+    "company_number": "09838835",
+    "company_name": "NYAKAWINO EXPRESS LIMITED",
+    "company_data": {
+      "company_number": "09838835",
+      "legal_name": "NYAKAWINO EXPRESS LIMITED",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2015-10-23",
+      "year_started": "2015",
+      "sic_codes": [
+        "86900"
+      ],
+      "address": {
+        "line_1": "28 Cardinal Close",
+        "line_2": "St Ann's",
+        "locality": "Nottingham",
+        "region": "",
+        "postal_code": "NG3 3ND",
+        "country": "United Kingdom",
+        "full": "28 Cardinal Close, St Ann's, Nottingham, NG3 3ND, United Kingdom"
+      },
+      "directors": [
+        {
+          "name": "ODHIAMBO, Josephine",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2015-10-23"
+        }
+      ],
+      "primary_director": {
+        "name": "ODHIAMBO, Josephine",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2015-10-23"
+      },
+      "duns_application": {
+        "business_name": "NYAKAWINO EXPRESS LIMITED",
+        "street_address": "28 Cardinal Close",
+        "street_address_2": "St Ann's",
+        "city": "Nottingham",
+        "state_province": "",
+        "postal_code": "NG3 3ND",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "ODHIAMBO, Josephine",
+        "year_started": "2015",
+        "employees": "",
+        "sic_code": "86900",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "ti8f48t6uga9@deltajohnsons.com",
+      "password": "aw8uzuiohwsc0s5a",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTI1NjcsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoidGk4ZjQ4dDZ1Z2E5QGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NjQ3NWVhZTI1N2UzNGQwMzk0N2MiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTY0NzVlYWUyNTdlMzRkMDM5NDdjIl19fQ.gL-RrzmTV8h0-qIbqlixBI8BBUxztPcvqdg_bGEOMvA2FibaE0Jl_tkpLmFEpLpNGxC8igqrnzL19Zx6p3tT7A",
+      "account_id": "69d56475eae257e34d03947c"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "ti8f48t6uga9@deltajohnsons.com",
+      "confirmed": true,
+      "message": "DUNS request submitted. D&B will email the DUNS number to ti8f48t6uga9@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T20:10:05.539936",
+    "last_action": "2026-04-07T20:10:05.539970",
+    "duns_number": "221200531",
+    "emails_received": [
+      {
+        "id": "69d5649a969120dcfc396f1f",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T20:10:01+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T20:10:18.541623",
+    "last_checked": "2026-04-07T20:10:18.541648"
+  },
+  "16968659": {
+    "company_number": "16968659",
+    "company_name": "OXFORD DEVELOPMENT IMPACT PARTNERS LTD",
+    "company_data": {
+      "company_number": "16968659",
+      "legal_name": "OXFORD DEVELOPMENT IMPACT PARTNERS LTD",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2026-01-16",
+      "year_started": "2026",
+      "sic_codes": [
+        "70229",
+        "72200",
+        "74901"
+      ],
+      "address": {
+        "line_1": "65 Barton Fields Road",
+        "line_2": "",
+        "locality": "Headington Oxford",
+        "region": "Oxfordshire",
+        "postal_code": "OX3 9FQ",
+        "country": "United Kingdom",
+        "full": "65 Barton Fields Road, Headington Oxford, Oxfordshire, OX3 9FQ, United Kingdom"
+      },
+      "directors": [
+        {
+          "name": "ODHIAMBO, Mary Thamari, Dr",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2026-01-16"
+        }
+      ],
+      "primary_director": {
+        "name": "ODHIAMBO, Mary Thamari, Dr",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2026-01-16"
+      },
+      "duns_application": {
+        "business_name": "OXFORD DEVELOPMENT IMPACT PARTNERS LTD",
+        "street_address": "65 Barton Fields Road",
+        "street_address_2": "",
+        "city": "Headington Oxford",
+        "state_province": "Oxfordshire",
+        "postal_code": "OX3 9FQ",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "ODHIAMBO, Mary Thamari, Dr",
+        "year_started": "2026",
+        "employees": "",
+        "sic_code": "70229",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "ssfn9c8mjkpg@deltajohnsons.com",
+      "password": "pgeqyb76xdubdmcq",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTI2MjQsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoic3NmbjljOG1qa3BnQGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NjRhZjM3ODEyZDNhYmUwNzg3M2UiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTY0YWYzNzgxMmQzYWJlMDc4NzNlIl19fQ.FsMBHsHhCuj9L_CjI8_PPA6gYLt5h3eDTlJ7g_uq8ul-qv5k2EO1WMLpMyBZIAzDwIndk3Oy4TZqaroPWNL9tg",
+      "account_id": "69d564af37812d3abe07873e"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "ssfn9c8mjkpg@deltajohnsons.com",
+      "confirmed": true,
+      "message": "DUNS request submitted. D&B will email the DUNS number to ssfn9c8mjkpg@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T20:11:00.709444",
+    "last_action": "2026-04-07T20:11:00.709465",
+    "duns_number": "234493078",
+    "emails_received": [
+      {
+        "id": "69d564d2a2316478d9dfc09b",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T20:10:57+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T20:11:13.402217",
+    "last_checked": "2026-04-07T20:11:13.402237"
+  },
+  "14097818": {
+    "company_number": "14097818",
+    "company_name": "GLACOSH LIMITED",
+    "company_data": {
+      "company_number": "14097818",
+      "legal_name": "GLACOSH LIMITED",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2022-05-10",
+      "year_started": "2022",
+      "sic_codes": [
+        "86900"
+      ],
+      "address": {
+        "line_1": "6 Lansdowne Road",
+        "line_2": "Tilehurst",
+        "locality": "Reading",
+        "region": "",
+        "postal_code": "RG30 4QX",
+        "country": "England",
+        "full": "6 Lansdowne Road, Tilehurst, Reading, RG30 4QX, England"
+      },
+      "directors": [
+        {
+          "name": "KABURI, Gladys Moraa",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2022-05-10"
+        }
+      ],
+      "primary_director": {
+        "name": "KABURI, Gladys Moraa",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2022-05-10"
+      },
+      "duns_application": {
+        "business_name": "GLACOSH LIMITED",
+        "street_address": "6 Lansdowne Road",
+        "street_address_2": "Tilehurst",
+        "city": "Reading",
+        "state_province": "",
+        "postal_code": "RG30 4QX",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "KABURI, Gladys Moraa",
+        "year_started": "2022",
+        "employees": "",
+        "sic_code": "86900",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "pq09t6eri7pv@deltajohnsons.com",
+      "password": "txvn9gx1ki80elem",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTI2ODEsInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoicHEwOXQ2ZXJpN3B2QGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NjRlNzg4ODg4OTc4N2MwOTRiOTgiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTY0ZTc4ODg4ODk3ODdjMDk0Yjk4Il19fQ.j5uY_6-j6PfH9ruuJMDFIMdBwqOH1QpQcw-yK8vAA4tPJyQf_aWPig4uyIvjSH2V1iQKIpadIhpEbx85WJVLPw",
+      "account_id": "69d564e7888889787c094b98"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "pq09t6eri7pv@deltajohnsons.com",
+      "confirmed": true,
+      "message": "DUNS request submitted. D&B will email the DUNS number to pq09t6eri7pv@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "completed",
+    "initiated_at": "2026-04-07T20:11:58.102836",
+    "last_action": "2026-04-07T20:11:58.102865",
+    "duns_number": "228922546",
+    "emails_received": [
+      {
+        "id": "69d5650c81d041eb27465dfb",
+        "from": "no-reply@mail.dnb.com",
+        "subject": "Your Dun & Bradstreet D-U-N-S Number",
+        "received_at": "2026-04-07T20:11:55+00:00"
+      }
+    ],
+    "completed_at": "2026-04-07T20:12:11.465546",
+    "last_checked": "2026-04-07T20:12:11.465568"
+  },
+  "12832184": {
+    "company_number": "12832184",
+    "company_name": "PATROBA LTD",
+    "company_data": {
+      "company_number": "12832184",
+      "legal_name": "PATROBA LTD",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2020-08-24",
+      "year_started": "2020",
+      "sic_codes": [
+        "84120"
+      ],
+      "address": {
+        "line_1": "19 Fleming Close",
+        "line_2": "Arborfield",
+        "locality": "Reading",
+        "region": "",
+        "postal_code": "RG2 9NS",
+        "country": "England",
+        "full": "19 Fleming Close, Arborfield, Reading, RG2 9NS, England"
+      },
+      "directors": [
+        {
+          "name": "KANANI, Drucilla Moraa",
+          "role": "director",
+          "nationality": "Kenyan",
+          "appointed_on": "2020-08-24"
+        }
+      ],
+      "primary_director": {
+        "name": "KANANI, Drucilla Moraa",
+        "role": "director",
+        "nationality": "Kenyan",
+        "appointed_on": "2020-08-24"
+      },
+      "duns_application": {
+        "business_name": "PATROBA LTD",
+        "street_address": "19 Fleming Close",
+        "street_address_2": "Arborfield",
+        "city": "Reading",
+        "state_province": "",
+        "postal_code": "RG2 9NS",
+        "country": "GB",
+        "country_name": "United Kingdom",
+        "phone": "",
+        "ceo_name": "KANANI, Drucilla Moraa",
+        "year_started": "2020",
+        "employees": "",
+        "sic_code": "84120",
+        "legal_structure": "Limited Company"
+      }
+    },
+    "temp_email": {
+      "address": "y3648wnkvi98@deltajohnsons.com",
+      "password": "tzuzkyxe0p2knidr",
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3NzU1OTI3NDksInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoieTM2NDh3bmt2aTk4QGRlbHRham9obnNvbnMuY29tIiwiaWQiOiI2OWQ1NjUyOTM4ZDNlZTU4YTIwNDUzMjYiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNjlkNTY1MjkzOGQzZWU1OGEyMDQ1MzI2Il19fQ.h-ZvXgLTBwo0CRG-NWyRlPfHfIWVh-CKBVhs7r5_THILFam6UMfX93mFW7yNA_1TTIKGT9VWPG4PtcIPnqGpRg",
+      "account_id": "69d5652938d3ee58a2045326"
+    },
+    "browser_result": {
+      "found": true,
+      "source": "dnb_uk_browser",
+      "form_ready": true,
+      "duns_emailed": true,
+      "email_used": "y3648wnkvi98@deltajohnsons.com",
+      "confirmed": true,
+      "message": "DUNS request submitted. D&B will email the DUNS number to y3648wnkvi98@deltajohnsons.com. Check inbox shortly."
+    },
+    "status": "submitted",
+    "initiated_at": "2026-04-07T20:13:14.989728",
+    "last_action": "2026-04-07T20:13:14.989754",
+    "duns_number": null,
+    "emails_received": []
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "generated_at": "2026-04-27T13:58:28Z",
+  "display_name": "Swift Plus Personnel",
+  "company": "Swift Plus Personnel",
+  "legal_company_name": "SWIFT PLUS PERSONNEL LTD",
+  "company_number": "13510663",
+  "archetype": "shift",
+  "modules": [
+    {
+      "key": "work_log",
+      "title": "Work Log",
+      "nav_label": "Log",
+      "short_description": "Capture local session entries with a clear start and finish flow.",
+      "detail": "Record each work session as a simple local entry with status, count, and notes.",
+      "primary_action": "Start Entry",
+      "secondary_action": "Close Entry",
+      "metric_label": "Entries",
+      "sample_value": "3"
+    },
+    {
+      "key": "daily_plan",
+      "title": "Daily Plan",
+      "nav_label": "Plan",
+      "short_description": "Outline the next few local tasks for the day.",
+      "detail": "Keep a short work plan visible so repeated actions stay organized.",
+      "primary_action": "Add Plan",
+      "secondary_action": "Review Plan",
+      "metric_label": "Planned",
+      "sample_value": "5"
+    },
+    {
+      "key": "handover",
+      "title": "Handover",
+      "nav_label": "Handover",
+      "short_description": "Prepare a concise end-of-session handover note.",
+      "detail": "Capture what is complete, what remains open, and what needs attention next.",
+      "primary_action": "Prepare",
+      "secondary_action": "Complete",
+      "metric_label": "Open",
+      "sample_value": "2"
+    },
+    {
+      "key": "notes",
+      "title": "Notes",
+      "nav_label": "Notes",
+      "short_description": "Write local notes for handover, visit context, or follow-up reminders.",
+      "detail": "Notes are stored only on the device and can be cleared with app storage.",
+      "primary_action": "Save Note",
+      "secondary_action": "Clear Draft",
+      "metric_label": "Drafts",
+      "sample_value": "1"
+    },
+    {
+      "key": "insights",
+      "title": "Insights",
+      "nav_label": "Insights",
+      "short_description": "Summarize local counts and completion status.",
+      "detail": "A small dashboard highlights today's count, open items, and completion ratio.",
+      "primary_action": "Refresh",
+      "secondary_action": "Compare",
+      "metric_label": "Score",
+      "sample_value": "82%"
+    }
+  ],
+  "flavor": "c13510663",
+  "package": "uk.c13510663.shift",
+  "apk": "swift-plus-personnel-release.apk",
+  "aab": "swift-plus-personnel-release.aab",
+  "domain": "",
+  "install_page": "install.html",
+  "privacy_page": "privacy.html",
+  "apk_sha256": "44b023d38f6c13b83730877efedb679cc66ec5a469560914b7e3894cb053a982",
+  "aab_sha256": "73609c522a8b545c7a3227d427e5953d34278aef3404f95ed1153bc07f5b5dbd",
+  "support_email": "drscholarysophia408@gmail.com",
+  "application_id": "uk.c13510663.shift"
+}
