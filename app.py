@@ -701,4 +701,17 @@ def api_duns_stealth_full(company_number):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000, threaded=True)
+    import os
+    start_port = int(os.getenv("PORT", 5000))
+    max_tries = 10
+
+    for p in range(start_port, start_port + max_tries):
+        try:
+            print(f"Attempting to start server on port {p}...")
+            app.run(debug=True, port=p, threaded=True)
+            break
+        except OSError as e:
+            print(f"Failed to bind to port {p}: {e}")
+            # try next port
+    else:
+        raise SystemExit(f"Could not bind to any port in range {start_port}-{start_port+max_tries-1}")
