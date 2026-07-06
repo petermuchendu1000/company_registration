@@ -111,6 +111,171 @@ OFFICER_NAME_TERMS = {
 MAX_OFFICERS = 3
 
 
+# ============================================================
+# Gender inference (Companies House does NOT expose officer gender)
+# ============================================================
+#
+# The Companies House "officers" endpoint returns name, date_of_birth,
+# nationality and role — but never a gender field. XBINDER (stage_director_id)
+# needs an "M"/"F" value, so we infer it from the director's forename.
+#
+# Names arrive in Companies House / Excel format: "SURNAME, Forename Middle".
+# We parse out the forename(s) and match against a curated table of common
+# Kenyan (Kikuyu, Luo, Luhya, Kamba, Kalenjin, Kisii, Meru, Maasai) and
+# international first names, with a few conservative morphological fallbacks.
+# Returns "M", "F", or "" (unknown) — callers default "" to "M".
+
+_FEMALE_NAMES = {
+    # Kikuyu
+    "wanjiku", "wangari", "wambui", "wairimu", "nyambura", "njeri", "wangui",
+    "waithera", "wanjiru", "wamaitha", "wanja", "muthoni", "nyokabi", "wangeci",
+    "wacuka", "wanjira", "nyawira", "wangechi", "wamuyu", "wangeshi", "njoki",
+    "wamaitha", "wambeti", "wamboi",
+    # Luo
+    "achieng", "akinyi", "adhiambo", "anyango", "awino", "atieno", "aoko",
+    "auma", "adoyo", "akoth", "aluoch", "apiyo", "adongo", "akello", "aketch",
+    "atieno", "adieri", "amondi", "aketh",
+    # Luhya
+    "nasimiyu", "nekesa", "nafula", "nanjala", "naliaka", "nabwire", "nekoye",
+    "namukhula", "nasambu", "nabukwesi", "nangila", "naswa",
+    # Kamba
+    "mwikali", "nduku", "kavata", "ndanu", "mueni", "kanini", "mwende",
+    "ndinda", "kaluki", "wayua", "mumbua", "kalondu", "syombua", "mwongeli",
+    "katumbi", "syomiti",
+    # Kalenjin
+    "chebet", "jepkosgei", "jepchirchir", "cherono", "chepkoech", "chepkirui",
+    "jepkorir", "jelagat", "jerop", "jepkemboi", "chelangat", "chepngeno",
+    "cheptoo", "jebet", "chemutai", "chepngetich", "jerono", "jepkemei",
+    "chepchumba", "chepkemoi", "jerotich",
+    # Kisii
+    "kerubo", "moraa", "bosibori", "kwamboka", "nyaboke", "nyanchama",
+    "kemunto", "bonareri", "gesare", "nyaboga", "morari",
+    # Meru / Embu / Tharaka
+    "kawira", "kaari", "karimi", "gakii", "kanana", "kendi", "kagwiria",
+    "mukami", "ciankui", "kathambi", "makena", "kinya", "kagendo", "gatwiri",
+    "kathure", "karea", "mwende",
+    # Maasai / Samburu
+    "naserian", "naisula", "nasieku", "nashipae", "naramat", "nalotuesha",
+    "namelok", "sein", "seenoi",
+    # International / English
+    "mary", "grace", "faith", "joyce", "jane", "ann", "anne", "esther",
+    "lucy", "sarah", "elizabeth", "rose", "margaret", "susan", "caroline",
+    "catherine", "ruth", "mercy", "purity", "beatrice", "eunice", "agnes",
+    "dorcas", "florence", "gladys", "hellen", "helen", "irene", "janet",
+    "lilian", "lydia", "maureen", "monica", "nancy", "pauline", "rachel",
+    "rebecca", "regina", "sharon", "stella", "teresa", "veronica", "winnie",
+    "zawadi", "wanjiku", "linda", "diana", "emily", "emma", "hannah", "joan",
+    "josephine", "priscilla", "salome", "tabitha", "vivian", "victoria",
+    "phoebe", "naomi", "peninah", "dorothy", "gloria", "christine", "cynthia",
+}
+
+_MALE_NAMES = {
+    # Kikuyu
+    "kamau", "mwangi", "njoroge", "kariuki", "kimani", "maina", "njenga",
+    "wachira", "ndungu", "kinuthia", "githinji", "karanja", "mbugua", "gitau",
+    "waweru", "muchiri", "njuguna", "kuria", "macharia", "muriuki", "muriithi",
+    "chege", "ngugi", "waithaka", "gichuru", "kagwe", "mburu", "ndegwa",
+    # Luo
+    "otieno", "ochieng", "onyango", "odhiambo", "owino", "omondi", "ouma",
+    "okoth", "odongo", "ojwang", "owuor", "opiyo", "oduor", "oketch", "omollo",
+    "ogutu", "onyonka", "ombaka", "obama", "ogola", "onyiego", "okello",
+    # Luhya
+    "wafula", "wekesa", "wanjala", "barasa", "wanyonyi", "simiyu", "nyongesa",
+    "masika", "wamalwa", "khisa", "wesonga", "makokha", "mukhwana", "juma",
+    "shikuku", "lusweti", "sifuna", "wanyama",
+    # Kamba
+    "mutua", "musyoka", "wambua", "mutisya", "kioko", "muthama", "nzioka",
+    "muli", "mumo", "mutinda", "kilonzo", "nzau", "mwangangi", "musau",
+    "kimeu", "muindi", "nzomo", "mailu",
+    # Kalenjin
+    "kiptoo", "cheruiyot", "kipchoge", "kiprotich", "kipkoech", "kipruto",
+    "kiplagat", "kibet", "kirui", "rono", "bett", "koech", "kigen", "kemboi",
+    "sang", "chepkwony", "kiprop", "langat", "rotich", "tanui", "kosgei",
+    "kipngeno", "biwott", "chumo",
+    # Kisii
+    "mogaka", "onsongo", "nyakundi", "ondieki", "nyamweya", "ombati",
+    "nyabuto", "momanyi", "bosire", "ongeri", "nyagwencha", "obiero",
+    "mokua", "onchiri", "ondego",
+    # Meru / Embu / Tharaka
+    "kinoti", "mutegi", "mwenda", "gitonga", "murithi", "kimathi", "mugambi",
+    "kirimi", "mwiti", "muthomi", "gikunda", "kaburu", "mbaya", "mutuma",
+    "mwirigi",
+    # Maasai / Samburu
+    "lenku", "saitoti", "lekatoo", "sankale", "tialal", "lemayian",
+    "leshan", "sironka", "parsaloi",
+    # International / English
+    "john", "peter", "david", "james", "james", "joseph", "samuel", "daniel",
+    "george", "paul", "stephen", "michael", "charles", "francis", "patrick",
+    "simon", "anthony", "benard", "bernard", "brian", "collins", "dennis",
+    "duncan", "elijah", "eric", "evans", "felix", "geoffrey", "gideon",
+    "isaac", "kelvin", "kennedy", "kevin", "martin", "moses", "nicholas",
+    "philip", "richard", "robert", "solomon", "thomas", "timothy", "victor",
+    "vincent", "wilson", "isaiah", "jackson", "jacob", "jeremiah", "joshua",
+    "julius", "leonard", "lawrence", "mark", "nelson", "oscar", "raphael",
+    "reuben", "ronald", "tom", "william", "willy", "abel", "andrew",
+}
+
+# Some given names are commonly unisex in Kenya; keep them unresolved so the
+# caller can decide (defaults to "M") rather than mis-gendering.
+_UNISEX_NAMES = {"baraka", "amani", "imani", "neema", "upendo", "furaha"}
+
+
+def _infer_gender(name):
+    """Infer director gender ("M"/"F") from a name; "" if unknown.
+
+    Companies House never returns officer gender, so XBINDER relies on this.
+    Accepts "SURNAME, Forename Middle" (CH/Excel format) or "Forename Surname".
+    """
+    if not name:
+        return ""
+
+    raw = str(name).strip()
+    if not raw:
+        return ""
+
+    def _tok(text):
+        toks = [re.sub(r"[^A-Za-z']", "", t).lower() for t in text.split()]
+        return [t for t in toks if len(t) > 1]
+
+    # Split surname from forenames. CH format is "SURNAME, Forename Middle".
+    if "," in raw:
+        surname_part, forename_part = raw.split(",", 1)
+        forename_tokens = _tok(forename_part)
+        surname_tokens = _tok(surname_part)
+    else:
+        # No comma: assume "Forename ... Surname"; first token is the forename.
+        toks = _tok(raw)
+        forename_tokens = toks[:1]
+        surname_tokens = toks[1:]
+
+    # Forenames are the strongest signal; fall back to the surname (Kenyan
+    # surnames are frequently gendered too) only if forenames are inconclusive.
+    candidates = forename_tokens + surname_tokens
+    if not candidates:
+        return ""
+
+    # 1) Exact dictionary match (skip unisex names).
+    for tok in candidates:
+        if tok in _UNISEX_NAMES:
+            continue
+        if tok in _FEMALE_NAMES:
+            return "F"
+        if tok in _MALE_NAMES:
+            return "M"
+
+    # 2) Conservative Kenyan morphological fallbacks.
+    for tok in candidates:
+        if tok in _UNISEX_NAMES:
+            continue
+        # Kalenjin: female "chep-/jep-/jel-/jer-", male "kip-/kib-/kir-".
+        if tok.startswith(("chep", "jep", "jel", "jer")):
+            return "F"
+        if tok.startswith(("kip", "kib", "kir")):
+            return "M"
+
+    return ""
+
+
 def find_companies_by_nationality(nationality, count=1):
     """Find companies with directors of a given nationality, up to `count` results."""
     nat_lower = nationality.lower()
