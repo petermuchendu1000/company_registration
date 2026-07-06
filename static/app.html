@@ -492,6 +492,32 @@
     }
     .field input:focus { border-color: var(--blue); }
 
+    /* ── Year-of-registration multi-select ── */
+    .year-select { position: relative; }
+    .year-toggle {
+      width: 100%; display: flex; align-items: center; justify-content: space-between;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; color: var(--text); font-size: 13px; cursor: pointer;
+      transition: border-color .15s;
+    }
+    .year-toggle:hover { border-color: var(--blue); }
+    .year-toggle .year-caret { color: var(--muted); font-size: 11px; }
+    .year-menu {
+      display: none; position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; right: 0;
+      max-height: 220px; overflow-y: auto; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 6px; padding: 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    }
+    .year-menu.open { display: block; }
+    .year-actions {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 2px 4px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border);
+    }
+    .year-actions button { background: none; border: none; color: var(--blue); font-size: 12px; cursor: pointer; padding: 0; }
+    .year-opt { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; font-size: 13px; cursor: pointer; }
+    .year-opt:hover { background: var(--border); }
+    .year-opt input { width: auto; margin: 0; cursor: pointer; }
+
     /* ── Search results ── */
     .search-results { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
     .sri {
@@ -968,6 +994,16 @@
         <label>Search Companies House or enter number</label>
         <input id="add-input" type="text" placeholder="e.g. Acme Limited or 12345678" autocomplete="off" />
       </div>
+      <div class="field">
+        <label>Year of registration (optional)</label>
+        <div class="year-select">
+          <button type="button" class="year-toggle" id="year-toggle" onclick="toggleYearMenu(event)">
+            <span id="year-label">All years</span>
+            <span class="year-caret">▾</span>
+          </button>
+          <div class="year-menu" id="year-menu"></div>
+        </div>
+      </div>
       <div id="add-status" style="font-size:12px;color:var(--muted);min-height:16px;"></div>
       <div class="search-results" id="add-results"></div>
     </div>
@@ -1085,6 +1121,7 @@ const S = {
   addDebounce: null,
   sidebarDebounce: null,
   notesDebounce: null,
+  addYears: new Set(),
 };
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -2304,6 +2341,9 @@ function copyLog() {
 // ── Add Company Modal ─────────────────────────────────────────────────────────
 
 function openAddModal() {
+  buildYearMenu();
+  S.addYears.clear();
+  updateYearLabel();
   document.getElementById("add-overlay").classList.add("open");
   setTimeout(() => document.getElementById("add-input").focus(), 50);
 }
@@ -2313,6 +2353,58 @@ function closeAddModal() {
   document.getElementById("add-input").value = "";
   document.getElementById("add-results").innerHTML = "";
   document.getElementById("add-status").textContent = "";
+  document.getElementById("year-menu").classList.remove("open");
+  S.addYears.clear();
+  updateYearLabel();
+}
+
+// ── Year-of-registration multi-select ──────────────────────────────────────
+function buildYearMenu() {
+  const menu = document.getElementById("year-menu");
+  if (menu.dataset.built) return;            // build once
+  const now = new Date().getFullYear();
+  let html = `<div class="year-actions">
+      <button type="button" onclick="clearYears(event)">Clear</button>
+      <span style="font-size:11px;color:var(--muted)">Select one or more</span>
+    </div>`;
+  for (let y = now; y >= 1990; y--) {
+    html += `<label class="year-opt">
+      <input type="checkbox" value="${y}" onchange="onYearToggle(this)"> ${y}
+    </label>`;
+  }
+  menu.innerHTML = html;
+  menu.dataset.built = "1";
+}
+
+function toggleYearMenu(e) {
+  e.stopPropagation();
+  document.getElementById("year-menu").classList.toggle("open");
+}
+
+function onYearToggle(cb) {
+  if (cb.checked) S.addYears.add(cb.value);
+  else            S.addYears.delete(cb.value);
+  updateYearLabel();
+  const q = document.getElementById("add-input").value.trim();
+  if (q.length >= 2) { clearTimeout(S.addDebounce); S.addDebounce = setTimeout(() => doAddSearch(q), 120); }
+}
+
+function clearYears(e) {
+  e.stopPropagation();
+  S.addYears.clear();
+  document.querySelectorAll("#year-menu input[type=checkbox]").forEach(c => c.checked = false);
+  updateYearLabel();
+  const q = document.getElementById("add-input").value.trim();
+  if (q.length >= 2) { clearTimeout(S.addDebounce); S.addDebounce = setTimeout(() => doAddSearch(q), 120); }
+}
+
+function updateYearLabel() {
+  const lbl = document.getElementById("year-label");
+  if (!lbl) return;
+  const yrs = [...S.addYears].sort();
+  lbl.textContent = yrs.length === 0 ? "All years"
+    : yrs.length <= 3 ? yrs.join(", ")
+    : `${yrs.length} years selected`;
 }
 
 document.getElementById("add-input").addEventListener("input", e => {
@@ -2331,7 +2423,8 @@ async function doAddSearch(q) {
   const status = document.getElementById("add-status");
   const el     = document.getElementById("add-results");
   try {
-    const resp    = await api("GET", `/api/v2/company/search?q=${encodeURIComponent(q)}`);
+    const yearsQ  = S.addYears.size ? `&years=${[...S.addYears].join(",")}` : "";
+    const resp    = await api("GET", `/api/v2/company/search?q=${encodeURIComponent(q)}${yearsQ}`);
     // Support both old array shape and new {results, ch_error} shape
     const results = Array.isArray(resp) ? resp : (resp.results || []);
     const chErr   = Array.isArray(resp) ? null  : resp.ch_error;
@@ -2350,23 +2443,24 @@ async function doAddSearch(q) {
       const badge = r.source === "local"
         ? `<span class="badge badge-green">${r.n_done}/7 done</span>`
         : `<span class="badge badge-gray">Companies House</span>`;
-      return `<div class="sri" data-cn="${x(r.cn)}" data-name="${x(r.name)}">
+      const yr = r.year ? ` · Reg. ${x(r.year)}` : "";
+      return `<div class="sri" data-cn="${x(r.cn)}" data-name="${x(r.name)}" data-doc="${x(r.date_of_creation || r.year || "")}">
         <div>
           <div class="sri-name">${x(r.name)}</div>
-          <div class="sri-sub">${r.cn}${r.directors ? " · " + x(r.directors.split(";")[0]) : ""}</div>
+          <div class="sri-sub">${r.cn}${yr}${r.directors ? " · " + x(r.directors.split(";")[0]) : ""}</div>
         </div>
         <div class="sri-right">${badge}</div>
       </div>`;
     }).join("");
     el.querySelectorAll(".sri[data-cn]").forEach(row => {
-      row.addEventListener("click", () => addCompany(row.dataset.cn, row.dataset.name));
+      row.addEventListener("click", () => addCompany(row.dataset.cn, row.dataset.name, row.dataset.doc));
     });
   } catch(e) {
     status.textContent = "Search failed: " + e.message;
   }
 }
 
-async function addCompany(cn, name) {
+async function addCompany(cn, name, doc) {
   const existing = S.companies.find(c => c.cn === cn);
   if (existing) {
     closeAddModal();
@@ -2375,7 +2469,7 @@ async function addCompany(cn, name) {
     return;
   }
   try {
-    const r = await api("POST", "/api/v2/company/add", { cn, name });
+    const r = await api("POST", "/api/v2/company/add", { cn, name, date_of_creation: doc || "" });
     toast(r.status === "added" ? `Added: ${name}` : `Already exists: ${name}`, "success");
     closeAddModal();
     await loadCompanies();
@@ -2413,6 +2507,14 @@ document.getElementById("status-filter").addEventListener("change", e => {
 
 document.getElementById("add-overlay").addEventListener("click", e => {
   if (e.target === document.getElementById("add-overlay")) closeAddModal();
+});
+
+// Close the year dropdown when clicking anywhere outside it
+document.addEventListener("click", e => {
+  const menu = document.getElementById("year-menu");
+  if (menu && menu.classList.contains("open") && !e.target.closest(".year-select")) {
+    menu.classList.remove("open");
+  }
 });
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
