@@ -27,6 +27,8 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
 
+import db  # Supabase (PostgreSQL) data-access layer — source of truth
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 def _banner(title: str) -> None:
@@ -61,10 +63,8 @@ def stage_match(dry_run: bool = False) -> None:
     _banner("STAGE 2 — Domain matching")
     import requests
     import xml.etree.ElementTree as ET
-    import openpyxl
     import re
 
-    EXCEL_PATH = BASE_DIR / "pipeline_output" / "companies_pipeline.xlsx"
     API_URL = "https://api.namecheap.com/xml.response"
     NS = {"nc": "http://api.namecheap.com/xml.response"}
 
@@ -118,50 +118,36 @@ def stage_match(dry_run: bool = False) -> None:
     domains = [d.get("Name") for d in root.findall(".//nc:Domain", NS) if d.get("Name")]
     print(f"  Namecheap domains: {domains}")
 
-    wb = openpyxl.load_workbook(EXCEL_PATH)
-    ws = wb.active
-    headers = [str(ws.cell(1, c).value or "").strip().lower() for c in range(1, ws.max_column + 1)]
-
-    def _col(name: str):
-        for i, h in enumerate(headers, 1):
-            if h.strip() == name.lower():
-                return i
-        return None
-
-    cn_col     = _col("company number")
-    name_col   = _col("company name")
-    domain_col = _col("domain")
-
-    companies = []
-    for row in range(2, ws.max_row + 1):
-        cn   = str(ws.cell(row, cn_col).value or "").strip()
-        name = str(ws.cell(row, name_col).value or "").strip()
-        dom  = str(ws.cell(row, domain_col).value or "").strip() if domain_col else ""
+    # Load companies from Supabase
+    companies = []   # (cn, name, existing_domain)
+    for _r in db.all_rows():
+        cn   = str(_r.get("Company Number") or "").strip()
+        name = str(_r.get("Company Name") or "").strip()
+        dom  = str(_r.get("Domain") or "").strip()
         if cn and name:
-            companies.append((row, cn, name, dom))
+            companies.append((cn, name, dom))
 
     written = 0
     for domain in domains:
         dom_core   = _domain_core(domain)
         best_score = 0.0
-        best_row   = None
         best_cn    = ""
         best_name  = ""
-        for row_idx, cn, name, existing in companies:
+        for cn, name, existing in companies:
             score = _score(_normalize(name), dom_core)
             if score > best_score:
-                best_score = score; best_row = row_idx; best_cn = cn; best_name = name
+                best_score = score; best_cn = cn; best_name = name
 
         if best_score >= 0.5:
             print(f"  MATCH  {domain!r:42s} -> {best_cn} {best_name!r}  (score={best_score:.2f})")
             if not dry_run:
-                for row_idx, cn, name, existing in companies:
+                for cn, name, existing in companies:
                     if cn == best_cn and not existing:
-                        ws.cell(row_idx, domain_col).value = domain
+                        db.update_row(cn, {"Domain": domain})
                         # Update in-memory list too so next iteration sees it
                         companies = [
-                            (r, c, n, domain if c == best_cn else d)
-                            for r, c, n, d in companies
+                            (c, n, domain if c == best_cn else d)
+                            for c, n, d in companies
                         ]
                         written += 1
                         break
@@ -169,14 +155,9 @@ def stage_match(dry_run: bool = False) -> None:
             print(f"  SKIP   {domain!r:42s} (best score={best_score:.2f})")
 
     if dry_run:
-        print("\n  [Dry run — not writing to Excel]")
+        print("\n  [Dry run — not writing]")
     else:
-        try:
-            wb.save(EXCEL_PATH)
-            print(f"\n  {written} new domain(s) written to Excel.")
-        except PermissionError:
-            print("\n  ERROR: Close the Excel file and re-run.")
-            sys.exit(1)
+        print(f"\n  {written} new domain(s) written to Supabase.")
 
 
 # ── Stage 3: Dev email setup ─────────────────────────────────────────────────
@@ -185,9 +166,7 @@ def stage_email(dry_run: bool = False) -> None:
     _banner("STAGE 3 — dev@ email forwarding")
     import requests
     import xml.etree.ElementTree as ET
-    import openpyxl
 
-    EXCEL_PATH = BASE_DIR / "pipeline_output" / "companies_pipeline.xlsx"
     APPS_DIR   = BASE_DIR / "pipeline_output" / "apps"
     API_URL    = "https://api.namecheap.com/xml.response"
     NS         = {"nc": "http://api.namecheap.com/xml.response"}
@@ -200,34 +179,14 @@ def stage_email(dry_run: bool = False) -> None:
             "ClientIp": os.environ["NAMECHEAP_CLIENT_IP"],
         }
 
-    wb = openpyxl.load_workbook(EXCEL_PATH, data_only=True, read_only=True)
-    ws = wb.active
-    headers = [str(ws.cell(1, c).value or "").strip().lower() for c in range(1, ws.max_column + 1)]
-
-    def _col(name: str):
-        for i, h in enumerate(headers, 1):
-            if h.strip() == name.lower():
-                return i
-        return None
-
-    cn_col     = _col("company number")
-    domain_col = _col("domain")
-    email_col  = _col("assigned email")
-    wb.close()
-
-    # Re-open for iteration
-    wb = openpyxl.load_workbook(EXCEL_PATH, data_only=True, read_only=True)
-    ws = wb.active
+    # Load companies with a domain + assigned email from Supabase
     companies = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or not row[cn_col - 1]:
-            continue
-        cn     = str(row[cn_col - 1]).strip()
-        domain = str(row[domain_col - 1] or "").strip() if domain_col else ""
-        email  = str(row[email_col - 1] or "").strip() if email_col else ""
+    for r in db.all_rows():
+        cn     = str(r.get("Company Number") or "").strip()
+        domain = str(r.get("Domain") or "").strip()
+        email  = str(r.get("Assigned Email") or "").strip()
         if cn and domain and email:
             companies.append((cn, domain, email))
-    wb.close()
 
     print(f"  Companies with domains: {len(companies)}")
 
@@ -300,7 +259,6 @@ def stage_director_id(
         print("  SKIP — set XBINDER_EMAIL and XBINDER_PASSWORD in .env")
         return
 
-    import openpyxl
     import requests as req_lib
     sys.path.insert(0, str(BASE_DIR))
     from xbinder_auto import (
@@ -308,7 +266,6 @@ def stage_director_id(
         split_combined_id_image, load_director_profile,
     )
 
-    EXCEL_PATH    = BASE_DIR / "pipeline_output" / "companies_pipeline.xlsx"
     COMPANIES_DIR = BASE_DIR / "pipeline_output" / "companies"
     CH_BASE       = "https://api.company-information.service.gov.uk"
     ch_key        = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
@@ -319,49 +276,26 @@ def stage_director_id(
         folder = f"{cn} - {safe}" if safe else cn
         return COMPANIES_DIR / folder
 
-    # ── Load company numbers from Excel ──────────────────────────────────────
-    wb = openpyxl.load_workbook(EXCEL_PATH, data_only=True, read_only=True)
-    ws = wb.active
-    headers = [str(ws.cell(1, c).value or "").strip().lower()
-               for c in range(1, ws.max_column + 1)]
-
-    def _col(name):
-        for i, h in enumerate(headers, 1):
-            if h == name.lower():
-                return i
-        return None
-
-    cn_col   = _col("company number")
-    name_col = _col("company name")
-    dir_col  = _col("directors")
-    nat_col  = _col("director nationalities")
-    dob_col  = _col("director dob")          # may be None in older Excel files
-    gen_col  = _col("director gender")       # may be None in older Excel files
-
-    if not cn_col:
-        print("  ERROR: 'Company Number' column not found in Excel.")
-        wb.close()
-        return
-
+    # ── Load director candidates from Supabase ──────────────────────────────
     candidates: list[tuple[str, str, str, str, str]] = []  # (cn, director_name, dob_str, director_gender, co_name)
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or not row[cn_col - 1]:
+    for _row in db.all_rows():
+        cn = str(_row.get("Company Number") or "").strip()
+        if not cn:
             continue
-        cn = str(row[cn_col - 1]).strip()
         if cn.isdigit() and len(cn) < 8:
             cn = cn.zfill(8)
         if company_numbers and cn not in company_numbers:
             continue
-        co_name  = str(row[name_col - 1] or "").strip() if name_col else ""
+        co_name  = str(_row.get("Company Name") or "").strip()
         id_dir   = _co_dir(cn, co_name) / "director_id"
         if (id_dir / "ID Front.jpeg").exists():
             print(f"  [{cn}] OK — ID already downloaded")
             continue
 
-        dirs = str(row[dir_col - 1] or "").strip() if dir_col else ""
-        nats = str(row[nat_col - 1] or "").strip() if nat_col else ""
-        dobs = str(row[dob_col - 1] or "").strip() if dob_col else ""
-        gens = str(row[gen_col - 1] or "").strip() if gen_col else ""
+        dirs = str(_row.get("Directors") or "").strip()
+        nats = str(_row.get("Director Nationalities") or "").strip()
+        dobs = str(_row.get("Director DOB") or "").strip()
+        gens = str(_row.get("Director Gender") or "").strip()
 
         if not dirs:
             continue
@@ -386,7 +320,6 @@ def stage_director_id(
             continue  # no Kenyan director
 
         candidates.append((cn, director_name, director_dob, director_gender, co_name))
-    wb.close()
 
     # ── Backfill DOB from CH API for any candidate missing it ────────────────
     if not ch_key and any(not dob for _, _, dob, _, _ in candidates):

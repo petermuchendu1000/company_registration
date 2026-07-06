@@ -33,6 +33,12 @@ except ModuleNotFoundError:
 
 load_dotenv()
 
+import db  # Supabase (PostgreSQL) data-access layer — source of truth
+try:
+    db.ensure_schema()
+except Exception as _e:
+    print(f"  [db] ensure_schema failed: {_e}")
+
 API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY")
 BASE_URL = "https://api.company-information.service.gov.uk"
 
@@ -695,7 +701,11 @@ def download_certificate(company_number, output_dir):
 # ============================================================
 # Step 5: Save to Excel
 def _write_results_to_excel(all_results, output_path):
-    """Write results directly to Excel (no merge with existing)."""
+    """Write results directly to Excel (no merge with existing). Also upserts to Supabase."""
+    try:
+        db.save_results(all_results)
+    except Exception as e:
+        print(f"  [db] save_results failed: {e}")
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
 
@@ -787,7 +797,11 @@ def _write_results_to_excel(all_results, output_path):
 # ============================================================
 
 def save_to_excel(results, output_path):
-    """Save pipeline results to an Excel file. Merges with existing data."""
+    """Persist pipeline results to Supabase (source of truth); also writes an xlsx export."""
+    try:
+        db.save_results(results)
+    except Exception as e:
+        print(f"  [db] save_results failed: {e}")
     try:
         import openpyxl
     except ImportError:
@@ -907,7 +921,11 @@ def save_to_excel(results, output_path):
 
 
 def _load_existing_results(excel_path):
-    """Load existing pipeline results from an Excel file."""
+    """Load existing pipeline results from Supabase (source of truth)."""
+    try:
+        return db.all_results()
+    except Exception as e:
+        print(f"  [db] all_results failed, falling back to Excel: {e}")
     import openpyxl
     wb = openpyxl.load_workbook(excel_path, read_only=True)
     ws = wb["Companies Pipeline"] if "Companies Pipeline" in wb.sheetnames else wb.active
@@ -996,11 +1014,15 @@ def _load_existing_results(excel_path):
 
 
 def load_existing_company_numbers():
-    """Get set of company numbers already in the Excel file."""
-    if not os.path.exists(EXCEL_FILE):
-        return set()
-    existing = _load_existing_results(EXCEL_FILE)
-    return {r["company_number"] for r in existing}
+    """Get set of company numbers already in Supabase."""
+    try:
+        return db.company_numbers()
+    except Exception as e:
+        print(f"  [db] company_numbers failed: {e}")
+        if not os.path.exists(EXCEL_FILE):
+            return set()
+        existing = _load_existing_results(EXCEL_FILE)
+        return {r["company_number"] for r in existing}
 
 
 # ============================================================

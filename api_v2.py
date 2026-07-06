@@ -11,12 +11,20 @@ from pathlib import Path
 import openpyxl
 from flask import Blueprint, jsonify, request, send_file, abort
 
+import db  # Supabase (PostgreSQL) data-access layer — source of truth
+
 api_v2 = Blueprint("api_v2", __name__)
 
 ROOT     = Path(__file__).parent
 EXCEL    = ROOT / "pipeline_output" / "companies_pipeline.xlsx"
 COMP_DIR = ROOT / "pipeline_output" / "companies"
 DL_BASE  = ROOT / "pipeline_output"          # files must be under here to download
+
+# Ensure the companies table exists on startup (idempotent).
+try:
+    db.ensure_schema()
+except Exception as _e:
+    print(f"  [db] ensure_schema at import failed: {_e}")
 
 STAGE_ORDER = ["details", "duns", "certificate", "domain", "email", "director_id", "app"]
 
@@ -145,125 +153,40 @@ def _co_dir(cn: str, name: str = "") -> Path:
     return COMP_DIR / folder
 
 
-_ROWS_CACHE: tuple[float, list[dict]] | None = None  # (mtime, rows)
+_ROWS_CACHE = None  # retained for backwards-compat; caching now lives in db.py
 
 
 def _all_rows() -> list[dict]:
-    global _ROWS_CACHE
-    if not EXCEL.exists():
-        return []
+    """All company rows from Supabase, keyed by the original header labels."""
     try:
-        mtime = EXCEL.stat().st_mtime
-        if _ROWS_CACHE and _ROWS_CACHE[0] == mtime:
-            return _ROWS_CACHE[1]
-        wb = openpyxl.load_workbook(EXCEL, data_only=True, read_only=True)
-        ws = wb.active
-        rows_iter = ws.iter_rows(values_only=True)
-        hdr_row = next(rows_iter, None)
-        if not hdr_row:
-            wb.close()
-            return []
-        hdr = [str(v or "").strip() for v in hdr_row]
-        rows = []
-        for row in rows_iter:
-            if not row or not row[0]: continue
-            rows.append({hdr[i]: (row[i] if i < len(row) else None) for i in range(len(hdr))})
-        wb.close()
-        _ROWS_CACHE = (mtime, rows)
-        return rows
-    except Exception:
+        return db.all_rows()
+    except Exception as e:
+        print(f"  [db] all_rows failed: {e}")
         return []
 
 
 def _find_row(cn: str) -> dict | None:
-    for r in _all_rows():
-        if _cn8(r.get("Company Number")) == _cn8(cn):
-            return r
-    return None
+    try:
+        return db.find_row(cn)
+    except Exception as e:
+        print(f"  [db] find_row failed: {e}")
+        return None
 
 
 def _update_excel_row(cn: str, updates: dict) -> None:
-    if not EXCEL.exists(): return
+    """Update a company's columns in Supabase (name kept for call-site compat)."""
     try:
-        wb = openpyxl.load_workbook(EXCEL)
-        ws = wb.active
-        hdr = [str(c.value or "").strip() for c in ws[1]]
-
-        def _col(name: str) -> int:
-            for i, h in enumerate(hdr):
-                if h.lower() == name.lower(): return i + 1
-            nc = len(hdr) + 1
-            ws.cell(row=1, column=nc, value=name)
-            hdr.append(name)
-            return nc
-
-        cn_idx = next((i for i, h in enumerate(hdr) if h.lower() == "company number"), None)
-        if cn_idx is None: wb.close(); return
-
-        for row in ws.iter_rows(min_row=2):
-            if _cn8(row[cn_idx].value) == _cn8(cn):
-                for k, v in updates.items():
-                    ws.cell(row=row[cn_idx].row, column=_col(k), value=v)
-                break
-
-        wb.save(EXCEL)
-        wb.close()
+        db.update_row(cn, updates)
     except Exception as e:
-        print(f"  [excel-update] {e}")
+        print(f"  [db] update_row failed: {e}")
 
 
 def _add_company_row(cn: str, name: str, date_of_creation: str = "") -> None:
-    """Insert a new row for a company that isn't in Excel yet."""
-    if not EXCEL.exists():
-        os.makedirs(EXCEL.parent, exist_ok=True)
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Companies Pipeline"
-        from openpyxl.styles import Font, PatternFill, Alignment
-        headers = [
-            "No.", "Company Number", "Company Name", "Status", "Type",
-            "Date of Creation", "SIC Codes", "Address",
-            "Directors", "Director Nationalities", "Director DOB", "Director Gender",
-            "Buvei First Name", "Buvei Last Name",
-            "DUNS Number", "DUNS Status", "DUNS Email Used",
-            "Certificate Downloaded", "Certificate Path",
-            "Domain", "Domain Status", "Domain Cost",
-            "Assigned Email", "Account Name",
-        ]
-        ws.append(headers)
-        fill = PatternFill(start_color="003078", end_color="003078", fill_type="solid")
-        font = Font(color="FFFFFF", bold=True, size=11)
-        for cell in ws[1]:
-            cell.fill = fill; cell.font = font
-        wb.save(EXCEL)
-        wb.close()
-
-    wb = openpyxl.load_workbook(EXCEL)
-    ws = wb.active
-    hdr = [str(c.value or "").strip() for c in ws[1]]
-
-    # Check duplicate
-    cn_idx = next((i for i, h in enumerate(hdr) if h.lower() == "company number"), None)
-    if cn_idx is not None:
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row and _cn8(row[cn_idx]) == _cn8(cn):
-                wb.close(); return  # already exists
-
-    def col(name):
-        for i, h in enumerate(hdr):
-            if h.lower() == name.lower(): return i + 1
-        return None
-
-    nr = ws.max_row + 1
-    no = nr - 1
-    if col("No."): ws.cell(row=nr, column=col("No."), value=no)
-    if col("Company Number"): ws.cell(row=nr, column=col("Company Number"), value=cn)
-    if col("Company Name"): ws.cell(row=nr, column=col("Company Name"), value=name)
-    if date_of_creation and col("Date of Creation"):
-        ws.cell(row=nr, column=col("Date of Creation"), value=date_of_creation)
-
-    wb.save(EXCEL)
-    wb.close()
+    """Insert a new company into Supabase if it isn't there yet."""
+    try:
+        db.add_company(cn, name, date_of_creation)
+    except Exception as e:
+        print(f"  [db] add_company failed: {e}")
 
 
 # ── Stage status ───────────────────────────────────────────────────────────

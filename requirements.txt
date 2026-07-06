@@ -3,6 +3,7 @@ openpyxl
 Pillow
 playwright
 playwright-stealth
+psycopg2-binary
 python-dotenv
 qrcode
 requests
