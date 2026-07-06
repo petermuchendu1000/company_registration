@@ -24,39 +24,39 @@ android {
 
 // >>> GENERATED FLAVORS START — managed by apps/generator/generate.py
     signingConfigs {
-        create("c02591663") {
-            storeFile = file("keystores/02591663.jks")
-            storePassword = "81b69ec2d57ac457c45efe79cf380dc1"
+        create("c15046885") {
+            storeFile = file("keystores/15046885.jks")
+            storePassword = "474c4992049490b5e1cc76a7430659f4"
             keyAlias = "upload"
-            keyPassword = "81b69ec2d57ac457c45efe79cf380dc1"
+            keyPassword = "474c4992049490b5e1cc76a7430659f4"
         }
     }
 
     productFlavors {
-        create("c02591663") {
+        create("c15046885") {
             dimension = "brand"
-            applicationId = "uk.co51stmargaretsroad.app"
-            versionCode = 6
-            versionName = "1.3"
-            buildConfigField("String", "COMPANY_NAME", "\"51 St Margarets Road\"")
-            buildConfigField("String", "COMPANY_NUMBER", "\"02591663\"")
-            buildConfigField("String", "SUPPORT_EMAIL", "\"dev@51stmargarets.site\"")
-            buildConfigField("String", "COMPANY_DOMAIN", "\"51stmargarets.site\"")
+            applicationId = "uk.kenukautospares.app"
+            versionCode = 1
+            versionName = "1.0"
+            buildConfigField("String", "COMPANY_NAME", "\"Kenuk Autospares\"")
+            buildConfigField("String", "COMPANY_NUMBER", "\"15046885\"")
+            buildConfigField("String", "SUPPORT_EMAIL", "\"dev@kenuk-autospares.online\"")
+            buildConfigField("String", "COMPANY_DOMAIN", "\"kenuk-autospares.online\"")
             buildConfigField("String", "PRIVACY_POLICY_URL", "\"\"")
-            buildConfigField("String", "CONTACT_ADDRESS", "\"Flat 1 St. Margarets Road, Twickenham, TW1 2LL, England\"")
-            buildConfigField("String", "ROLE_NOUN", "\"visit\"")
-            buildConfigField("String", "ROLE_VERB_START", "\"Start Visit\"")
-            buildConfigField("String", "ROLE_VERB_END", "\"End Visit\"")
-            buildConfigField("String", "EXPORT_TITLE", "\"Site Visit Log\"")
-            buildConfigField("String", "CALC_TITLE", "\"Service Charge Calculator\"")
-            buildConfigField("String", "CALC_LABEL_A", "\"Annual Budget (£)\"")
-            buildConfigField("String", "CALC_LABEL_B", "\"Number of Units\"")
-            buildConfigField("String", "CALC_FORMULA", "\"DIVIDE\"")
-            buildConfigField("String", "CALC_RESULT_LABEL", "\"Charge Per Unit\"")
-            buildConfigField("String", "INFO_TITLE", "\"Residents Management Reference\"")
-            buildConfigField("String", "INFO_ITEMS_JSON", "\"[{\\\"k\\\":\\\"LTA 1985 Section 19\\\",\\\"v\\\":\\\"Charges must be reasonable\\\"},{\\\"k\\\":\\\"Section 20 Threshold\\\",\\\"v\\\":\\\"Consult if works > \\\\u00a3250/unit\\\"},{\\\"k\\\":\\\"Ground Rent Cap\\\",\\\"v\\\":\\\"Peppercorn (Leasehold Reform 2022)\\\"},{\\\"k\\\":\\\"Right to Manage\\\",\\\"v\\\":\\\"50% leaseholder participation\\\"},{\\\"k\\\":\\\"Sinking Fund\\\",\\\"v\\\":\\\"Optional but recommended\\\"},{\\\"k\\\":\\\"Management Company AGM\\\",\\\"v\\\":\\\"Required under articles\\\"},{\\\"k\\\":\\\"Accounts Filing\\\",\\\"v\\\":\\\"9 months after year-end (ltd)\\\"},{\\\"k\\\":\\\"Directors' Duties\\\",\\\"v\\\":\\\"Companies Act 2006 s.172\\\"}]\"")
-            buildConfigField("String", "ACTION_LABEL", "\"Contact Management\"")
-            signingConfig = signingConfigs.getByName("c02591663")
+            buildConfigField("String", "CONTACT_ADDRESS", "\"7 Upper Ox Hill, Purton, Swindon, SN5 4GG, England\"")
+            buildConfigField("String", "ROLE_NOUN", "\"shift\"")
+            buildConfigField("String", "ROLE_VERB_START", "\"Start Shift\"")
+            buildConfigField("String", "ROLE_VERB_END", "\"End Shift\"")
+            buildConfigField("String", "EXPORT_TITLE", "\"Shift Log\"")
+            buildConfigField("String", "CALC_TITLE", "\"Hours & Rate Calculator\"")
+            buildConfigField("String", "CALC_LABEL_A", "\"Hourly Rate (£)\"")
+            buildConfigField("String", "CALC_LABEL_B", "\"Hours\"")
+            buildConfigField("String", "CALC_FORMULA", "\"MULTIPLY\"")
+            buildConfigField("String", "CALC_RESULT_LABEL", "\"Total Amount\"")
+            buildConfigField("String", "INFO_TITLE", "\"Business Reference\"")
+            buildConfigField("String", "INFO_ITEMS_JSON", "\"[{\\\"k\\\":\\\"Corporation Tax\\\",\\\"v\\\":\\\"19%\\\\u201325% (2024)\\\"},{\\\"k\\\":\\\"VAT Standard Rate\\\",\\\"v\\\":\\\"20%\\\"},{\\\"k\\\":\\\"VAT Registration\\\",\\\"v\\\":\\\"\\\\u00a390,000 turnover threshold\\\"},{\\\"k\\\":\\\"National Living Wage\\\",\\\"v\\\":\\\"\\\\u00a311.44/hr (25+, Apr 2024)\\\"},{\\\"k\\\":\\\"Annual Investment Allow.\\\",\\\"v\\\":\\\"\\\\u00a31,000,000 / year\\\"},{\\\"k\\\":\\\"Small Business Rates Relief\\\",\\\"v\\\":\\\"100% for RV \\\\u2264 \\\\u00a312,000\\\"},{\\\"k\\\":\\\"Companies House Filing\\\",\\\"v\\\":\\\"Annual confirmation statement\\\"},{\\\"k\\\":\\\"PAYE Registration\\\",\\\"v\\\":\\\"Required before first payroll\\\"}]\"")
+            buildConfigField("String", "ACTION_LABEL", "\"Get in Touch\"")
+            signingConfig = signingConfigs.getByName("c15046885")
         }
     }
     // <<< GENERATED FLAVORS END
