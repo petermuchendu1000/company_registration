@@ -212,7 +212,7 @@ def _update_excel_row(cn: str, updates: dict) -> None:
         print(f"  [excel-update] {e}")
 
 
-def _add_company_row(cn: str, name: str) -> None:
+def _add_company_row(cn: str, name: str, date_of_creation: str = "") -> None:
     """Insert a new row for a company that isn't in Excel yet."""
     if not EXCEL.exists():
         os.makedirs(EXCEL.parent, exist_ok=True)
@@ -259,6 +259,8 @@ def _add_company_row(cn: str, name: str) -> None:
     if col("No."): ws.cell(row=nr, column=col("No."), value=no)
     if col("Company Number"): ws.cell(row=nr, column=col("Company Number"), value=cn)
     if col("Company Name"): ws.cell(row=nr, column=col("Company Name"), value=name)
+    if date_of_creation and col("Date of Creation"):
+        ws.cell(row=nr, column=col("Date of Creation"), value=date_of_creation)
 
     wb.save(EXCEL)
     wb.close()
@@ -796,6 +798,11 @@ def v2_search():
         return jsonify([])
 
     ql = q.lower()
+
+    # Optional year-of-registration filter: ?years=2020,2021,2022
+    years_param = request.args.get("years", "").strip()
+    year_filter = {y.strip() for y in years_param.split(",") if y.strip()}
+
     rows = _all_rows()
     results = []
 
@@ -805,6 +812,7 @@ def v2_search():
         dirs  = str(row.get("Directors") or "")
         if ql in cn or ql in name.lower() or ql in dirs.lower():
             stages = _compute_stages(cn, row)
+            doc    = str(row.get("Date of Creation") or "")
             results.append({
                 "cn":        cn,
                 "name":      name,
@@ -812,7 +820,13 @@ def v2_search():
                 "n_done":    sum(stages.values()),
                 "stages":    stages,
                 "source":    "local",
+                "date_of_creation": doc,
+                "year":      doc[:4] if doc else "",
             })
+
+    # Apply year filter to local matches (so CH fallback still runs if none match)
+    if year_filter:
+        results = [r for r in results if (r.get("year") or "") in year_filter]
 
     # Fall back to CH API if nothing found locally
     ch_error = None
@@ -820,11 +834,15 @@ def v2_search():
         try:
             sys.path.insert(0, str(ROOT))
             from run_pipeline import ch_get
-            data = ch_get(f"/search/companies?q={q}&items_per_page=8")
+            data = ch_get(f"/search/companies?q={q}&items_per_page=20")
             for item in (data.get("items") or []):
                 if item.get("company_status", "").lower() != "active": continue
                 item_cn = _cn8(item.get("company_number", ""))
                 if any(c["cn"] == item_cn for c in results): continue
+                inc = item.get("date_of_creation", "") or ""
+                yr  = inc[:4] if inc else ""
+                if year_filter and yr not in year_filter:
+                    continue
                 results.append({
                     "cn":        item_cn,
                     "name":      item.get("title", ""),
@@ -832,6 +850,8 @@ def v2_search():
                     "n_done":    0,
                     "stages":    {s: False for s in STAGE_ORDER},
                     "source":    "ch_api",
+                    "date_of_creation": inc,
+                    "year":      yr,
                 })
         except Exception as e:
             ch_error = str(e)
@@ -848,6 +868,8 @@ def v2_add_company():
     data = request.get_json(force=True) or {}
     cn   = _cn8(data.get("cn") or data.get("company_number") or "")
     name = str(data.get("name") or data.get("company_name") or "").strip()
+    # Year of registration (accept full date, or bare year from the dropdown)
+    doc  = str(data.get("date_of_creation") or data.get("year") or "").strip()
     if not cn or cn == "00000000":
         return jsonify({"error": "company_number required"}), 400
 
@@ -855,8 +877,8 @@ def v2_add_company():
     if existing:
         return jsonify({"status": "exists", "cn": cn, "name": str(existing.get("Company Name") or "")}), 200
 
-    _add_company_row(cn, name)
-    return jsonify({"status": "added", "cn": cn, "name": name}), 201
+    _add_company_row(cn, name, doc)
+    return jsonify({"status": "added", "cn": cn, "name": name, "date_of_creation": doc}), 201
 
 
 @api_v2.route("/api/v2/company/<cn>/version", methods=["POST"])
