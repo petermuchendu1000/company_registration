@@ -518,6 +518,27 @@
     .year-opt:hover { background: var(--border); }
     .year-opt input { width: auto; margin: 0; cursor: pointer; }
 
+    /* ── Edit-fields modal ── */
+    .modal.modal-edit { max-width: 640px; width: 94%; }
+    .edit-group { margin-bottom: 18px; }
+    .edit-group > h3 {
+      font-size: 11px; font-weight: 700; color: var(--blue);
+      text-transform: uppercase; letter-spacing: .6px;
+      margin: 0 0 10px; padding-bottom: 5px; border-bottom: 1px solid var(--border);
+    }
+    .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+    .edit-grid .field { margin-bottom: 0; }
+    .edit-grid .field.full { grid-column: 1 / -1; }
+    .edit-grid .field textarea {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 10px; color: var(--text); font-size: 13px;
+      outline: none; resize: vertical; min-height: 40px; font-family: inherit;
+    }
+    .edit-grid .field textarea:focus { border-color: var(--blue); }
+    .field-flash { animation: fieldFlash 1.6s ease; }
+    @keyframes fieldFlash { 0%,40% { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(47,129,247,.3); } 100% {} }
+    @media (max-width: 520px) { .edit-grid { grid-template-columns: 1fr; } }
+
     /* ── Search results ── */
     .search-results { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
     .sri {
@@ -1013,6 +1034,23 @@
   </div>
 </div>
 
+<!-- Edit Fields Modal -->
+<div class="overlay" id="edit-overlay">
+  <div class="modal modal-edit">
+    <div class="modal-head">
+      <h2>Edit fields — manual override</h2>
+      <button class="modal-x" onclick="closeEditModal()">✕</button>
+    </div>
+    <div class="modal-body" id="edit-body">
+      <!-- built by openEditModal() -->
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" id="edit-save-btn" onclick="saveEditFields()">Save changes</button>
+    </div>
+  </div>
+</div>
+
 <!-- File Preview Modal -->
 <div class="overlay" id="preview-overlay" onclick="if(event.target===this)closePreview()">
   <div class="preview-modal">
@@ -1329,6 +1367,7 @@ function renderDetail() {
       </div>
       <div class="detail-actions">
         <button class="btn btn-ghost btn-sm" onclick="refreshDetail()">↻ Refresh</button>
+        <button class="btn btn-ghost btn-sm" onclick="openEditModal()">✎ Edit fields</button>
         <button class="btn btn-primary" onclick="runAll()" id="run-all-btn" ${running?"disabled":""}>
           ${running ? `<span class="spinner-sm"></span> Running…` : "▶ Run All Pending"}
         </button>
@@ -1521,6 +1560,11 @@ function buildStageRow(s, d) {
   if (status === "running") {
     btns = `<button class="btn btn-sm btn-ghost" onclick="viewLog('${s.key}')">View Log</button>`;
   } else {
+    // Manual override for field-driven stages (set/replace the value by hand)
+    const FIELD_STAGE_FOCUS = { details: "name", duns: "duns", domain: "domain", email: "email" };
+    if (FIELD_STAGE_FOCUS[s.key]) {
+      btns += `<button class="btn btn-sm btn-ghost" onclick="openEditModal('${FIELD_STAGE_FOCUS[s.key]}')" title="Set manually">✎ Set</button>`;
+    }
     if (jobSt === "failed") {
       btns += `<button class="btn btn-sm btn-danger" onclick="viewLog('${s.key}')">Error Log</button>`;
     } else if (jobSt === "done" || done) {
@@ -2479,7 +2523,107 @@ async function addCompany(cn, name, doc) {
   }
 }
 
-// ── Sidebar filters & search ──────────────────────────────────────────────────
+// ── Edit Fields (manual override) ─────────────────────────────────────────
+const EDIT_FIELDS = [
+  { group: "Company", fields: [
+    ["name","Company Name",{full:true}],
+    ["status","Status"],
+    ["type","Type"],
+    ["date_of_creation","Date of Registration"],
+    ["sic","SIC Codes"],
+    ["address","Address",{ta:true,full:true}],
+  ]},
+  { group: "Directors", fields: [
+    ["directors","Directors (semicolon-separated)",{ta:true,full:true}],
+    ["nationalities","Nationalities (;-sep)"],
+    ["genders","Genders (;-sep, M/F)"],
+    ["dobs","DOBs (;-sep, YYYY-MM-DD)"],
+    ["buvei_first","Buvei First Name"],
+    ["buvei_last","Buvei Last Name"],
+  ]},
+  { group: "DUNS / D&B", fields: [
+    ["duns","DUNS Number"],
+    ["duns_status","DUNS Status"],
+    ["duns_email","DUNS Email Used"],
+    ["dnb_name","D&B Legal Name"],
+    ["dnb_address","D&B Address",{ta:true,full:true}],
+  ]},
+  { group: "Domain", fields: [
+    ["domain","Domain"],
+    ["domain_status","Domain Status"],
+    ["domain_cost","Domain Cost"],
+  ]},
+  { group: "Email & Play Console", fields: [
+    ["email","Assigned Email"],
+    ["account_name","Account Name"],
+    ["developer_email","Developer Email"],
+    ["dev_email_forwarding","Dev Email Forwarding"],
+    ["google_txt_status","Google TXT Status"],
+    ["organization_phone","Organization Phone"],
+  ]},
+  { group: "Certificate", fields: [
+    ["certificate_path","Certificate Path",{ta:true,full:true}],
+  ]},
+];
+
+function openEditModal(focusKey) {
+  if (!S.detail) { toast("Select a company first", "info"); return; }
+  const d = S.detail;
+  const body = document.getElementById("edit-body");
+  body.innerHTML = `<div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5;">
+      Manually set or override any field for <b>${x(d.name || d.cn)}</b>. Leaving a field blank clears it.
+      Saving applies immediately across the interface — stage status, info cards and the Play Console section
+      all recompute from these values.</div>` +
+    EDIT_FIELDS.map(g => `
+      <div class="edit-group">
+        <h3>${g.group}</h3>
+        <div class="edit-grid">
+          ${g.fields.map(([key, label, opt]) => {
+            opt = opt || {};
+            const val  = d[key] != null ? String(d[key]) : "";
+            const full = opt.full ? " full" : "";
+            const input = opt.ta
+              ? `<textarea id="ef-${key}" data-key="${key}">${x(val)}</textarea>`
+              : `<input type="text" id="ef-${key}" data-key="${key}" value="${x(val)}" autocomplete="off">`;
+            return `<div class="field${full}"><label>${label}</label>${input}</div>`;
+          }).join("")}
+        </div>
+      </div>`).join("");
+  document.getElementById("edit-overlay").classList.add("open");
+  if (focusKey) {
+    setTimeout(() => {
+      const el = document.getElementById("ef-" + focusKey);
+      if (el) { el.focus(); el.classList.add("field-flash"); el.scrollIntoView({ block: "center", behavior: "smooth" }); }
+    }, 60);
+  }
+}
+
+function closeEditModal() {
+  document.getElementById("edit-overlay").classList.remove("open");
+}
+
+async function saveEditFields() {
+  if (!S.detail) return;
+  const cn = S.detail.cn;
+  const fields = {};
+  document.querySelectorAll("#edit-body [data-key]").forEach(el => { fields[el.dataset.key] = el.value; });
+  const btn = document.getElementById("edit-save-btn");
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    const r = await api("POST", `/api/v2/company/${cn}/fields`, { fields });
+    toast(`Saved ${r.updated?.length || 0} field(s)`, "success");
+    closeEditModal();
+    await refreshDetail();
+    await loadCompanies();
+  } catch (e) {
+    toast("Save failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
+// ── Sidebar filters & search ─────────────────────────────────────────────────
 
 document.getElementById("sidebar-search").addEventListener("input", e => {
   clearTimeout(S.sidebarDebounce);
@@ -2507,6 +2651,10 @@ document.getElementById("status-filter").addEventListener("change", e => {
 
 document.getElementById("add-overlay").addEventListener("click", e => {
   if (e.target === document.getElementById("add-overlay")) closeAddModal();
+});
+
+document.getElementById("edit-overlay").addEventListener("click", e => {
+  if (e.target === document.getElementById("edit-overlay")) closeEditModal();
 });
 
 // Close the year dropdown when clicking anywhere outside it
