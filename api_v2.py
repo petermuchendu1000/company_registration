@@ -28,6 +28,41 @@ except Exception as _e:
 
 STAGE_ORDER = ["details", "duns", "certificate", "domain", "email", "director_id", "app"]
 
+# UI field key -> spreadsheet/DB header label. Whitelist of manually-editable fields.
+# Editing any of these overrides the value the pipeline would otherwise produce;
+# because stage completion + the info panels are all derived from the company row,
+# a manual edit propagates across the whole interface on the next fetch.
+EDITABLE_FIELDS = {
+    "name":                 "Company Name",
+    "status":               "Status",
+    "type":                 "Type",
+    "date_of_creation":     "Date of Creation",
+    "sic":                  "SIC Codes",
+    "address":              "Address",
+    "directors":            "Directors",
+    "nationalities":        "Director Nationalities",
+    "dobs":                 "Director DOB",
+    "genders":              "Director Gender",
+    "buvei_first":          "Buvei First Name",
+    "buvei_last":           "Buvei Last Name",
+    "duns":                 "DUNS Number",
+    "duns_status":          "DUNS Status",
+    "duns_email":           "DUNS Email Used",
+    "dnb_name":             "D&B Legal Name",
+    "dnb_address":          "D&B Address",
+    "domain":               "Domain",
+    "domain_status":        "Domain Status",
+    "domain_cost":          "Domain Cost",
+    "email":                "Assigned Email",
+    "account_name":         "Account Name",
+    "developer_email":      "Developer Email",
+    "dev_email_forwarding": "Dev Email Forwarding",
+    "google_txt_status":    "Google TXT Status",
+    "organization_phone":   "Organization Phone",
+    "certificate_path":     "Certificate Path",
+    "certificate_downloaded": "Certificate Downloaded",
+}
+
 # ── Job state ──────────────────────────────────────────────────────────────
 _JOBS: dict[str, dict] = {}   # key: "{cn8}:{stage}"
 _LOCK = threading.Lock()
@@ -629,9 +664,22 @@ def v2_company(cn):
         "buvei_first":      str(row.get("Buvei First Name") or ""),
         "buvei_last":       str(row.get("Buvei Last Name") or ""),
         "duns":             str(row.get("DUNS Number") or ""),
+        "duns_status":      str(row.get("DUNS Status") or ""),
+        "duns_email":       str(row.get("DUNS Email Used") or ""),
+        "dnb_name":         str(row.get("D&B Legal Name") or ""),
+        "dnb_address":      str(row.get("D&B Address") or ""),
+        "date_of_creation": str(row.get("Date of Creation") or ""),
         "domain":           str(row.get("Domain") or ""),
+        "domain_status":    str(row.get("Domain Status") or ""),
+        "domain_cost":      str(row.get("Domain Cost") or ""),
         "email":            str(row.get("Assigned Email") or ""),
         "account_name":     str(row.get("Account Name") or ""),
+        "developer_email":  str(row.get("Developer Email") or ""),
+        "dev_email_forwarding": str(row.get("Dev Email Forwarding") or ""),
+        "google_txt_status": str(row.get("Google TXT Status") or ""),
+        "organization_phone": str(row.get("Organization Phone") or ""),
+        "certificate_path": str(row.get("Certificate Path") or ""),
+        "certificate_downloaded": str(row.get("Certificate Downloaded") or ""),
         "application_id":   app_id,
         "privacy_policy_url": privacy_url,
         "company_status":   str(row.get("Company Status") or "").strip() or "Active",
@@ -650,6 +698,36 @@ def v2_company(cn):
         "play_console":     _build_pc(cn, name, app_id, manifest, a_email, domain_val),
         "jobs":             jobs,
     })
+
+
+@api_v2.route("/api/v2/company/<cn>/fields", methods=["POST"])
+def v2_update_fields(cn):
+    """Manually override one or more company fields. Values are written to the
+    company row; stage status and all info panels are recomputed on the next
+    fetch, so a manual edit (e.g. setting Domain) propagates everywhere."""
+    row = _find_row(cn)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    body = request.get_json(force=True, silent=True) or {}
+    fields = body.get("fields", body)
+    if not isinstance(fields, dict):
+        return jsonify({"error": "fields must be an object"}), 400
+
+    updates = {}
+    for key, val in fields.items():
+        header = EDITABLE_FIELDS.get(key)
+        if header is None:
+            continue
+        updates[header] = "" if val is None else str(val).strip()
+
+    if not updates:
+        return jsonify({"error": "no editable fields provided"}), 400
+
+    _update_excel_row(cn, updates)
+    fresh  = _find_row(cn) or {}
+    stages = _compute_stages(cn, fresh)
+    return jsonify({"status": "ok", "cn": cn,
+                    "updated": list(updates.keys()), "stages": stages}), 200
 
 
 @api_v2.route("/api/v2/company/<cn>/stage/<stage>", methods=["POST"])
