@@ -10,7 +10,9 @@ Never point this at production.
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
+import tempfile
 import uuid
 
 import db
@@ -170,6 +172,49 @@ def test_operator_cross_tenant_view() -> None:
     rows = db.all_rows_all_tenants()
     assert all("Tenant Id" in r for r in rows)
     assert any(r["Company Number"] == "77777777" for r in rows)
+
+
+def test_legacy_orphan_column_is_rescued(tmp_name: str = "") -> None:
+    """
+    A populated cell whose column header was deleted must be carried over,
+    not dropped. companies_pipeline.xlsx column 24 held an earlier
+    Company Status; it belongs in Company Notes, without disturbing the
+    current status.
+    """
+    import openpyxl
+
+    tenant = db.create_tenant(_slug("orphan"))
+    headers = [h for h, _ in db.COLUMNS]
+    # Blank header at index 24, exactly like the legacy workbook.
+    headers = headers[:24] + [""] + headers[24:]
+    row = [""] * len(headers)
+    row[headers.index("Company Number")] = "02591663"
+    row[headers.index("Company Name")] = "Legacy Co"
+    row[headers.index("Company Status")] = "Declined"
+    row[24] = "Terminated"
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(headers)
+    ws.append(row)
+    path = pathlib.Path(tempfile.gettempdir()) / f"orphan-{uuid.uuid4().hex[:8]}.xlsx"
+    wb.save(path)
+    try:
+        report = db.unmapped_excel_values(str(path))
+        assert len(report) == 1, report
+        assert report[0]["rescued_into"] == "Company Notes", report[0]
+
+        db.import_from_excel(tenant, str(path))
+        got = db.find_row(tenant, "02591663")
+        assert got["Company Notes"] == "Previous Company Status: Terminated", got["Company Notes"]
+        assert got["Company Status"] == "Declined", "current status must survive untouched"
+
+        # Re-importing must not append the note twice.
+        db.import_from_excel(tenant, str(path))
+        got = db.find_row(tenant, "02591663")
+        assert got["Company Notes"] == "Previous Company Status: Terminated", "note duplicated"
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def main() -> int:

@@ -646,6 +646,49 @@ def save_results(tenant_id: int, results: list[dict]) -> int:
 
 
 # ── One-time migration from the old Excel file ──────────────────────────────
+# Workbook columns that match no mapped header — because the header was
+# renamed, or (as here) deleted outright. Each entry routes the value into a
+# column where it is kept instead of dropped. The key is the header text, or
+# the zero-based column index when there is no header left to match on.
+#
+# An index is positional, so it only holds for the legacy workbook it was
+# recorded against; `check-excel` surfaces anything new.
+LEGACY_COLUMN_ALIASES: dict[object, tuple[str, str]] = {
+    # companies_pipeline.xlsx column 24 (between "Account Name" and
+    # "Company Status") held an earlier Company Status. The row already
+    # carries a current one, so the old value is appended as a note rather
+    # than overwriting it.
+    24: ("Company Notes", "Previous Company Status: {value}"),
+}
+
+# Matches api_v2's server-side validation of the notes field.
+NOTES_MAX = 1000
+
+
+def _apply_aliases(rec: dict, row: tuple, hdr: list[str]) -> dict:
+    """
+    Build {destination header: text} for this row's aliased orphan columns.
+
+    Returns an empty dict when the row has none.
+    """
+    out: dict[str, list[str]] = {}
+    for key, (dest, template) in LEGACY_COLUMN_ALIASES.items():
+        if isinstance(key, int):
+            idx = key
+            # Only treat it as an orphan if the header really is unmapped.
+            if idx >= len(hdr) or hdr[idx] in {h for h, _ in COLUMNS}:
+                continue
+        else:
+            idx = hdr.index(key) if key in hdr else -1
+            if idx < 0:
+                continue
+        value = row[idx] if idx < len(row) else None
+        if value in (None, ""):
+            continue
+        out.setdefault(dest, []).append(template.format(value=value))
+    return {dest: "\n".join(lines) for dest, lines in out.items()}
+
+
 def unmapped_excel_values(path: str) -> list[dict]:
     """
     Report populated cells the import would NOT carry over.
@@ -653,6 +696,9 @@ def unmapped_excel_values(path: str) -> list[dict]:
     A workbook edited by hand can grow a column whose header was renamed or
     deleted. Those cells map to nothing and would vanish silently, so list
     them instead and let a human decide where they belong.
+
+    Columns covered by LEGACY_COLUMN_ALIASES are rescued by the import and so
+    are reported separately, as "rescued" rather than dropped.
     """
     import openpyxl
 
@@ -673,11 +719,13 @@ def unmapped_excel_values(path: str) -> list[dict]:
             continue
         for i in orphan_cols:
             if i < len(row) and row[i] not in (None, ""):
+                alias = LEGACY_COLUMN_ALIASES.get(i) or LEGACY_COLUMN_ALIASES.get(hdr[i])
                 found.append({
                     "row": n,
                     "company_number": _cn8(row[1]) if len(row) > 1 else "",
                     "column": hdr[i] or f"<no header, index {i}>",
                     "value": row[i],
+                    "rescued_into": alias[0] if alias else None,
                 })
     wb.close()
     return found
@@ -709,6 +757,17 @@ def import_from_excel(tenant_id: int, path: str) -> int:
                     continue
                 if header in rec:
                     set_cols[col] = _norm(rec.get(header))
+
+            # Route orphan columns to their destination, appending so an
+            # existing value in that column is never overwritten.
+            for dest, text in _apply_aliases(rec, row, hdr).items():
+                col = HEADER_TO_COL.get(dest)
+                if not col:
+                    continue
+                existing = set_cols.get(col) or ""
+                merged = f"{existing}\n{text}".strip() if existing else text
+                set_cols[col] = merged[:NOTES_MAX] if col == "company_notes" else merged
+
             cols = list(set_cols.keys())
             vals = list(set_cols.values())
             placeholders = ", ".join(["%s"] * len(cols))
@@ -952,9 +1011,16 @@ if __name__ == "__main__":
             raise SystemExit(f"No such tenant: {args.tenant_slug}")
         orphans = unmapped_excel_values(args.path)
         print(f"Imported {import_from_excel(t['id'], args.path)} rows into {t['slug']}.")
-        if orphans:
-            print(f"\n{len(orphans)} cell(s) were NOT imported (no matching column):")
-            for o in orphans:
+        rescued = [o for o in orphans if o["rescued_into"]]
+        dropped = [o for o in orphans if not o["rescued_into"]]
+        if rescued:
+            print(f"\n{len(rescued)} headerless cell(s) carried over:")
+            for o in rescued:
+                print(f"  row {o['row']} company {o['company_number']}: "
+                      f"{o['column']} = {o['value']!r} -> {o['rescued_into']}")
+        if dropped:
+            print(f"\n{len(dropped)} cell(s) were NOT imported (no matching column):")
+            for o in dropped:
                 print(f"  row {o['row']} company {o['company_number']}: "
                       f"{o['column']} = {o['value']!r}")
             print("The workbook still holds them; place them by hand if they matter.")
@@ -968,11 +1034,10 @@ if __name__ == "__main__":
         orphans = unmapped_excel_values(args.path)
         if not orphans:
             print("Every populated cell maps to a known column.")
-        else:
-            print(f"{len(orphans)} cell(s) would NOT be imported:")
-            for o in orphans:
-                print(f"  row {o['row']} company {o['company_number']}: "
-                      f"{o['column']} = {o['value']!r}")
+        for o in orphans:
+            where = f"-> {o['rescued_into']}" if o["rescued_into"] else "-> DROPPED"
+            print(f"  row {o['row']} company {o['company_number']}: "
+                  f"{o['column']} = {o['value']!r}  {where}")
     elif args.cmd == "list-tenants":
         for t in list_tenants():
             print(f"{t['id']:>4}  {t['slug']:<24} {len(all_rows(t['id'], use_cache=False)):>5} companies")
