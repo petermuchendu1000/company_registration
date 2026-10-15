@@ -120,7 +120,7 @@ def stage_match(dry_run: bool = False) -> None:
 
     # Load companies from Supabase
     companies = []   # (cn, name, existing_domain)
-    for _r in db.all_rows():
+    for _r in db.all_rows(db.current_tenant_id()):
         cn   = str(_r.get("Company Number") or "").strip()
         name = str(_r.get("Company Name") or "").strip()
         dom  = str(_r.get("Domain") or "").strip()
@@ -143,7 +143,7 @@ def stage_match(dry_run: bool = False) -> None:
             if not dry_run:
                 for cn, name, existing in companies:
                     if cn == best_cn and not existing:
-                        db.update_row(cn, {"Domain": domain})
+                        db.update_row(db.current_tenant_id(), cn, {"Domain": domain})
                         # Update in-memory list too so next iteration sees it
                         companies = [
                             (c, n, domain if c == best_cn else d)
@@ -181,7 +181,7 @@ def stage_email(dry_run: bool = False) -> None:
 
     # Load companies with a domain + assigned email from Supabase
     companies = []
-    for r in db.all_rows():
+    for r in db.all_rows(db.current_tenant_id()):
         cn     = str(r.get("Company Number") or "").strip()
         domain = str(r.get("Domain") or "").strip()
         email  = str(r.get("Assigned Email") or "").strip()
@@ -278,7 +278,7 @@ def stage_director_id(
 
     # ── Load director candidates from Supabase ──────────────────────────────
     candidates: list[tuple[str, str, str, str, str]] = []  # (cn, director_name, dob_str, director_gender, co_name)
-    for _row in db.all_rows():
+    for _row in db.all_rows(db.current_tenant_id()):
         cn = str(_row.get("Company Number") or "").strip()
         if not cn:
             continue

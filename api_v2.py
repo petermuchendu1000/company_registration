@@ -194,7 +194,7 @@ _ROWS_CACHE = None  # retained for backwards-compat; caching now lives in db.py
 def _all_rows() -> list[dict]:
     """All company rows from Supabase, keyed by the original header labels."""
     try:
-        return db.all_rows()
+        return db.all_rows(db.current_tenant_id())
     except Exception as e:
         print(f"  [db] all_rows failed: {e}")
         return []
@@ -202,7 +202,7 @@ def _all_rows() -> list[dict]:
 
 def _find_row(cn: str) -> dict | None:
     try:
-        return db.find_row(cn)
+        return db.find_row(db.current_tenant_id(), cn)
     except Exception as e:
         print(f"  [db] find_row failed: {e}")
         return None
@@ -211,7 +211,7 @@ def _find_row(cn: str) -> dict | None:
 def _update_excel_row(cn: str, updates: dict) -> None:
     """Update a company's columns in Supabase (name kept for call-site compat)."""
     try:
-        db.update_row(cn, updates)
+        db.update_row(db.current_tenant_id(), cn, updates)
     except Exception as e:
         print(f"  [db] update_row failed: {e}")
 
@@ -219,7 +219,7 @@ def _update_excel_row(cn: str, updates: dict) -> None:
 def _add_company_row(cn: str, name: str, date_of_creation: str = "") -> None:
     """Insert a new company into Supabase if it isn't there yet."""
     try:
-        db.add_company(cn, name, date_of_creation)
+        db.add_company(db.current_tenant_id(), cn, name, date_of_creation)
     except Exception as e:
         print(f"  [db] add_company failed: {e}")
 

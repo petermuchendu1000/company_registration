@@ -703,7 +703,7 @@ def download_certificate(company_number, output_dir):
 def _write_results_to_excel(all_results, output_path):
     """Write results directly to Excel (no merge with existing). Also upserts to Supabase."""
     try:
-        db.save_results(all_results)
+        db.save_results(db.current_tenant_id(), all_results)
     except Exception as e:
         print(f"  [db] save_results failed: {e}")
     import openpyxl
@@ -799,7 +799,7 @@ def _write_results_to_excel(all_results, output_path):
 def save_to_excel(results, output_path):
     """Persist pipeline results to Supabase (source of truth); also writes an xlsx export."""
     try:
-        db.save_results(results)
+        db.save_results(db.current_tenant_id(), results)
     except Exception as e:
         print(f"  [db] save_results failed: {e}")
     try:
@@ -923,7 +923,7 @@ def save_to_excel(results, output_path):
 def _load_existing_results(excel_path):
     """Load existing pipeline results from Supabase (source of truth)."""
     try:
-        return db.all_results()
+        return db.all_results(db.current_tenant_id())
     except Exception as e:
         print(f"  [db] all_results failed, falling back to Excel: {e}")
     import openpyxl
@@ -1016,7 +1016,7 @@ def _load_existing_results(excel_path):
 def load_existing_company_numbers():
     """Get set of company numbers already in Supabase."""
     try:
-        return db.company_numbers()
+        return db.company_numbers(db.current_tenant_id())
     except Exception as e:
         print(f"  [db] company_numbers failed: {e}")
         if not os.path.exists(EXCEL_FILE):

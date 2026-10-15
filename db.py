@@ -9,18 +9,47 @@ of the codebase already uses (e.g. "Company Number", "Company Name",
 Connection string is read from the environment (DATABASE_URL, falling back to
 SUPABASE_DB_URL). Never hard-code credentials — put them in .env (git-ignored).
 
+Multi-tenancy
+-------------
+Every company belongs to exactly one tenant, and `tenant_id` is a REQUIRED
+first argument on every data function. There is deliberately no default: a
+call site that forgets it raises TypeError instead of quietly returning
+another client's companies. The primary key is (tenant_id, company_number),
+so two tenants can hold the same UK company without colliding.
+
+Cross-tenant reads exist only through the explicitly named
+`*_all_tenants()` helpers, which are for operator/admin views.
+
 Public API:
-    ensure_schema()                       -> create the companies table if absent
-    all_rows()                            -> list[dict] keyed by header labels
-    find_row(cn)                          -> dict | None
-    add_company(cn, name, date="")        -> bool (True if inserted)
-    update_row(cn, {header: value, ...})  -> None (upserts the company if new)
-    save_results(results)                 -> int (upsert nested pipeline results)
-    import_from_excel(path)               -> int (one-time migration helper)
-    company_numbers()                     -> set[str]
+    ensure_schema()                          -> create/migrate all tables
+
+    tenants:
+    create_tenant(slug, name)                -> int (tenant id)
+    get_tenant(tenant_id) / get_tenant_by_slug(slug) -> dict | None
+    list_tenants()                           -> list[dict]
+
+    users:
+    create_user(tenant_id, email, password, role="client") -> int
+    verify_user(email, password)             -> dict | None
+    get_user(user_id)                        -> dict | None
+
+    companies (all tenant-scoped):
+    all_rows(tenant_id)                      -> list[dict] keyed by header labels
+    find_row(tenant_id, cn)                  -> dict | None
+    add_company(tenant_id, cn, name, date="")-> bool (True if inserted)
+    update_row(tenant_id, cn, {header: val}) -> None (upserts if new)
+    save_results(tenant_id, results)         -> int
+    import_from_excel(tenant_id, path)       -> int
+    company_numbers(tenant_id)               -> set[str]
+    all_results(tenant_id)                   -> list[dict]
+
+    operator-only:
+    all_rows_all_tenants()                   -> list[dict] (+ "Tenant Id")
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import threading
 import time
@@ -76,6 +105,13 @@ COLUMNS: list[tuple[str, str]] = [
 HEADER_TO_COL = {h: c for h, c in COLUMNS}
 COL_TO_HEADER = {c: h for h, c in COLUMNS}
 TABLE = "companies"
+TENANTS_TABLE = "tenants"
+USERS_TABLE = "users"
+
+VALID_ROLES = ("client", "operator")
+
+# Tenant every pre-tenancy row is migrated into.
+DEFAULT_TENANT_SLUG = "default"
 
 
 # ── Connection ──────────────────────────────────────────────────────────────
@@ -113,36 +149,152 @@ def _norm(value):
 
 
 # ── Schema ──────────────────────────────────────────────────────────────────
-def ensure_schema() -> None:
-    cols_sql = []
+def _companies_ddl() -> str:
+    cols_sql = ["tenant_id INTEGER NOT NULL"]
     for header, col in COLUMNS:
         if col == "company_number":
-            cols_sql.append(f"{col} TEXT PRIMARY KEY")
+            cols_sql.append(f"{col} TEXT NOT NULL")
         elif col == "row_no":
             cols_sql.append(f"{col} INTEGER")
         else:
             cols_sql.append(f"{col} TEXT")
-    ddl = (
+    return (
         f"CREATE TABLE IF NOT EXISTS {TABLE} (\n  "
         + ",\n  ".join(cols_sql)
-        + ",\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);"
+        + ",\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        + f",\n  PRIMARY KEY (tenant_id, company_number)\n);"
     )
+
+
+def _pk_columns(cur, table: str) -> list[str]:
+    cur.execute(
+        """
+        SELECT a.attname
+          FROM pg_index i
+          JOIN pg_attribute a
+            ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+         WHERE i.indrelid = %s::regclass AND i.indisprimary
+         ORDER BY array_position(i.indkey, a.attnum)
+        """,
+        (table,),
+    )
+    return [r["attname"] for r in cur.fetchall()]
+
+
+def _table_exists(cur, table: str) -> bool:
+    cur.execute("SELECT to_regclass(%s) AS t", (table,))
+    return cur.fetchone()["t"] is not None
+
+
+def ensure_schema() -> None:
+    """
+    Create every table, and migrate a pre-tenancy `companies` table in place.
+
+    Safe to run repeatedly. The migration path adds tenant_id, backfills it
+    with the default tenant, and swaps the primary key from (company_number)
+    to (tenant_id, company_number).
+    """
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(ddl)
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {TENANTS_TABLE} (
+              id          SERIAL PRIMARY KEY,
+              slug        TEXT NOT NULL UNIQUE,
+              name        TEXT NOT NULL DEFAULT '',
+              created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {USERS_TABLE} (
+              id             SERIAL PRIMARY KEY,
+              tenant_id      INTEGER NOT NULL REFERENCES {TENANTS_TABLE}(id) ON DELETE CASCADE,
+              email          TEXT NOT NULL UNIQUE,
+              password_hash  TEXT NOT NULL,
+              role           TEXT NOT NULL DEFAULT 'client',
+              created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS users_tenant_idx ON {USERS_TABLE} (tenant_id)"
+        )
+
+        # Default tenant, so a pre-tenancy table has somewhere to land.
+        cur.execute(
+            f"INSERT INTO {TENANTS_TABLE} (slug, name) VALUES (%s, %s) "
+            f"ON CONFLICT (slug) DO NOTHING",
+            (DEFAULT_TENANT_SLUG, "Default"),
+        )
+        cur.execute(
+            f"SELECT id FROM {TENANTS_TABLE} WHERE slug = %s", (DEFAULT_TENANT_SLUG,)
+        )
+        default_tenant = int(cur.fetchone()["id"])
+
+        fresh = not _table_exists(cur, TABLE)
+        cur.execute(_companies_ddl())
+
+        if not fresh:
+            # CREATE TABLE IF NOT EXISTS leaves an existing table untouched, so
+            # bring it up to the current COLUMNS list before anything selects
+            # from it. Adding a column to COLUMNS is then all a change needs.
+            for _header, col in COLUMNS:
+                if col == "company_number":
+                    continue  # part of the primary key; always present
+                cur.execute(
+                    f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS {col} "
+                    f"{'INTEGER' if col == 'row_no' else 'TEXT'}"
+                )
+
+            # Pre-tenancy table: add the column, backfill, then swap the PK.
+            cur.execute(
+                f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS tenant_id INTEGER"
+            )
+            cur.execute(
+                f"UPDATE {TABLE} SET tenant_id = %s WHERE tenant_id IS NULL",
+                (default_tenant,),
+            )
+            cur.execute(f"ALTER TABLE {TABLE} ALTER COLUMN tenant_id SET NOT NULL")
+
+            if _pk_columns(cur, TABLE) != ["tenant_id", "company_number"]:
+                cur.execute(
+                    f"ALTER TABLE {TABLE} DROP CONSTRAINT IF EXISTS {TABLE}_pkey"
+                )
+                cur.execute(
+                    f"ALTER TABLE {TABLE} "
+                    f"ADD CONSTRAINT {TABLE}_pkey PRIMARY KEY (tenant_id, company_number)"
+                )
+
+        cur.execute(
+            f"ALTER TABLE {TABLE} DROP CONSTRAINT IF EXISTS {TABLE}_tenant_fk"
+        )
+        cur.execute(
+            f"ALTER TABLE {TABLE} ADD CONSTRAINT {TABLE}_tenant_fk "
+            f"FOREIGN KEY (tenant_id) REFERENCES {TENANTS_TABLE}(id) ON DELETE CASCADE"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS companies_tenant_idx ON {TABLE} (tenant_id)"
+        )
         conn.commit()
     _invalidate()
 
 
 # ── Read cache (short TTL; invalidated on writes) ───────────────────────────
-_CACHE: dict = {"ts": 0.0, "rows": None}
+# Keyed by tenant. A single shared entry would hand one tenant's rows to the
+# next caller inside the TTL window, so the key is not optional.
+_CACHE: dict[int, tuple[float, list[dict]]] = {}
 _LOCK = threading.Lock()
 _TTL = 1.5  # seconds
 
 
-def _invalidate() -> None:
+def _invalidate(tenant_id: int | None = None) -> None:
+    """Drop cached rows for one tenant, or for all of them when None."""
     with _LOCK:
-        _CACHE["rows"] = None
-        _CACHE["ts"] = 0.0
+        if tenant_id is None:
+            _CACHE.clear()
+        else:
+            _CACHE.pop(int(tenant_id), None)
 
 
 def _row_to_headerdict(dbrow: dict) -> dict:
@@ -155,82 +307,206 @@ def _row_to_headerdict(dbrow: dict) -> dict:
     return out
 
 
-def all_rows(use_cache: bool = True) -> list[dict]:
-    with _LOCK:
-        if use_cache and _CACHE["rows"] is not None and (time.time() - _CACHE["ts"]) < _TTL:
-            return _CACHE["rows"]
+def _tid(tenant_id: int) -> int:
+    """Coerce and sanity-check a tenant id. Refuses None so scoping can't be skipped."""
+    if tenant_id is None:
+        raise ValueError("tenant_id is required")
+    value = int(tenant_id)
+    if value <= 0:
+        raise ValueError(f"invalid tenant_id: {tenant_id!r}")
+    return value
+
+
+# ── Current tenant (per request / per background job) ───────────────────────
+# Set once at the edge — by the auth layer for a request, or from the job
+# payload for a worker — then read by call sites that can't take the id
+# directly. Unset means raise, never "all tenants": a missed call site must
+# fail loudly rather than serve someone else's companies.
+_current_tenant: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "current_tenant", default=None,
+)
+
+
+def set_current_tenant(tenant_id: int | None) -> None:
+    _current_tenant.set(None if tenant_id is None else _tid(tenant_id))
+
+
+@contextlib.contextmanager
+def tenant_scope(tenant_id: int):
+    """Run a block bound to one tenant, restoring the previous one after."""
+    token = _current_tenant.set(_tid(tenant_id))
+    try:
+        yield
+    finally:
+        _current_tenant.reset(token)
+
+
+def current_tenant_id() -> int:
+    """
+    The tenant bound to this request or job.
+
+    Falls back to the tenant named by SINGLE_TENANT_SLUG when nothing is bound,
+    which keeps a single-client deployment working before the auth layer lands.
+    That fallback must be configured deliberately; without it, this raises.
+    """
+    bound = _current_tenant.get()
+    if bound is not None:
+        return bound
+
+    slug = (os.getenv("SINGLE_TENANT_SLUG") or "").strip().lower()
+    if slug:
+        cached = _SINGLE_TENANT_CACHE.get(slug)
+        if cached is None:
+            tenant = get_tenant_by_slug(slug)
+            if tenant is None:
+                raise RuntimeError(
+                    f"SINGLE_TENANT_SLUG={slug!r} but no such tenant exists. "
+                    f"Create it with: python db.py add-tenant {slug}"
+                )
+            cached = int(tenant["id"])
+            _SINGLE_TENANT_CACHE[slug] = cached
+        return cached
+
+    raise RuntimeError(
+        "No tenant bound to this request or job. Call db.set_current_tenant() "
+        "at the edge, use db.tenant_scope(...), or set SINGLE_TENANT_SLUG for a "
+        "single-client deployment."
+    )
+
+
+_SINGLE_TENANT_CACHE: dict[str, int] = {}
+
+
+def all_rows(tenant_id: int, use_cache: bool = True) -> list[dict]:
+    """Every company belonging to `tenant_id`, keyed by header label."""
+    tid = _tid(tenant_id)
+    if use_cache:
+        with _LOCK:
+            hit = _CACHE.get(tid)
+            if hit is not None and (time.time() - hit[0]) < _TTL:
+                return hit[1]
     cols = ", ".join(col for _, col in COLUMNS)
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"SELECT {cols} FROM {TABLE} "
-            f"ORDER BY row_no NULLS LAST, company_number"
+            f"SELECT {cols} FROM {TABLE} WHERE tenant_id = %s "
+            f"ORDER BY row_no NULLS LAST, company_number",
+            (tid,),
         )
         rows = [_row_to_headerdict(r) for r in cur.fetchall()]
     with _LOCK:
-        _CACHE["rows"] = rows
-        _CACHE["ts"] = time.time()
+        _CACHE[tid] = (time.time(), rows)
     return rows
 
 
-def find_row(cn: str) -> dict | None:
+def all_rows_all_tenants() -> list[dict]:
+    """
+    Every company across every tenant, each row carrying "Tenant Id".
+
+    Operator/admin views only — never reachable from a client-scoped request.
+    Deliberately uncached.
+    """
+    cols = ", ".join(col for _, col in COLUMNS)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT tenant_id, {cols} FROM {TABLE} "
+            f"ORDER BY tenant_id, row_no NULLS LAST, company_number"
+        )
+        out = []
+        for r in cur.fetchall():
+            row = _row_to_headerdict(r)
+            row["Tenant Id"] = r.get("tenant_id")
+            out.append(row)
+    return out
+
+
+def find_row(tenant_id: int, cn: str) -> dict | None:
+    """One company within a tenant. Queries directly rather than scanning."""
+    tid = _tid(tenant_id)
     target = _cn8(cn)
-    for r in all_rows():
-        if _cn8(r.get("Company Number")) == target:
-            return r
-    return None
+    if not target:
+        return None
+    cols = ", ".join(col for _, col in COLUMNS)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {cols} FROM {TABLE} WHERE tenant_id = %s AND company_number = %s",
+            (tid, target),
+        )
+        row = cur.fetchone()
+    return _row_to_headerdict(row) if row else None
 
 
-def company_numbers() -> set[str]:
-    return {_cn8(r.get("Company Number")) for r in all_rows() if r.get("Company Number")}
+def company_numbers(tenant_id: int) -> set[str]:
+    tid = _tid(tenant_id)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT company_number FROM {TABLE} WHERE tenant_id = %s", (tid,)
+        )
+        return {_cn8(r["company_number"]) for r in cur.fetchall() if r["company_number"]}
 
 
-def _next_row_no(cur) -> int:
-    cur.execute(f"SELECT COALESCE(MAX(row_no), 0) AS m FROM {TABLE}")
+def _next_row_no(cur, tenant_id: int) -> int:
+    """Row numbers run 1..n within each tenant, not globally."""
+    cur.execute(
+        f"SELECT COALESCE(MAX(row_no), 0) AS m FROM {TABLE} WHERE tenant_id = %s",
+        (tenant_id,),
+    )
     return int(cur.fetchone()["m"]) + 1
 
 
 # ── Writes ──────────────────────────────────────────────────────────────────
-def add_company(cn: str, name: str = "", date_of_creation: str = "") -> bool:
-    """Insert a new company. Returns True if inserted, False if it already exists."""
+def add_company(tenant_id: int, cn: str, name: str = "", date_of_creation: str = "") -> bool:
+    """
+    Insert a company for this tenant. Returns True if inserted, False if the
+    tenant already holds it. Another tenant holding the same company is not a
+    conflict.
+    """
+    tid = _tid(tenant_id)
     cn = _cn8(cn)
     if not cn or cn == "00000000":
         return False
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT 1 FROM {TABLE} WHERE company_number = %s", (cn,))
+        cur.execute(
+            f"SELECT 1 FROM {TABLE} WHERE tenant_id = %s AND company_number = %s",
+            (tid, cn),
+        )
         if cur.fetchone():
             return False
-        rn = _next_row_no(cur)
+        rn = _next_row_no(cur, tid)
         cur.execute(
-            f"INSERT INTO {TABLE} (company_number, company_name, date_of_creation, row_no) "
-            f"VALUES (%s, %s, %s, %s) ON CONFLICT (company_number) DO NOTHING",
-            (cn, _norm(name), _norm(date_of_creation), rn),
+            f"INSERT INTO {TABLE} (tenant_id, company_number, company_name, date_of_creation, row_no) "
+            f"VALUES (%s, %s, %s, %s, %s) ON CONFLICT (tenant_id, company_number) DO NOTHING",
+            (tid, cn, _norm(name), _norm(date_of_creation), rn),
         )
         conn.commit()
-    _invalidate()
+    _invalidate(tid)
     return True
 
 
-def update_row(cn: str, updates: dict) -> None:
-    """Update columns for a company (keys are header labels). Upserts if new."""
+def update_row(tenant_id: int, cn: str, updates: dict) -> None:
+    """Update columns for one of this tenant's companies. Upserts if new."""
+    tid = _tid(tenant_id)
     cn = _cn8(cn)
     if not cn:
         return
     set_cols = {}
     for header, value in updates.items():
         col = HEADER_TO_COL.get(header)
-        if col is None or col == "company_number":
+        if col is None or col in ("company_number", "tenant_id"):
             continue
         set_cols[col] = _norm(value)
     if not set_cols:
         return
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT 1 FROM {TABLE} WHERE company_number = %s", (cn,))
+        cur.execute(
+            f"SELECT 1 FROM {TABLE} WHERE tenant_id = %s AND company_number = %s",
+            (tid, cn),
+        )
         exists = cur.fetchone() is not None
         if not exists:
-            rn = _next_row_no(cur)
+            rn = _next_row_no(cur, tid)
             set_cols.setdefault("row_no", rn)
-            cols = ["company_number"] + list(set_cols.keys())
-            vals = [cn] + list(set_cols.values())
+            cols = ["tenant_id", "company_number"] + list(set_cols.keys())
+            vals = [tid, cn] + list(set_cols.values())
             placeholders = ", ".join(["%s"] * len(cols))
             cur.execute(
                 f"INSERT INTO {TABLE} ({', '.join(cols)}) VALUES ({placeholders})",
@@ -240,11 +516,11 @@ def update_row(cn: str, updates: dict) -> None:
             assignments = ", ".join(f"{c} = %s" for c in set_cols)
             cur.execute(
                 f"UPDATE {TABLE} SET {assignments}, updated_at = now() "
-                f"WHERE company_number = %s",
-                list(set_cols.values()) + [cn],
+                f"WHERE tenant_id = %s AND company_number = %s",
+                list(set_cols.values()) + [tid, cn],
             )
         conn.commit()
-    _invalidate()
+    _invalidate(tid)
 
 
 # Map a nested pipeline result dict (as produced by run_pipeline) to header labels.
@@ -325,13 +601,18 @@ def _headers_to_result(row: dict) -> dict:
     }
 
 
-def all_results() -> list[dict]:
-    """All companies as nested pipeline-result dicts (used by run_pipeline)."""
-    return [_headers_to_result(r) for r in all_rows(use_cache=False) if r.get("Company Number")]
+def all_results(tenant_id: int) -> list[dict]:
+    """This tenant's companies as nested pipeline-result dicts (run_pipeline)."""
+    return [
+        _headers_to_result(r)
+        for r in all_rows(tenant_id, use_cache=False)
+        if r.get("Company Number")
+    ]
 
 
-def save_results(results: list[dict]) -> int:
-    """Upsert a list of nested pipeline result dicts. Returns count processed."""
+def save_results(tenant_id: int, results: list[dict]) -> int:
+    """Upsert nested pipeline result dicts for one tenant. Returns count processed."""
+    tid = _tid(tenant_id)
     n = 0
     for r in results:
         cn = _cn8(r.get("company_number", ""))
@@ -339,14 +620,15 @@ def save_results(results: list[dict]) -> int:
             continue
         headers = {k: v for k, v in _result_to_headers(r).items() if v not in (None, "")}
         headers.pop("Company Number", None)
-        update_row(cn, headers)
+        update_row(tid, cn, headers)
         n += 1
     return n
 
 
 # ── One-time migration from the old Excel file ──────────────────────────────
-def import_from_excel(path: str) -> int:
+def import_from_excel(tenant_id: int, path: str) -> int:
     import openpyxl
+    tid = _tid(tenant_id)
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
     it = ws.iter_rows(values_only=True)
@@ -364,7 +646,7 @@ def import_from_excel(path: str) -> int:
             cn = _cn8(rec.get("Company Number"))
             if not cn or cn == "00000000":
                 continue
-            set_cols = {"company_number": cn}
+            set_cols = {"tenant_id": tid, "company_number": cn}
             for header, col in COLUMNS:
                 if col == "company_number":
                     continue
@@ -373,25 +655,174 @@ def import_from_excel(path: str) -> int:
             cols = list(set_cols.keys())
             vals = list(set_cols.values())
             placeholders = ", ".join(["%s"] * len(cols))
-            updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "company_number")
+            updates = ", ".join(
+                f"{c} = EXCLUDED.{c}" for c in cols
+                if c not in ("company_number", "tenant_id")
+            )
             cur.execute(
                 f"INSERT INTO {TABLE} ({', '.join(cols)}) VALUES ({placeholders}) "
-                f"ON CONFLICT (company_number) DO UPDATE SET {updates}",
+                f"ON CONFLICT (tenant_id, company_number) DO UPDATE SET {updates}",
                 vals,
             )
             imported += 1
         conn.commit()
     wb.close()
-    _invalidate()
+    _invalidate(tid)
     return imported
 
 
+# ── Tenants ─────────────────────────────────────────────────────────────────
+def create_tenant(slug: str, name: str = "") -> int:
+    """Create a tenant (or return the existing one with this slug)."""
+    slug = (slug or "").strip().lower()
+    if not slug:
+        raise ValueError("tenant slug is required")
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {TENANTS_TABLE} (slug, name) VALUES (%s, %s) "
+            f"ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+            (slug, name or slug),
+        )
+        tid = int(cur.fetchone()["id"])
+        conn.commit()
+    return tid
+
+
+def get_tenant(tenant_id: int) -> dict | None:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {TENANTS_TABLE} WHERE id = %s", (_tid(tenant_id),))
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def get_tenant_by_slug(slug: str) -> dict | None:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM {TENANTS_TABLE} WHERE slug = %s", ((slug or "").strip().lower(),)
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def list_tenants() -> list[dict]:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {TENANTS_TABLE} ORDER BY id")
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ── Users ───────────────────────────────────────────────────────────────────
+def _hash(password: str) -> str:
+    # werkzeug ships with Flask; no extra dependency, and no hand-rolled crypto.
+    from werkzeug.security import generate_password_hash
+    return generate_password_hash(password)
+
+
+def create_user(tenant_id: int, email: str, password: str, role: str = "client") -> int:
+    """Create a login belonging to a tenant."""
+    tid = _tid(tenant_id)
+    email = (email or "").strip().lower()
+    if not email:
+        raise ValueError("email is required")
+    if not password:
+        raise ValueError("password is required")
+    if role not in VALID_ROLES:
+        raise ValueError(f"role must be one of {VALID_ROLES}, got {role!r}")
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {USERS_TABLE} (tenant_id, email, password_hash, role) "
+            f"VALUES (%s, %s, %s, %s) RETURNING id",
+            (tid, email, _hash(password), role),
+        )
+        uid = int(cur.fetchone()["id"])
+        conn.commit()
+    return uid
+
+
+def get_user(user_id: int) -> dict | None:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT id, tenant_id, email, role, created_at FROM {USERS_TABLE} WHERE id = %s",
+            (int(user_id),),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def verify_user(email: str, password: str) -> dict | None:
+    """Return the user dict (with tenant_id) on a correct password, else None."""
+    from werkzeug.security import check_password_hash
+
+    email = (email or "").strip().lower()
+    if not email or not password:
+        return None
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT id, tenant_id, email, role, password_hash FROM {USERS_TABLE} "
+            f"WHERE email = %s",
+            (email,),
+        )
+        row = cur.fetchone()
+    if not row or not check_password_hash(row["password_hash"], password):
+        return None
+    user = dict(row)
+    user.pop("password_hash", None)
+    return user
+
+
+def set_password(user_id: int, password: str) -> None:
+    if not password:
+        raise ValueError("password is required")
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {USERS_TABLE} SET password_hash = %s WHERE id = %s",
+            (_hash(password), int(user_id)),
+        )
+        conn.commit()
+
+
 if __name__ == "__main__":
-    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Schema and tenant admin.")
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("migrate", help="create/migrate all tables (default)")
+
+    p_tenant = sub.add_parser("add-tenant", help="create a tenant")
+    p_tenant.add_argument("slug")
+    p_tenant.add_argument("--name", default="")
+
+    p_user = sub.add_parser("add-user", help="create a login for a tenant")
+    p_user.add_argument("tenant_slug")
+    p_user.add_argument("email")
+    p_user.add_argument("password")
+    p_user.add_argument("--role", default="client", choices=VALID_ROLES)
+
+    sub.add_parser("list-tenants", help="list tenants and their company counts")
+
+    p_imp = sub.add_parser("import", help="import an Excel workbook into a tenant")
+    p_imp.add_argument("tenant_slug")
+    p_imp.add_argument("path", nargs="?", default="pipeline_output/companies_pipeline.xlsx")
+
+    args = parser.parse_args()
     ensure_schema()
-    print(f"Schema ready. Table '{TABLE}' has {len(COLUMNS)} mapped columns.")
-    if len(sys.argv) > 1 and sys.argv[1] == "--import":
-        path = sys.argv[2] if len(sys.argv) > 2 else "pipeline_output/companies_pipeline.xlsx"
-        n = import_from_excel(path)
-        print(f"Imported {n} rows from {path}.")
-    print(f"Total rows in DB: {len(all_rows(use_cache=False))}")
+
+    if args.cmd == "add-tenant":
+        print(f"tenant {args.slug} -> id {create_tenant(args.slug, args.name)}")
+    elif args.cmd == "add-user":
+        t = get_tenant_by_slug(args.tenant_slug)
+        if not t:
+            raise SystemExit(f"No such tenant: {args.tenant_slug}")
+        uid = create_user(t["id"], args.email, args.password, args.role)
+        print(f"user {args.email} ({args.role}) -> id {uid}, tenant {t['slug']}")
+    elif args.cmd == "import":
+        t = get_tenant_by_slug(args.tenant_slug)
+        if not t:
+            raise SystemExit(f"No such tenant: {args.tenant_slug}")
+        print(f"Imported {import_from_excel(t['id'], args.path)} rows into {t['slug']}.")
+    elif args.cmd == "list-tenants":
+        for t in list_tenants():
+            print(f"{t['id']:>4}  {t['slug']:<24} {len(all_rows(t['id'], use_cache=False)):>5} companies")
+    else:
+        print(f"Schema ready. Table '{TABLE}' has {len(COLUMNS)} mapped columns.")
+        for t in list_tenants():
+            print(f"  tenant {t['id']}: {t['slug']}")
