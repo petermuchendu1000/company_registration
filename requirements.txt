@@ -1,6 +1,8 @@
-flask
-openpyxl
 Pillow
+flask
+google-api-python-client
+google-auth
+openpyxl
 playwright
 playwright-stealth
 psycopg2-binary
