@@ -58,10 +58,10 @@ phone_numbers.xlsx
 phones.xlsx
 pipeline_output/*.xlsx
 pipeline_output/manual_inputs.json
-ggplay/emails.xlsx
-ggplay/duns_requests.json
-ggplay/physical_numbers.json
-ggplay/pipeline_output/
 # Anti-bot challenge screenshots can capture form contents
 challenge_*.png
 debug_screenshots/
+
+# Legacy ggplay/ tree: removed from version control, but its data files and
+# generated output may still sit on disk. Never let them back in.
+ggplay/

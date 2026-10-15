@@ -33,11 +33,11 @@ _PIPELINE_RUN_STATE = {
 
 
 def _resolve_pipeline_script():
-    root = os.path.dirname(os.path.abspath(__file__))
-    ggplay_script = os.path.join(root, "ggplay", "run_pipeline.py")
-    if os.path.exists(ggplay_script):
-        return ggplay_script
-    return os.path.join(root, "run_pipeline.py")
+    # This used to prefer ggplay/run_pipeline.py when present. That copy was a
+    # frozen snapshot with no knowledge of the database layer — it wrote the
+    # Excel workbook and had no concept of a tenant — so dashboard runs went
+    # through code that bypassed tenant scoping entirely.
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_pipeline.py")
 
 
 def _snapshot_pipeline_state_locked():
@@ -501,9 +501,7 @@ def pipeline_retry(company_number):
         return jsonify({"error": "company_number is required"}), 400
 
     try:
-        # Reads the tenant's own rows. This previously pulled
-        # ggplay.run_pipeline, a second copy of the codebase that has since
-        # diverged from this one.
+        # Reads the tenant's own rows.
         tid = _tenant()
         existing = db.all_results(tid)
         company = next(
