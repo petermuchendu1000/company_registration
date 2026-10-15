@@ -21,6 +21,11 @@ register_wizard_routes(app)
 from api_v2 import api_v2
 app.register_blueprint(api_v2)
 
+# --- Authentication (must come after every blueprint is registered, so the
+# deny-by-default guard covers their routes too) ---
+from auth import init_auth
+init_auth(app)
+
 
 API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY")
 BASE_URL = "https://api.company-information.service.gov.uk"
@@ -705,10 +710,17 @@ if __name__ == "__main__":
     start_port = int(os.getenv("PORT", 5000))
     max_tries = 10
 
+    # Debug mode exposes the Werkzeug console, which is remote code execution
+    # for anyone who can reach the port. Opt in explicitly, for local work only.
+    debug = os.getenv("FLASK_DEBUG", "0") == "1"
+    host = os.getenv("HOST", "127.0.0.1")
+    if debug and host != "127.0.0.1":
+        raise SystemExit("Refusing to run debug mode on a non-loopback host.")
+
     for p in range(start_port, start_port + max_tries):
         try:
             print(f"Attempting to start server on port {p}...")
-            app.run(debug=True, port=p, threaded=True)
+            app.run(debug=debug, host=host, port=p, threaded=True)
             break
         except OSError as e:
             print(f"Failed to bind to port {p}: {e}")

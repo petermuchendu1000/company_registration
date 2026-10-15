@@ -962,20 +962,23 @@ def v2_rerun_id(cn):
 
 @api_v2.route("/api/v2/dl")
 def v2_download():
-    """Serve a file from pipeline_output (security: must be under DL_BASE).
+    """Serve one of this tenant's company files.
+
+    auth.tenant_company_file enforces both that the path stays inside
+    pipeline_output/companies and that the signed-in tenant owns the company.
 
     ?inline=1  — serve inline (for in-browser preview); default is attachment download.
     """
+    from auth import tenant_company_file
+
     path = request.args.get("path", "").strip()
     if not path:
         return abort(400)
-    abs_path = Path(os.path.abspath(path))
-    if not str(abs_path).startswith(str(DL_BASE.resolve())):
-        return abort(403)
-    if not abs_path.is_file():
+    resolved = tenant_company_file(path)
+    if resolved is None:
         return abort(404)
     inline = request.args.get("inline", "0") == "1"
-    return send_file(abs_path, as_attachment=not inline)
+    return send_file(resolved, as_attachment=not inline)
 
 
 @api_v2.route("/api/v2/company/<cn>/archive", methods=["POST"])

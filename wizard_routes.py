@@ -625,24 +625,25 @@ def pipeline_manual_inputs_save(company_number):
 
 @wizard.route("/download")
 def download_file():
-    """Download a file from the pipeline output directory."""
+    """
+    Download one of this tenant's company files.
+
+    Path containment and company ownership are both checked by
+    auth.tenant_company_file; anything outside pipeline_output/companies, or
+    belonging to another tenant, is refused.
+    """
     from flask import send_file, abort
-    
+    from auth import tenant_company_file
+
     file_path = request.args.get("path", "").strip()
     if not file_path:
         return abort(400)
 
-    # Security: only allow files under pipeline_output
-    base_dir = os.path.join(os.path.dirname(__file__), "pipeline_output")
-    abs_path = os.path.abspath(file_path)
-    
-    if not abs_path.startswith(os.path.abspath(base_dir)):
-        return abort(403)
-
-    if not os.path.exists(abs_path):
+    resolved = tenant_company_file(file_path)
+    if resolved is None:
         return abort(404)
 
-    return send_file(abs_path, as_attachment=True)
+    return send_file(resolved, as_attachment=True)
 
 
 @wizard.route("/api/pipeline/retry/<company_number>", methods=["POST"])
