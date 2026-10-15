@@ -242,6 +242,93 @@ def test_concurrent_tenants_do_not_mix(flask_app, seed) -> None:
     assert not errors, f"cross-tenant contamination: {errors[:5]}"
 
 
+
+def test_pipeline_add_and_list_are_scoped(flask_app, seed) -> None:
+    """The migrated wizard routes read and write through the tenant-scoped DB."""
+    ca = _client(flask_app, seed["a"]["email"], seed["a"]["pw"])
+    cb = _client(flask_app, seed["b"]["email"], seed["b"]["pw"])
+
+    r = ca.post("/api/pipeline/add", json={
+        "company_number": "31313131", "company_name": "Added By A",
+        "short_name": "AddedA", "email": "client-a@example.com",
+        "directors": "SMITH, Jane",
+    })
+    assert r.status_code == 200 and json.loads(r.data)["success"], r.data
+
+    a_numbers = {row.get("Company Number") for row in json.loads(ca.get("/api/pipeline/list").data)}
+    b_numbers = {row.get("Company Number") for row in json.loads(cb.get("/api/pipeline/list").data)}
+    assert "31313131" in a_numbers
+    assert "31313131" not in b_numbers, "a company added by one tenant showed up for another"
+
+    # Short Name used to live only in the sheet; it must round-trip now.
+    row = next(r for r in json.loads(ca.get("/api/pipeline/list").data)
+               if r.get("Company Number") == "31313131")
+    assert row.get("Short Name") == "AddedA"
+    assert row.get("Assigned Email") == "client-a@example.com"
+
+
+def test_pipeline_add_rejects_duplicate_within_tenant(flask_app, seed) -> None:
+    ca = _client(flask_app, seed["a"]["email"], seed["a"]["pw"])
+    payload = {"company_number": "32323232", "company_name": "Dupe Co"}
+    assert ca.post("/api/pipeline/add", json=payload).status_code == 200
+    assert ca.post("/api/pipeline/add", json=payload).status_code == 409
+
+
+def test_same_company_added_by_both_tenants(flask_app, seed) -> None:
+    """Two clients may legitimately hold the same UK company."""
+    ca = _client(flask_app, seed["a"]["email"], seed["a"]["pw"])
+    cb = _client(flask_app, seed["b"]["email"], seed["b"]["pw"])
+    payload = {"company_number": "33333333", "company_name": "Shared Co"}
+    assert ca.post("/api/pipeline/add", json=payload).status_code == 200
+    assert cb.post("/api/pipeline/add", json=payload).status_code == 200
+
+
+def test_manual_inputs_roundtrip_and_isolation(flask_app, seed) -> None:
+    """
+    Representative ID details are personal data. They must round-trip, and
+    two tenants holding the same company number must not see each other's.
+    """
+    ca = _client(flask_app, seed["a"]["email"], seed["a"]["pw"])
+    cb = _client(flask_app, seed["b"]["email"], seed["b"]["pw"])
+    shared_cn = "34343434"
+    for c in (ca, cb):
+        c.post("/api/pipeline/add", json={"company_number": shared_cn, "company_name": "Shared"})
+
+    a_payload = {"representative_id": {
+        "full_name_as_on_id": "Alice Example", "personal_address": "1 A Street",
+        "id_type": "passport", "id_country": "GB", "id_expiry_date": "2030-01-01",
+        "id_image_front": "front-a.jpg", "id_image_back": "back-a.jpg",
+    }}
+    b_payload = {"representative_id": {
+        "full_name_as_on_id": "Bob Example", "personal_address": "2 B Road",
+        "id_type": "driving_licence", "id_country": "GB", "id_expiry_date": "2031-02-02",
+        "id_image_front": "", "id_image_back": "",
+    }}
+    assert ca.post(f"/api/pipeline/manual-inputs/{shared_cn}", json=a_payload).status_code == 200
+    assert cb.post(f"/api/pipeline/manual-inputs/{shared_cn}", json=b_payload).status_code == 200
+
+    got_a = json.loads(ca.get(f"/api/pipeline/manual-inputs/{shared_cn}").data)
+    got_b = json.loads(cb.get(f"/api/pipeline/manual-inputs/{shared_cn}").data)
+    assert got_a["representative_id"]["full_name_as_on_id"] == "Alice Example"
+    assert got_b["representative_id"]["full_name_as_on_id"] == "Bob Example", \
+        "one tenant's ID details overwrote another's"
+    assert got_a["representative_id"]["personal_address"] == "1 A Street"
+
+    # Rep ID Status is derived from whether both ID images are present.
+    def status(client):
+        row = next(r for r in json.loads(client.get("/api/pipeline/list").data)
+                   if r.get("Company Number") == shared_cn)
+        return row.get("Rep ID Status")
+    assert status(ca) == "ready"
+    assert status(cb) == "manual_required"
+
+
+def test_company_files_scoped(flask_app, seed) -> None:
+    ca = _client(flask_app, seed["a"]["email"], seed["a"]["pw"])
+    assert ca.get(f"/api/company/{seed['a']['cn']}/files").status_code == 200
+    r = ca.get(f"/api/company/{seed['b']['cn']}/files")
+    assert r.status_code == 404, "listed files for another tenant's company"
+
 def _cleanup():
     for path in _fixtures:
         try:

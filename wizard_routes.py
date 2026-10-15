@@ -12,24 +12,11 @@ import sys
 import threading
 import subprocess
 import glob
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime
 
-wizard = Blueprint("wizard", __name__)
+import db  # Supabase (PostgreSQL) data-access layer — source of truth
 
-EXCEL_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "pipeline_output", "companies_pipeline.xlsx",
-)
-MANUAL_INPUTS_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "pipeline_output", "manual_inputs.json",
-)
-MANUAL_INPUTS_FILE_GGPLAY = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "ggplay", "pipeline_output", "manual_inputs.json",
-)
+wizard = Blueprint("wizard", __name__)
 
 _PIPELINE_LOCK = threading.Lock()
 _PIPELINE_RUN_STATE = {
@@ -90,77 +77,13 @@ def _latest_pipeline_log_path():
         return None
     return max(candidates, key=os.path.getmtime)
 
-# ──────────────────────────────────────────────────────────────
-# The canonical header row — must match run_pipeline.py + new cols
-# ──────────────────────────────────────────────────────────────
-HEADERS = [
-    "No.", "Company Number", "Company Name", "Short Name",
-    "Status", "Type", "Date of Creation", "SIC Codes", "Address",
-    "Directors", "Director Nationalities",
-    "DUNS Number", "DUNS Status", "DUNS Email Used",
-    "Certificate Downloaded", "Certificate Path",
-    "Domain", "Domain Status", "Domain Cost",
-    "Assigned Email", "Account Name",
-    "Company Status", "Company Notes", "Archived",
-]
+# The column set now lives in db.COLUMNS, which is the single source of
+# truth for both storage and the header labels the API returns.
 
 
-def _col_index(header_row, name):
-    """Find column index by header name (case-insensitive)."""
-    for i, h in enumerate(header_row):
-        if h and str(h).strip().lower() == name.lower():
-            return i
-    return None
-
-
-def _ensure_column(ws, header_name):
-    """Ensure a column exists and return zero-based index."""
-    header = [cell.value for cell in ws[1]]
-    idx = _col_index(header, header_name)
-    if idx is not None:
-        return idx
-    ws.cell(row=1, column=len(header) + 1, value=header_name)
-    return len(header)
-
-
-def _ensure_excel():
-    """Create the pipeline Excel if it doesn't exist."""
-    os.makedirs(os.path.dirname(EXCEL_FILE), exist_ok=True)
-    if os.path.exists(EXCEL_FILE):
-        return
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Companies Pipeline"
-    ws.append(HEADERS)
-    # Style headers
-    hdr_fill = PatternFill(start_color="003078", end_color="003078", fill_type="solid")
-    hdr_font = Font(color="FFFFFF", bold=True, size=11)
-    for cell in ws[1]:
-        cell.fill = hdr_fill
-        cell.font = hdr_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    ws.freeze_panes = "A2"
-    wb.save(EXCEL_FILE)
-
-
-def _load_manual_inputs_db():
-    for path in [MANUAL_INPUTS_FILE, MANUAL_INPUTS_FILE_GGPLAY]:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                return data
-    return {}
-
-
-def _save_manual_inputs_db(db):
-    for path in [MANUAL_INPUTS_FILE, MANUAL_INPUTS_FILE_GGPLAY]:
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(db, f, indent=2)
-        except Exception:
-            pass
+def _tenant() -> int:
+    """The tenant bound to this request. Raises if nothing bound it."""
+    return db.current_tenant_id()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -174,79 +97,38 @@ def pipeline_add():
     if not cn:
         return jsonify({"success": False, "error": "company_number is required"}), 400
 
-    _ensure_excel()
+    tid = _tenant()
+    if db.find_row(tid, cn) is not None:
+        return jsonify({
+            "success": False,
+            "error": f"Company {cn} already exists in the pipeline.",
+        }), 409
 
-    wb = openpyxl.load_workbook(EXCEL_FILE)
-    ws = wb.active
+    duns_number = data.get("duns_number", "")
+    duns_email = data.get("duns_email", "")
+    domain = data.get("domain", "")
 
-    # Read header to find columns dynamically
-    header = [cell.value for cell in ws[1]]
+    db.add_company(tid, cn, data.get("company_name", ""), data.get("date_of_creation", ""))
+    db.update_row(tid, cn, {
+        "Short Name":             data.get("short_name", ""),
+        "Status":                 data.get("status", ""),
+        "Type":                   data.get("type", ""),
+        "SIC Codes":              data.get("sic_codes", ""),
+        "Address":                data.get("address", ""),
+        "Directors":              data.get("directors", ""),
+        "Director Nationalities": data.get("nationalities", ""),
+        "DUNS Number":            duns_number,
+        "DUNS Status":            "found" if duns_number else ("submitted" if duns_email else ""),
+        "DUNS Email Used":        duns_email,
+        "Domain":                 domain,
+        "Domain Status":          "pending" if domain else "",
+        "Assigned Email":         data.get("email", ""),
+    })
 
-    # Check for duplicate
-    col_cn = _col_index(header, "Company Number")
-    if col_cn is not None:
-        for row in ws.iter_rows(min_row=2, values_only=False):
-            if row[col_cn].value and str(row[col_cn].value).strip() == cn:
-                wb.close()
-                return jsonify({"success": False, "error": f"Company {cn} already exists in the pipeline."}), 409
-
-    # If "Short Name" column doesn't exist yet, add it
-    col_sn = _col_index(header, "Short Name")
-    if col_sn is None:
-        # Insert after "Company Name"
-        col_name = _col_index(header, "Company Name")
-        insert_at = (col_name + 2) if col_name is not None else (len(header) + 1)
-        ws.insert_cols(insert_at)
-        ws.cell(row=1, column=insert_at, value="Short Name")
-        # Re-read header
-        header = [cell.value for cell in ws[1]]
-        col_sn = _col_index(header, "Short Name")
-
-    # Determine row number
-    next_row = ws.max_row + 1
-    row_num = next_row - 1  # 1-indexed company number
-
-    def put(col_name, value):
-        idx = _col_index(header, col_name)
-        if idx is not None:
-            ws.cell(row=next_row, column=idx + 1, value=value)
-
-    put("No.", row_num)
-    put("Company Number", cn)
-    put("Company Name", data.get("company_name", ""))
-    put("Short Name", data.get("short_name", ""))
-    put("Status", data.get("status", ""))
-    put("Type", data.get("type", ""))
-    put("Date of Creation", data.get("date_of_creation", ""))
-    put("SIC Codes", data.get("sic_codes", ""))
-    put("Address", data.get("address", ""))
-    put("Directors", data.get("directors", ""))
-    put("Director Nationalities", data.get("nationalities", ""))
-    put("DUNS Number", data.get("duns_number", ""))
-    put("DUNS Status", "submitted" if data.get("duns_email") and not data.get("duns_number") else ("found" if data.get("duns_number") else ""))
-    put("DUNS Email Used", data.get("duns_email", ""))
-    put("Domain", data.get("domain", ""))
-    put("Domain Status", "pending" if data.get("domain") else "")
-    put("Assigned Email", data.get("email", ""))
-
-    # Auto-width
-    for col in ws.columns:
-        max_len = 0
-        letter = col[0].column_letter
-        for cell in col:
-            try:
-                if cell.value:
-                    max_len = max(max_len, len(str(cell.value)))
-            except Exception:
-                pass
-        ws.column_dimensions[letter].width = min(max_len + 2, 50)
-
-    wb.save(EXCEL_FILE)
-    wb.close()
-
+    row = db.find_row(tid, cn) or {}
     return jsonify({
         "success": True,
-        "row": row_num,
+        "row": row.get("No."),
         "company_number": cn,
         "message": f"Added {data.get('company_name', cn)} to pipeline."
     })
@@ -257,25 +139,9 @@ def pipeline_add():
 # ──────────────────────────────────────────────────────────────
 @wizard.route("/api/pipeline/list")
 def pipeline_list():
-    _ensure_excel()
-    wb = openpyxl.load_workbook(EXCEL_FILE, read_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
-
-    if not rows:
-        return jsonify([])
-
-    header = [str(h).strip() if h else f"col_{i}" for i, h in enumerate(rows[0])]
-    companies = []
-    for row in rows[1:]:
-        entry = {}
-        for i, val in enumerate(row):
-            if i < len(header):
-                entry[header[i]] = val
-        companies.append(entry)
-
-    return jsonify(companies)
+    # db.all_rows returns dicts already keyed by the same header labels the
+    # sheet used, so the response shape is unchanged.
+    return jsonify(db.all_rows(_tenant()))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -518,31 +384,20 @@ def domains_apply_google_txt():
         if "error" in txt_result:
             return jsonify({"error": txt_result["error"], "stage": "add_txt_record"}), 400
 
-        # Best-effort write-back to pipeline sheet if company exists.
+        # Best-effort write-back, only for a company this tenant actually has.
         updated_excel = False
         excel_warning = ""
-        if company_number and os.path.exists(EXCEL_FILE):
+        if company_number:
             try:
-                wb = openpyxl.load_workbook(EXCEL_FILE)
-                ws = wb.active
-                header = [cell.value for cell in ws[1]]
-                col_cn = _col_index(header, "Company Number")
-                row_found = False
-                if col_cn is not None:
-                    col_txt_status = _ensure_column(ws, "Google TXT Status")
-                    col_domain = _ensure_column(ws, "Domain")
-                    for r in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                        cell_cn = r[col_cn]
-                        if cell_cn.value and str(cell_cn.value).strip() == company_number:
-                            ws.cell(row=cell_cn.row, column=col_domain + 1, value=domain)
-                            ws.cell(row=cell_cn.row, column=col_txt_status + 1, value="configured")
-                            row_found = True
-                            break
-                    wb.save(EXCEL_FILE)
-                    updated_excel = row_found
-                wb.close()
+                tid = _tenant()
+                if db.find_row(tid, company_number) is not None:
+                    db.update_row(tid, company_number, {
+                        "Domain": domain,
+                        "Google TXT Status": "configured",
+                    })
+                    updated_excel = True
             except Exception as e:
-                excel_warning = f"TXT applied, but could not update Excel: {e}"
+                excel_warning = f"TXT applied, but could not update the record: {e}"
 
         return jsonify({
             "success": True,
@@ -564,8 +419,7 @@ def domains_apply_google_txt():
 @wizard.route("/api/pipeline/manual-inputs/<company_number>", methods=["GET"])
 def pipeline_manual_inputs_get(company_number):
     try:
-        db = _load_manual_inputs_db()
-        return jsonify(db.get(company_number, {}))
+        return jsonify(db.get_manual_inputs(_tenant(), company_number))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -588,34 +442,25 @@ def pipeline_manual_inputs_save(company_number):
             }
         }
 
-        db = _load_manual_inputs_db()
-        db[company_number] = manual
-        _save_manual_inputs_db(db)
+        tid = _tenant()
+        # One upsert per company, so simultaneous saves by two clients cannot
+        # lose each other's work the way rewriting a shared JSON file did.
+        db.save_manual_inputs(tid, company_number, manual)
 
-        excel_updated = False
-        if os.path.exists(EXCEL_FILE):
-            try:
-                wb = openpyxl.load_workbook(EXCEL_FILE)
-                ws = wb.active
-                header = [cell.value for cell in ws[1]]
-                col_cn = _col_index(header, "Company Number")
-                if col_cn is not None:
-                    col_rep = _ensure_column(ws, "Rep ID Status")
+        rep = manual["representative_id"]
+        rep_ready = bool(rep.get("id_image_front")) and bool(rep.get("id_image_back"))
+        record_updated = False
+        if db.find_row(tid, company_number) is not None:
+            db.update_row(tid, company_number, {
+                "Rep ID Status": "ready" if rep_ready else "manual_required",
+            })
+            record_updated = True
 
-                    rep_ready = bool(manual["representative_id"].get("id_image_front")) and bool(manual["representative_id"].get("id_image_back"))
-
-                    for r in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                        cn_cell = r[col_cn]
-                        if cn_cell.value and str(cn_cell.value).strip() == company_number:
-                            ws.cell(row=cn_cell.row, column=col_rep + 1, value="ready" if rep_ready else "manual_required")
-                            excel_updated = True
-                            break
-                    wb.save(EXCEL_FILE)
-                wb.close()
-            except Exception:
-                excel_updated = False
-
-        return jsonify({"success": True, "company_number": company_number, "excel_updated": excel_updated})
+        return jsonify({
+            "success": True,
+            "company_number": company_number,
+            "excel_updated": record_updated,  # key kept for the existing UI
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -656,24 +501,24 @@ def pipeline_retry(company_number):
         return jsonify({"error": "company_number is required"}), 400
 
     try:
-        from ggplay.run_pipeline import _load_existing_results, save_to_excel
-        
-        if not os.path.exists(EXCEL_FILE):
-            return jsonify({"error": "Pipeline has not run yet"}), 400
-
-        existing = _load_existing_results(EXCEL_FILE)
-        company = next((c for c in existing if c.get("company_number") == company_number), None)
-        
+        # Reads the tenant's own rows. This previously pulled
+        # ggplay.run_pipeline, a second copy of the codebase that has since
+        # diverged from this one.
+        tid = _tenant()
+        existing = db.all_results(tid)
+        company = next(
+            (c for c in existing if str(c.get("company_number") or "").strip() == company_number),
+            None,
+        )
         if not company:
             return jsonify({"error": f"Company {company_number} not found"}), 404
 
         # Reset error states
         for key in ["certificate", "domain", "email", "apk_generation"]:
-            if key in company:
+            if isinstance(company.get(key), dict):
                 company[key] = {k: v for k, v in company[key].items() if k != "error"}
 
-        # Save back to Excel
-        save_to_excel([company], EXCEL_FILE)
+        db.save_results(tid, [company])
 
         return jsonify({
             "success": True,
@@ -841,22 +686,12 @@ def company_files_api(cn):
     ROOT = os.path.dirname(os.path.abspath(__file__))
     COMP_DIR = os.path.join(ROOT, "pipeline_output", "companies")
 
-    name = ""
-    if os.path.exists(EXCEL_FILE):
-        try:
-            wb = openpyxl.load_workbook(EXCEL_FILE, data_only=True)
-            ws = wb.active
-            hdr = [str(c.value or "").strip().lower() for c in ws[1]]
-            cn_c = next((i for i, h in enumerate(hdr) if h == "company number"), None)
-            nm_c = next((i for i, h in enumerate(hdr) if h == "company name"), None)
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                if not row or cn_c is None: continue
-                if str(row[cn_c] or "").strip().zfill(8) == cn.zfill(8):
-                    name = str(row[nm_c] or "").strip() if nm_c is not None else ""
-                    break
-            wb.close()
-        except Exception:
-            pass
+    # Only list files for a company this tenant holds — otherwise the response
+    # would disclose file names and sizes for someone else's company.
+    row = db.find_row(_tenant(), cn)
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+    name = str(row.get("Company Name") or "").strip()
 
     safe = _re.sub(r'[\\/:*?"<>|]', "", name).strip()
     folder = f"{cn.zfill(8)} - {safe}" if safe else cn.zfill(8)

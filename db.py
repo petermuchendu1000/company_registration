@@ -70,6 +70,7 @@ COLUMNS: list[tuple[str, str]] = [
     ("No.",                     "row_no"),
     ("Company Number",          "company_number"),
     ("Company Name",            "company_name"),
+    ("Short Name",              "short_name"),
     ("Status",                  "status"),
     ("Type",                    "type"),
     ("Date of Creation",        "date_of_creation"),
@@ -96,6 +97,7 @@ COLUMNS: list[tuple[str, str]] = [
     ("Developer Email",         "developer_email"),
     ("Dev Email Forwarding",    "dev_email_forwarding"),
     ("Google TXT Status",       "google_txt_status"),
+    ("Rep ID Status",           "rep_id_status"),
     ("Organization Phone",      "organization_phone"),
     ("Play Signup Missing",     "play_signup_missing"),
     ("Company Status",          "pipeline_status"),
@@ -107,6 +109,10 @@ COL_TO_HEADER = {c: h for h, c in COLUMNS}
 TABLE = "companies"
 TENANTS_TABLE = "tenants"
 USERS_TABLE = "users"
+# Representative ID details a client supplies for Play Console signup: their
+# own name, personal address and ID document references. Personal data — keep
+# it tenant-scoped, out of logs, and out of any cross-tenant view.
+MANUAL_TABLE = "company_manual_inputs"
 
 VALID_ROLES = ("client", "operator")
 
@@ -275,6 +281,20 @@ def ensure_schema() -> None:
         )
         cur.execute(
             f"CREATE INDEX IF NOT EXISTS companies_tenant_idx ON {TABLE} (tenant_id)"
+        )
+
+        # Manual inputs: one JSONB blob per company, so the shape can grow
+        # without a migration. Tenant-scoped like everything else.
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {MANUAL_TABLE} (
+              tenant_id       INTEGER NOT NULL REFERENCES {TENANTS_TABLE}(id) ON DELETE CASCADE,
+              company_number  TEXT NOT NULL,
+              data            JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+              updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (tenant_id, company_number)
+            );
+            """
         )
         conn.commit()
     _invalidate()
@@ -626,6 +646,43 @@ def save_results(tenant_id: int, results: list[dict]) -> int:
 
 
 # ── One-time migration from the old Excel file ──────────────────────────────
+def unmapped_excel_values(path: str) -> list[dict]:
+    """
+    Report populated cells the import would NOT carry over.
+
+    A workbook edited by hand can grow a column whose header was renamed or
+    deleted. Those cells map to nothing and would vanish silently, so list
+    them instead and let a human decide where they belong.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    ws = wb.active
+    it = ws.iter_rows(values_only=True)
+    hdr_row = next(it, None)
+    if not hdr_row:
+        wb.close()
+        return []
+    hdr = [str(v or "").strip() for v in hdr_row]
+    known = {h for h, _ in COLUMNS}
+    orphan_cols = [i for i, h in enumerate(hdr) if h not in known]
+
+    found: list[dict] = []
+    for n, row in enumerate(it, start=2):
+        if not row:
+            continue
+        for i in orphan_cols:
+            if i < len(row) and row[i] not in (None, ""):
+                found.append({
+                    "row": n,
+                    "company_number": _cn8(row[1]) if len(row) > 1 else "",
+                    "column": hdr[i] or f"<no header, index {i}>",
+                    "value": row[i],
+                })
+    wb.close()
+    return found
+
+
 def import_from_excel(tenant_id: int, path: str) -> int:
     import openpyxl
     tid = _tid(tenant_id)
@@ -669,6 +726,72 @@ def import_from_excel(tenant_id: int, path: str) -> int:
     wb.close()
     _invalidate(tid)
     return imported
+
+
+# ── Manual inputs (client-supplied representative ID details) ───────────────
+def get_manual_inputs(tenant_id: int, cn: str) -> dict:
+    """This tenant's stored manual inputs for one company ({} when none)."""
+    tid = _tid(tenant_id)
+    target = _cn8(cn)
+    if not target:
+        return {}
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT data FROM {MANUAL_TABLE} WHERE tenant_id = %s AND company_number = %s",
+            (tid, target),
+        )
+        row = cur.fetchone()
+    return (row["data"] or {}) if row else {}
+
+
+def save_manual_inputs(tenant_id: int, cn: str, data: dict) -> None:
+    """
+    Replace the manual inputs for one of this tenant's companies.
+
+    A single upsert, so two clients saving at once cannot lose each other's
+    work the way a read-modify-write of one shared JSON file did.
+    """
+    from psycopg2.extras import Json
+
+    tid = _tid(tenant_id)
+    target = _cn8(cn)
+    if not target:
+        return
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {MANUAL_TABLE} (tenant_id, company_number, data) "
+            f"VALUES (%s, %s, %s) "
+            f"ON CONFLICT (tenant_id, company_number) "
+            f"DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            (tid, target, Json(data or {})),
+        )
+        conn.commit()
+
+
+def all_manual_inputs(tenant_id: int) -> dict[str, dict]:
+    """Every manual-input record for this tenant, keyed by company number."""
+    tid = _tid(tenant_id)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT company_number, data FROM {MANUAL_TABLE} WHERE tenant_id = %s",
+            (tid,),
+        )
+        return {r["company_number"]: (r["data"] or {}) for r in cur.fetchall()}
+
+
+def import_manual_inputs_json(tenant_id: int, path: str) -> int:
+    """One-time migration of the old global manual_inputs.json into a tenant."""
+    import json as _json
+
+    tid = _tid(tenant_id)
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = _json.load(fh)
+    n = 0
+    for cn, data in (payload or {}).items():
+        if _cn8(cn):
+            save_manual_inputs(tid, cn, data)
+            n += 1
+    return n
 
 
 # ── Tenants ─────────────────────────────────────────────────────────────────
@@ -803,6 +926,15 @@ if __name__ == "__main__":
     p_imp.add_argument("tenant_slug")
     p_imp.add_argument("path", nargs="?", default="pipeline_output/companies_pipeline.xlsx")
 
+    p_mi = sub.add_parser("import-manual-inputs",
+                          help="import the old manual_inputs.json into a tenant")
+    p_mi.add_argument("tenant_slug")
+    p_mi.add_argument("path", nargs="?", default="pipeline_output/manual_inputs.json")
+
+    p_chk = sub.add_parser("check-excel",
+                           help="list workbook cells an import would not carry over")
+    p_chk.add_argument("path", nargs="?", default="pipeline_output/companies_pipeline.xlsx")
+
     args = parser.parse_args()
     ensure_schema()
 
@@ -818,7 +950,29 @@ if __name__ == "__main__":
         t = get_tenant_by_slug(args.tenant_slug)
         if not t:
             raise SystemExit(f"No such tenant: {args.tenant_slug}")
+        orphans = unmapped_excel_values(args.path)
         print(f"Imported {import_from_excel(t['id'], args.path)} rows into {t['slug']}.")
+        if orphans:
+            print(f"\n{len(orphans)} cell(s) were NOT imported (no matching column):")
+            for o in orphans:
+                print(f"  row {o['row']} company {o['company_number']}: "
+                      f"{o['column']} = {o['value']!r}")
+            print("The workbook still holds them; place them by hand if they matter.")
+    elif args.cmd == "import-manual-inputs":
+        t = get_tenant_by_slug(args.tenant_slug)
+        if not t:
+            raise SystemExit(f"No such tenant: {args.tenant_slug}")
+        n = import_manual_inputs_json(t["id"], args.path)
+        print(f"Imported manual inputs for {n} company/companies into {t['slug']}.")
+    elif args.cmd == "check-excel":
+        orphans = unmapped_excel_values(args.path)
+        if not orphans:
+            print("Every populated cell maps to a known column.")
+        else:
+            print(f"{len(orphans)} cell(s) would NOT be imported:")
+            for o in orphans:
+                print(f"  row {o['row']} company {o['company_number']}: "
+                      f"{o['column']} = {o['value']!r}")
     elif args.cmd == "list-tenants":
         for t in list_tenants():
             print(f"{t['id']:>4}  {t['slug']:<24} {len(all_rows(t['id'], use_cache=False)):>5} companies")
