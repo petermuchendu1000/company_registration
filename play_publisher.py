@@ -134,8 +134,21 @@ def _app_dir(company_number: str) -> Path | None:
     return None
 
 
-def _load_listing(app_dir: Path) -> dict | None:
-    path = app_dir / "play_listing.json"
+def _listing_path(app_dir: Path) -> Path:
+    """
+    assets.generate_all() writes listing files into {app}/listing/. Older
+    pipeline versions wrote them flat into {app}/, so fall back to that.
+    """
+    nested = app_dir / "listing" / "play_listing.json"
+    return nested if nested.is_file() else app_dir / "play_listing.json"
+
+
+def _data_safety_path(app_dir: Path) -> Path:
+    nested = app_dir / "listing" / "data_safety.json"
+    return nested if nested.is_file() else app_dir / "data_safety.json"
+
+
+def _load_json(path: Path) -> dict | None:
     if not path.is_file():
         return None
     try:
@@ -143,6 +156,10 @@ def _load_listing(app_dir: Path) -> dict | None:
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Unreadable %s: %s", path, exc)
         return None
+
+
+def _load_listing(app_dir: Path) -> dict | None:
+    return _load_json(_listing_path(app_dir))
 
 
 def _find_aab(app_dir: Path) -> Path | None:
@@ -176,7 +193,7 @@ def preflight(company_number: str) -> Report:
 
     listing = _load_listing(app_dir)
     if listing is None:
-        return rep.fail(f"Missing or unreadable {app_dir / 'play_listing.json'}")
+        return rep.fail(f"Missing or unreadable {_listing_path(app_dir)}")
 
     identity = listing.get("app_identity", {}) or {}
     store = listing.get("store_listing", {}) or {}
@@ -391,6 +408,166 @@ def publish(
     return rep
 
 
+# ── Data Safety ─────────────────────────────────────────────────────────────
+# POST applications/{packageName}/dataSafety takes `safetyLabels`: the contents
+# of a Data Safety CSV, in the format Play Console's "Export to CSV" produces.
+#
+# The question IDs in that CSV are issued by Play Console, so we never
+# synthesise one. Export the template once from App content > Data safety >
+# Export to CSV, answer it for the zero-data profile, and save it as the
+# canonical template. Every generated app shares the same declaration, so the
+# same file uploads to all of them.
+DS_COL_QUESTION = "Question ID (machine readable)"
+DS_COL_RESPONSE = "Response (machine readable)"
+DS_COL_VALUE = "Response value"
+DS_COL_REQUIREMENT = "Answer requirement"
+DS_COLUMNS = (DS_COL_QUESTION, DS_COL_RESPONSE, DS_COL_VALUE, DS_COL_REQUIREMENT)
+
+
+def _default_ds_template() -> Path:
+    return Path(
+        os.getenv("PLAY_DATA_SAFETY_TEMPLATE")
+        or Path(__file__).parent / "apps" / "generator" / "data_safety_template.csv"
+    )
+
+
+def validate_data_safety_csv(csv_text: str) -> tuple[list[str], list[str]]:
+    """
+    Structurally check an exported Data Safety CSV before sending it.
+
+    Uses the sheet's own "Answer requirement" column, so it catches a
+    half-filled export without us hard-coding any question IDs.
+
+    Returns (errors, warnings).
+    """
+    import csv as _csv
+    from io import StringIO
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    rows = list(_csv.DictReader(StringIO(csv_text)))
+    if not rows:
+        return ["Data Safety CSV has no rows"], warnings
+
+    missing_cols = [c for c in DS_COLUMNS if c not in (rows[0].keys() or {})]
+    if missing_cols:
+        return [f"Data Safety CSV is missing column(s): {missing_cols}"], warnings
+
+    # One question spans several rows when it offers choices.
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        groups.setdefault((row.get(DS_COL_QUESTION) or "").strip(), []).append(row)
+    groups.pop("", None)
+
+    for question, grp in groups.items():
+        requirements = {(r.get(DS_COL_REQUIREMENT) or "").strip().upper() for r in grp}
+        values = [(r.get(DS_COL_VALUE) or "").strip().upper() for r in grp]
+        trues = sum(1 for v in values if v == "TRUE")
+        answered = sum(1 for v in values if v)
+
+        for v in values:
+            if v and v not in {"TRUE", "FALSE"}:
+                errors.append(f"{question}: response value {v!r} is not TRUE, FALSE or blank")
+
+        if "SINGLE_CHOICE" in requirements and trues != 1:
+            errors.append(f"{question}: SINGLE_CHOICE needs exactly one TRUE, found {trues}")
+        elif "MULTIPLE_CHOICE" in requirements and trues < 1:
+            errors.append(f"{question}: MULTIPLE_CHOICE needs at least one TRUE, found none")
+        elif "REQUIRED" in requirements and answered == 0:
+            errors.append(f"{question}: REQUIRED but left blank")
+        elif "MAYBE_REQUIRED" in requirements and answered == 0:
+            warnings.append(
+                f"{question}: MAYBE_REQUIRED and blank — fine unless an earlier "
+                f"answer makes it mandatory"
+            )
+
+    return errors, warnings
+
+
+def upload_data_safety(
+    company_number: str,
+    template: str | os.PathLike | None = None,
+    dry_run: bool = True,
+) -> Report:
+    """
+    Send this app's Data Safety declaration.
+
+    `template` defaults to apps/generator/data_safety_template.csv (override
+    with PLAY_DATA_SAFETY_TEMPLATE). With dry_run=True the CSV is validated
+    and nothing is sent — that path needs no credentials and no Google client
+    libraries, so it runs anywhere.
+    """
+    cn = str(company_number).zfill(8)
+    rep = Report(company_number=cn, dry_run=dry_run)
+
+    app_dir = _app_dir(cn)
+    if app_dir is None or not app_dir.is_dir():
+        return rep.fail(f"No generated app directory for company {cn}")
+
+    listing = _load_listing(app_dir)
+    if listing is None:
+        return rep.fail(f"Missing or unreadable {_listing_path(app_dir)}")
+    rep.package_name = (listing.get("app_identity", {}) or {}).get("package_name", "")
+    if not rep.package_name:
+        return rep.fail("play_listing.json has no app_identity.package_name")
+
+    key = _accounts_dir() / f"{cn}.json"
+    if not key.is_file():
+        rep.fail(f"Missing Play service account key: {key}")
+
+    path = Path(template) if template else _default_ds_template()
+    if not path.is_file():
+        return rep.fail(
+            f"No Data Safety CSV at {path}. Export one from Play Console "
+            f"(App content > Data safety > Export to CSV), answer it, and save "
+            f"it there."
+        )
+    try:
+        csv_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return rep.fail(f"Cannot read {path}: {exc}")
+
+    errors, warnings = validate_data_safety_csv(csv_text)
+    for message in errors:
+        rep.fail(message)
+    for message in warnings:
+        rep.warn(message)
+
+    # The generator's own declaration is the source of truth for what this app
+    # does; flag any drift from the zero-data profile the template encodes.
+    declared = _load_json(_data_safety_path(app_dir)) or {}
+    if declared.get("collects_user_data") or declared.get("shares_user_data"):
+        rep.warn(
+            "data_safety.json says this app collects or shares user data, but "
+            f"{path.name} is the shared zero-data declaration — confirm the CSV "
+            f"matches this app before sending"
+        )
+
+    if not rep.ok:
+        return rep
+
+    if dry_run:
+        rep.warn(f"dry_run: {path.name} validated, nothing sent")
+        return rep
+
+    from googleapiclient.errors import HttpError
+
+    try:
+        _client(cn).applications().dataSafety(
+            packageName=rep.package_name, body={"safetyLabels": csv_text},
+        ).execute()
+        rep.committed = True
+        logger.info("[%s] uploaded Data Safety declaration for %s", cn, rep.package_name)
+    except HttpError as exc:
+        detail = exc.content.decode("utf-8", "replace") if exc.content else str(exc)
+        rep.fail(f"Play API error {exc.resp.status}: {detail}")
+    except Exception as exc:  # noqa: BLE001
+        rep.fail(f"{type(exc).__name__}: {exc}")
+
+    return rep
+
+
 def _discard(edits, edit_id: str, pkg: str, cn: str) -> None:
     """Best-effort cleanup so a failed run doesn't leave a dangling edit."""
     if not edit_id:
@@ -411,13 +588,20 @@ if __name__ == "__main__":
                         help="actually publish (default is a validate-only dry run)")
     parser.add_argument("--preflight-only", action="store_true",
                         help="check local artefacts only, no network calls")
+    parser.add_argument("--data-safety", action="store_true",
+                        help="send the Data Safety declaration instead of publishing")
+    parser.add_argument("--template",
+                        help="Data Safety CSV to use (default: apps/generator/data_safety_template.csv)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    result = (
-        preflight(args.company_number)
-        if args.preflight_only
-        else publish(args.company_number, track=args.track, dry_run=not args.commit)
-    )
+    if args.data_safety:
+        result = upload_data_safety(
+            args.company_number, template=args.template, dry_run=not args.commit,
+        )
+    elif args.preflight_only:
+        result = preflight(args.company_number)
+    else:
+        result = publish(args.company_number, track=args.track, dry_run=not args.commit)
     print(json.dumps(result.as_dict(), indent=2))
     raise SystemExit(0 if result.ok else 1)
