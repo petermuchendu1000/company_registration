@@ -44,3 +44,24 @@ __pycache__/
 
 # Play Console service account keys (one JSON per company)
 secrets/
+
+# ── Client personal data — never commit ────────────────────────────────────
+# These hold real people's names, dates of birth, nationalities, personal
+# addresses, phone numbers and email accounts. They were purged from git
+# history on 2026-10-15; keep them local only.
+emails.xlsx
+duns_requests.json
+physical_numbers.json
+phone_numbers.json
+physical_numbers.xlsx
+phone_numbers.xlsx
+phones.xlsx
+pipeline_output/*.xlsx
+pipeline_output/manual_inputs.json
+ggplay/emails.xlsx
+ggplay/duns_requests.json
+ggplay/physical_numbers.json
+ggplay/pipeline_output/
+# Anti-bot challenge screenshots can capture form contents
+challenge_*.png
+debug_screenshots/
