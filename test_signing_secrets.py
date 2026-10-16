@@ -5,8 +5,8 @@ apps/template-shift-journal/app/build.gradle.kts is in version control, and
 write_flavors_gradle used to emit the signing block with the passwords as
 string literals:
 
-    storePassword = "474c4992049490b5e1cc76a7430659f4"
-    keyPassword   = "474c4992049490b5e1cc76a7430659f4"
+    storePassword = "<32 hex characters>"
+    keyPassword   = "<the same 32>"
 
 The .jks files themselves are git-ignored, so an attacker with the repository
 had the password but not the key. That is still one factor of two handed over,
@@ -186,11 +186,131 @@ def test_master_secret_is_git_ignored() -> None:
     print("  OK  .master_secret is git-ignored")
 
 
-def test_no_literal_password_in_the_working_tree() -> None:
-    """The committed one, specifically — it is the reason this file exists."""
-    out = _git("grep", "-n", "474c4992049490b5e1cc76a7430659f4")
-    assert not out.stdout.strip(), f"still present:\n{out.stdout}"
-    print("  OK  the previously committed password is gone from tracked files")
+def _committed_passwords() -> list[str]:
+    """
+    Every signing password that has ever been committed to this file.
+
+    Read out of git history rather than hardcoded. Writing the value into
+    this test would put it back into a tracked file, and it would only ever
+    cover the one password someone happened to notice.
+    """
+    log = _git("log", "--format=%H", "--follow", "--",
+               "apps/template-shift-journal/app/build.gradle.kts")
+    if log.returncode != 0:
+        return []
+    found: list[str] = []
+    for sha in log.stdout.split():
+        blob = _git("show", f"{sha}:apps/template-shift-journal/app/build.gradle.kts")
+        if blob.returncode != 0:
+            continue
+        for match in re.findall(r'(?:storePassword|keyPassword)\s*=\s*"([^"]+)"', blob.stdout):
+            if match not in found:
+                found.append(match)
+    return found
+
+
+def test_no_historical_password_survives_in_the_working_tree() -> None:
+    leaked = _committed_passwords()
+    if not leaked:
+        print("  SKIP  no committed password found in history (shallow clone?)")
+        return
+    still_there = [p for p in leaked if _git("grep", "-n", p).stdout.strip()]
+    assert not still_there, f"a committed password is still in a tracked file: {still_there}"
+    print(f"  OK  {len(leaked)} password(s) found in history, none in tracked files")
+
+
+# ── rotation ─────────────────────────────────────────────────────────────────
+
+def _with_isolated_rotations(fn):
+    """
+    Run fn() against a throwaway rotations file.
+
+    The real one records a rotation that actually happened; a test must not
+    bump a generation in it, because the password for the live keystore is
+    derived from that number and nothing else can recover it.
+    """
+    from apps.generator import keystore_mint as km
+    original = km._ROTATIONS_PATH
+    with tempfile.TemporaryDirectory() as d:
+        km._ROTATIONS_PATH = str(Path(d) / "rotations.json")
+        try:
+            return fn(km)
+        finally:
+            km._ROTATIONS_PATH = original
+
+
+def test_generation_one_keeps_the_original_derivation() -> None:
+    """Rotation must not silently change every untouched company's password."""
+    def check(km):
+        import hashlib as h, hmac as hm
+        master = km._load_or_create_master()
+        expected = hm.new(master, b"19998877", h.sha256).hexdigest()[:32]
+        assert km.password_for("19998877") == expected, "generation 1 derivation changed"
+        assert km.generation("19998877") == 1
+    _with_isolated_rotations(check)
+    print("  OK  an unrotated company still derives the password it always had")
+
+
+def test_rotating_changes_the_password() -> None:
+    def check(km):
+        before = km.password_for("19998877")
+        km._save_rotations({"19998877": 2})
+        after = km.password_for("19998877")
+        assert after != before, "the generation did not change the password"
+        assert len(after) == 32, after
+        # ...and it is reproducible, or the keystore becomes unopenable.
+        assert km.password_for("19998877") == after, "derivation is not deterministic"
+    _with_isolated_rotations(check)
+    print("  OK  bumping a generation yields a different, reproducible password")
+
+
+def test_rotation_is_per_company() -> None:
+    def check(km):
+        other_before = km.password_for("13510663")
+        km._save_rotations({"19998877": 2})
+        assert km.password_for("13510663") == other_before, \
+            "rotating one company changed another's password"
+    _with_isolated_rotations(check)
+    print("  OK  rotating one company leaves every other password alone")
+
+
+def test_the_committed_password_opens_nothing() -> None:
+    """The whole point of the rotation: that pair must be dead."""
+    ks_dir = TEMPLATE_APP / "keystores"
+    if not shutil.which("keytool"):
+        print("  SKIP  keytool not on PATH")
+        return
+    leaked = _committed_passwords()
+    if not leaked:
+        print("  SKIP  no committed password found in history (shallow clone?)")
+        return
+    opened = []
+    for store in sorted(ks_dir.rglob("*.jks")):
+        for password in leaked:
+            rc = subprocess.run(
+                ["keytool", "-list", "-keystore", str(store),
+                 "-storepass", password, "-storetype", "PKCS12"],
+                capture_output=True, timeout=30,
+            ).returncode
+            if rc == 0:
+                opened.append(str(store.relative_to(ROOT)))
+    assert not opened, f"a committed password still opens: {opened}"
+    print(f"  OK  none of the {len(leaked)} historical password(s) open any keystore")
+
+
+def test_rotations_file_is_git_ignored() -> None:
+    target = ROOT / "apps" / "generator" / ".keystore_rotations.json"
+    created = not target.exists()
+    if created:
+        target.write_text("{}\n", encoding="utf-8")
+    try:
+        ignored = _git("check-ignore", "-q",
+                       str(target.relative_to(ROOT))).returncode == 0
+    finally:
+        if created:
+            target.unlink(missing_ok=True)
+    assert ignored, ".keystore_rotations.json is NOT git-ignored"
+    print("  OK  the rotations file is git-ignored")
 
 
 def main() -> int:
@@ -203,7 +323,12 @@ def main() -> int:
         test_keystore_properties_is_git_ignored,
         test_keystores_themselves_are_git_ignored,
         test_master_secret_is_git_ignored,
-        test_no_literal_password_in_the_working_tree,
+        test_no_historical_password_survives_in_the_working_tree,
+        test_generation_one_keeps_the_original_derivation,
+        test_rotating_changes_the_password,
+        test_rotation_is_per_company,
+        test_the_committed_password_opens_nothing,
+        test_rotations_file_is_git_ignored,
     ]
     failures = 0
     for test in tests:

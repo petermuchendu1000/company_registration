@@ -1,6 +1,9 @@
 # Secrets
 .env
 apps/generator/.master_secret
+# Per-company password generations. Lose this and a rotated keystore's
+# password cannot be derived again — back it up with .master_secret.
+apps/generator/.keystore_rotations.json
 apps/template-shift-journal/app/keystores/
 # Keystore passwords, written by apps/generator/flavor_writer.py.
 # They used to be baked into app/build.gradle.kts, which is tracked.
