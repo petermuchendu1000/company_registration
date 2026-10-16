@@ -558,28 +558,59 @@ def make_privacy_page(dest: Path, company: dict[str, str]) -> None:
     dest.write_text(html, encoding="utf-8")
 
 
-def short_description(role_noun: str | None = None) -> str:
+def short_description(role_noun: str | None = None, archetype_id: str = "shift") -> str:
     role = (role_noun or "shift").lower()
-    if role == "trip":
-        return "Simple trip journal for local mileage, delivery, and activity logs."
+    if archetype_id == "mileage":
+        # Stays inside Play's 80-character limit for the longest role noun
+        # the mileage archetype uses ("delivery run").
+        return f"Offline {role} log: odometer readings and HMRC approved mileage totals."
     if role == "visit":
         return "Simple visit journal for local site notes and daily activity logs."
     return "Simple shift journal for local work logs and daily handover notes."
 
 
-def full_description(display_name: str, role_noun: str | None = None, export_title: str | None = None) -> str:
+def full_description(
+    display_name: str,
+    role_noun: str | None = None,
+    export_title: str | None = None,
+    archetype_id: str = "shift",
+) -> str:
+    """Store description for the app that was actually built.
+
+    The feature list has to match the archetype: describing a mileage log as a
+    one-tap timer is a Play metadata violation as well as being untrue.
+    """
     role = (role_noun or "shift").lower()
     export_title = export_title or "Shift Log"
-    feature_lines = [
-        f"- Start and end a {role} from the dashboard with one tap.",
-        f"- Add a short note to each {role} for handover, delivery, or site context.",
-        "- Live session counter tracks how many sessions you have completed today.",
-        f"- Review recent {role} activity including start time, end time, and duration.",
-        "- Branded interface with company name and zero-permission local storage.",
-    ]
+
+    if archetype_id == "mileage":
+        opening = (
+            f"{display_name} is an offline mileage log for drivers who need a clean "
+            f"record of business travel on Android."
+        )
+        feature_lines = [
+            f"- Record each {role} as an opening and closing odometer reading; the app works out the distance.",
+            "- Opening reading is carried over from your last journey so consecutive trips line up.",
+            "- Running tax-year total applies HMRC approved mileage rates, 45p for the first 10,000 miles and 25p after.",
+            f"- {export_title} groups journeys by month with per-month mileage subtotals.",
+            "- Add a purpose to any journey for invoicing or expense context.",
+            "- Branded interface with company details and zero-permission local storage.",
+        ]
+    else:
+        opening = (
+            f"{display_name} is a lightweight offline {role} toolkit designed for "
+            f"straightforward daily record keeping on Android."
+        )
+        feature_lines = [
+            f"- Start and end a {role} from the dashboard with one tap.",
+            f"- Add a short note to each {role} for handover, delivery, or site context.",
+            "- Live session counter tracks how many sessions you have completed today.",
+            f"- Review recent {role} activity including start time, end time, and duration.",
+            "- Branded interface with company name and zero-permission local storage.",
+        ]
 
     sections = [
-        f"{display_name} is a lightweight offline {role} toolkit designed for straightforward daily record keeping on Android.",
+        opening,
         "The app helps users organise practical work activity through a focused set of local tools. It is intentionally minimal: no account, no ads, no network connection, no location access, and no personal data sent off the device.",
         "Key features:\n" + "\n".join(feature_lines),
         f"Privacy:\n{display_name} does not collect, share, or transmit user data. Any notes or session records are kept locally on the device and can be removed by clearing app storage or uninstalling the app.",
@@ -617,8 +648,11 @@ def listing_payload(company: dict[str, str]) -> dict:
     )
     website_url = f"https://{domain}" if domain else "PENDING_DOMAIN"
 
+    from . import archetypes as _archetypes
+    archetype = _archetypes.get(company.get("archetype") or _archetypes.DEFAULT_ID)
+
     app_title = _truncate_title(display_name)
-    short_desc = _validate_short_desc(short_description(role_noun))
+    short_desc = _validate_short_desc(short_description(role_noun, archetype.id))
 
     return {
         "app_identity": {
@@ -633,7 +667,7 @@ def listing_payload(company: dict[str, str]) -> dict:
         },
         "store_listing": {
             "short_description": short_desc,
-            "full_description": full_description(display_name, role_noun, export_title),
+            "full_description": full_description(display_name, role_noun, export_title, archetype.id),
             "privacy_policy_url": privacy_url,
             "developer_email": company.get("support_email"),
             "developer_website": website_url,
@@ -645,12 +679,7 @@ def listing_payload(company: dict[str, str]) -> dict:
             "phone_screenshots": [f"graphics/phone-screenshot-{i}.png" for i in range(1, 5)],
             "tablet_7inch_screenshots": [f"graphics/tablet7-screenshot-{i}.png" for i in range(1, 5)],
             "tablet_10inch_screenshots": [f"graphics/tablet10-screenshot-{i}.png" for i in range(1, 5)],
-            "screenshot_screens": [
-                "Dashboard — idle, no active shift",
-                "Dashboard — active shift with note field",
-                "Activity Log — session history list",
-                "Settings — company info and app details",
-            ],
+            "screenshot_screens": list(archetype.screenshot_screens),
             "specs": {
                 "icon": "512x512 px, 32-bit PNG with alpha, max 1024 KB",
                 "feature_graphic": "1024x500 px, JPEG or 24-bit PNG (no alpha)",
@@ -678,6 +707,11 @@ def listing_payload(company: dict[str, str]) -> dict:
             "initial_version_code": 1,
             "initial_version_name": "1.0",
             "release_name": "1.0 initial internal test",
+            # What this app actually ships, from apps/generator/archetypes.py.
+            # The policy gate reads these to check the catalog is not one
+            # screen set wearing different colours.
+            "archetype": archetype.id,
+            "selected_modules": list(archetype.modules),
             "release_notes": "Initial release with offline work tools, local notes, recent activity, and privacy-first zero-permission design.",
             "recommended_first_track": "Internal testing",
             "artifact_required_for_play": "AAB",

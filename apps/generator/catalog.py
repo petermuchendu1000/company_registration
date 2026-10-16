@@ -22,17 +22,12 @@ def _db():
     import db
     return db
 
-# SIC code -> archetype. Only "shift" exists today; the rest are placeholders
-# for future archetype modules and currently fall back to "shift".
-SIC_ARCHETYPE = {
-    "78200": "shift",  # Temp employment agency
-    "88100": "shift",  # Social work without accommodation for the elderly/disabled
-    "87100": "shift",  # Residential nursing care
-    "53202": "shift",  # Courier (will become "mileage" when that archetype lands)
-    "49410": "shift",  # Freight road transport
-    "98000": "shift",  # Residents property mgmt (will become "twa" when that lands)
-}
-DEFAULT_ARCHETYPE = "shift"
+# SIC code -> archetype. The table lives in archetypes.py, which is also what
+# the Gradle source-set wiring and the policy gate read; re-exported here
+# because callers have imported these two names from catalog since before the
+# registry existed.
+from .archetypes import SIC_ARCHETYPE, DEFAULT_ID as DEFAULT_ARCHETYPE  # noqa: E402
+from . import archetypes as _archetypes  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -122,8 +117,7 @@ def load_companies(
             continue
 
         sic_raw = field(row, "SIC Codes")
-        primary_sic = sic_raw.split(",")[0].strip() if sic_raw else ""
-        archetype = SIC_ARCHETYPE.get(primary_sic, DEFAULT_ARCHETYPE)
+        archetype = _archetypes.for_sic(sic_raw).id
 
         domain = field(row, "Domain")
         email = field(row, "Assigned Email")

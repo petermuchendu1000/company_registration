@@ -19,6 +19,7 @@ from pathlib import Path
 from .brand_synth import Palette, colors_xml, palette_for, strings_xml
 from .catalog import Company
 from .keystore_mint import Keystore
+from . import archetypes
 from . import sic_map as _sic_map
 
 _ROOT = Path(__file__).parent.parent.parent
@@ -84,37 +85,20 @@ def _bc_str(s: str) -> str:
     return f'"{kotlin}"'
 
 
+def archetype_for(company: Company) -> archetypes.Archetype:
+    """The archetype this company's app is built from.
+
+    Derived from the SIC code rather than read off `company.archetype`, so a
+    row loaded before an archetype existed starts building the right product
+    as soon as the registry learns about it. catalog.load_companies fills the
+    field from the same table, so the two agree.
+    """
+    return archetypes.for_sic(company.sic_codes)
+
+
 def _sic_role_vocab(company: Company) -> dict[str, str]:
-    """Map primary SIC -> role-vocabulary strings baked into BuildConfig."""
-    primary = (company.sic_codes.split(",")[0].strip() if company.sic_codes else "")
-    if primary in {"53202", "49410", "52100", "53100"}:      # courier/logistics
-        return {
-            "ROLE_NOUN": "trip",
-            "ROLE_VERB_START": "Start Trip",
-            "ROLE_VERB_END": "End Trip",
-            "EXPORT_TITLE": "Delivery Log",
-        }
-    if primary in {"98000", "68320", "68100"}:               # property mgmt
-        return {
-            "ROLE_NOUN": "visit",
-            "ROLE_VERB_START": "Start Visit",
-            "ROLE_VERB_END": "End Visit",
-            "EXPORT_TITLE": "Site Visit Log",
-        }
-    if primary in {"87100", "88100", "86900"}:               # care
-        return {
-            "ROLE_NOUN": "visit",
-            "ROLE_VERB_START": "Start Visit",
-            "ROLE_VERB_END": "End Visit",
-            "EXPORT_TITLE": "Care Visit Log",
-        }
-    # default: shift work
-    return {
-        "ROLE_NOUN": "shift",
-        "ROLE_VERB_START": "Start Shift",
-        "ROLE_VERB_END": "End Shift",
-        "EXPORT_TITLE": "Shift Log",
-    }
+    """Role-vocabulary strings baked into BuildConfig, within the archetype."""
+    return archetypes.vocab_for(archetype_for(company), company.sic_codes)
 
 
 def write_flavor_resources(company: Company, palette: Palette, app_dir: str) -> str:
@@ -175,6 +159,7 @@ def write_flavors_gradle(built: list[BuiltFlavor], app_dir: str) -> str:
     lines += ["    }", "", "    productFlavors {"]
     for b in built:
         c = b.company
+        arch   = archetype_for(c)
         vocab  = _sic_role_vocab(c)
         sic    = _sic_map.lookup(c.sic_codes)
         ver    = _load_version(c.company_number, c.company_name)
@@ -204,7 +189,31 @@ def write_flavors_gradle(built: list[BuiltFlavor], app_dir: str) -> str:
             f'            buildConfigField("String", "INFO_TITLE", "\\"{_gradle_escape(sic["info_title"])}\\"")',
             f'            buildConfigField("String", "INFO_ITEMS_JSON", {_bc_str(info_json)})',
             f'            buildConfigField("String", "ACTION_LABEL", "\\"{_gradle_escape(sic["action_label"])}\\"")',
+            f'            buildConfigField("String", "ARCHETYPE_ID", "\\"{arch.id}\\"")',
+        ]
+        for field_type, name, value in archetypes.build_config_fields(arch, c.sic_codes):
+            if field_type == "String":
+                literal = f'"\\"{_gradle_escape(str(value))}\\""'
+            else:
+                literal = f'"{value}"'
+            lines.append(f'            buildConfigField("{field_type}", "{name}", {literal})')
+        lines += [
             f'            signingConfig = signingConfigs.getByName("{c.flavor}")',
+            '        }',
+        ]
+    lines += ["    }", ""]
+
+    # Per-flavor archetype sources. A second flavor dimension would make Gradle
+    # configure every company x every archetype; adding a source directory to
+    # the flavor's own source set gives each app exactly one archetype with no
+    # variant explosion. Exactly one activeArchetype() is on the compile path,
+    # so the others contribute nothing to the artifact.
+    lines.append("    sourceSets {")
+    for b in built:
+        arch = archetype_for(b.company)
+        lines += [
+            f'        getByName("{b.company.flavor}") {{',
+            f'            java.srcDir("{arch.src_dir}/java")',
             '        }',
         ]
     lines += ["    }", "    " + _MARKER_END]

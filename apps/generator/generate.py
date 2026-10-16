@@ -25,7 +25,14 @@ from pathlib import Path
 
 from .brand_synth import palette_for
 from .catalog import Company, load_companies, summarize
-from .flavor_writer import BuiltFlavor, clean_stale_flavors, write_flavor_resources, write_flavors_gradle, _sic_role_vocab
+from .flavor_writer import (
+    BuiltFlavor,
+    archetype_for,
+    clean_stale_flavors,
+    write_flavor_resources,
+    write_flavors_gradle,
+    _sic_role_vocab,
+)
 from .keystore_mint import mint as mint_keystore
 from . import assets
 from . import toolchain
@@ -164,6 +171,7 @@ def backup_and_make_assets(built: list[BuiltFlavor], collected: dict[str, dict[s
             "support_email": c.support_email,
             "application_id": c.application_id,
             "domain": c.domain,
+            "archetype": archetype_for(c).id,
             "role_noun": vocab["ROLE_NOUN"],
             "role_verb_start": vocab["ROLE_VERB_START"],
             "role_verb_end": vocab["ROLE_VERB_END"],
@@ -191,8 +199,9 @@ def generate_from_pipeline_results(
         Dict mapping company_number -> {status, apk_path, aab_path, error, message}
         Possible statuses: "success", "failed"
     """
-    from .catalog import Company, SIC_ARCHETYPE, DEFAULT_ARCHETYPE
-    
+    from .catalog import Company
+    from . import archetypes as _archetypes
+
     output = {}
     
     # Convert pipeline results to Company objects
@@ -207,9 +216,8 @@ def generate_from_pipeline_results(
             
         cn = details.get("company_number", "")
         sic_raw = details.get("sic_codes", "")
-        primary_sic = sic_raw.split(",")[0].strip() if sic_raw else ""
-        archetype = SIC_ARCHETYPE.get(primary_sic, DEFAULT_ARCHETYPE)
-        
+        archetype = _archetypes.for_sic(sic_raw).id
+
         support = f"dev@{domain}" if domain else (email or "support@example.uk")
         
         c = Company(

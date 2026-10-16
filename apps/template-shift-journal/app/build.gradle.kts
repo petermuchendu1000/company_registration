@@ -58,7 +58,14 @@ android {
             buildConfigField("String", "INFO_TITLE", "\"Business Reference\"")
             buildConfigField("String", "INFO_ITEMS_JSON", "\"[{\\\"k\\\":\\\"Corporation Tax\\\",\\\"v\\\":\\\"19%\\\\u201325% (2024)\\\"},{\\\"k\\\":\\\"VAT Standard Rate\\\",\\\"v\\\":\\\"20%\\\"},{\\\"k\\\":\\\"VAT Registration\\\",\\\"v\\\":\\\"\\\\u00a390,000 turnover threshold\\\"},{\\\"k\\\":\\\"National Living Wage\\\",\\\"v\\\":\\\"\\\\u00a311.44/hr (25+, Apr 2024)\\\"},{\\\"k\\\":\\\"Annual Investment Allow.\\\",\\\"v\\\":\\\"\\\\u00a31,000,000 / year\\\"},{\\\"k\\\":\\\"Small Business Rates Relief\\\",\\\"v\\\":\\\"100% for RV \\\\u2264 \\\\u00a312,000\\\"},{\\\"k\\\":\\\"Companies House Filing\\\",\\\"v\\\":\\\"Annual confirmation statement\\\"},{\\\"k\\\":\\\"PAYE Registration\\\",\\\"v\\\":\\\"Required before first payroll\\\"}]\"")
             buildConfigField("String", "ACTION_LABEL", "\"Get in Touch\"")
+            buildConfigField("String", "ARCHETYPE_ID", "\"shift\"")
             signingConfig = signingConfigs.getByName("c15046885")
+        }
+    }
+
+    sourceSets {
+        getByName("c15046885") {
+            java.srcDir("src/archetype-shift/java")
         }
     }
     // <<< GENERATED FLAVORS END

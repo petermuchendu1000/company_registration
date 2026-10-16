@@ -25,6 +25,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import archetypes
 from .catalog import Company, load_companies
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -103,32 +104,33 @@ def _manifest_permissions() -> list[str]:
     )
 
 
-def _template_composables() -> int:
+def _source_text(*src_dirs: str) -> str:
+    """Concatenate the Kotlin under the given `app/src/<dir>` source sets.
+
+    Scans the whole tree rather than one file: the screens moved out of a
+    single MainActivity into core/, screens/ and the per-archetype source
+    sets, and a check pinned to one path silently stops seeing the code.
     """
-    Count Composable functions in the template.
-
-    The original regex looked for `@Composable private fun NameScreen(`, a
-    convention this template does not use — it matched zero of the eighteen
-    composables actually present, so it fired as a blocker on every run.
-    """
-    main = APP_TEMPLATE / "src" / "main" / "java" / "uk" / "template" / "shift" / "MainActivity.kt"
-    if not main.exists():
-        return 0
-    return len(re.findall(r"@Composable", main.read_text(encoding="utf-8")))
+    out: list[str] = []
+    for name in src_dirs:
+        root = APP_TEMPLATE / "src" / name
+        if not root.is_dir():
+            continue
+        for kt in sorted(root.rglob("*.kt")):
+            out.append(kt.read_text(encoding="utf-8"))
+    return "\n".join(out)
 
 
-def _template_is_interactive() -> bool:
+def _composable_count(*src_dirs: str) -> int:
+    return len(re.findall(r"@Composable", _source_text(*src_dirs)))
+
+
+def _is_interactive(*src_dirs: str) -> bool:
     """
     Minimum-functionality smell test: the app must take input and keep state,
     not just render static text.
-
-    The original token list came from the ggplay template (MODULE_TITLES,
-    "Recent activity"); those strings do not exist here. These do.
     """
-    main = APP_TEMPLATE / "src" / "main" / "java" / "uk" / "template" / "shift" / "MainActivity.kt"
-    if not main.exists():
-        return False
-    text = main.read_text(encoding="utf-8")
+    text = _source_text(*src_dirs)
     return all(token in text for token in ("OutlinedTextField", "rememberSaveable", "Button"))
 
 
@@ -252,13 +254,21 @@ def evaluate_company(company: Company, require_aab: bool = True) -> list[Finding
                                     "Data Safety must match the zero-collection design, or the "
                                     "design must change to match the declaration.", src))
 
-    # The module system this check was written for does not exist in this tree
-    # yet; it arrives with the archetype work. Report, don't block.
-    modules = (listing.get("release", {}) or {}).get("selected_modules", [])
+    # What the listing says the app ships, against what the SIC code would
+    # build today. A stale listing describes screens the artifact may not have,
+    # which is a metadata violation on top of a wrong store page.
+    release = listing.get("release", {}) or {}
+    modules = release.get("selected_modules", [])
+    expected = archetypes.for_sic(company.sic_codes)
     if not modules:
         findings.append(Finding("warning", "module_count",
-                                "Listing declares no selected_modules — every app is currently "
-                                "the same screen set, which is the repetitive-content risk.", src))
+                                "Listing declares no selected_modules — regenerate assets so the "
+                                "store page names the screens this app actually ships.", src))
+    elif release.get("archetype") != expected.id:
+        findings.append(Finding("blocker", "archetype_mismatch",
+                                f"Listing was written for archetype "
+                                f"'{release.get('archetype') or 'unknown'}' but this company's SIC "
+                                f"code now builds '{expected.id}'. Regenerate before publishing.", src))
 
     return findings
 
@@ -290,13 +300,30 @@ def evaluate_template() -> list[Finding]:
         findings.append(Finding("blocker", "unexpected_permissions",
                                 f"Source manifest declares permissions: {permissions}", "template"))
 
-    if _template_composables() < 1:
-        findings.append(Finding("blocker", "screen_count",
-                                "No Composable found in the template.", "template"))
-    if not _template_is_interactive():
-        findings.append(Finding("blocker", "minimum_functionality",
-                                "Template has no text input, saved state or buttons — Play rejects "
-                                "apps with minimal functionality.", "template"))
+    # Each archetype is a separate product and has to clear the bar on its
+    # own: it ships with the shared core, never with another archetype.
+    for arch in archetypes.ALL:
+        arch_src = arch.src_dir.removeprefix("src/")
+        arch_root = APP_TEMPLATE / "src" / arch_src
+        label = f"archetype:{arch.id}"
+
+        if not arch_root.is_dir():
+            findings.append(Finding("blocker", "missing_archetype_source",
+                                    f"No source directory at {arch.src_dir} — the generator "
+                                    f"would put an empty source set on the compile path.", label))
+            continue
+        if "fun activeArchetype()" not in _source_text(arch_src):
+            findings.append(Finding("blocker", "missing_archetype_entrypoint",
+                                    f"{arch.src_dir} defines no activeArchetype() — MainActivity "
+                                    f"will not compile for a flavor using it.", label))
+
+        if _composable_count("main", arch_src) < 1:
+            findings.append(Finding("blocker", "screen_count",
+                                    "No Composable found in the template.", label))
+        if not _is_interactive("main", arch_src):
+            findings.append(Finding("blocker", "minimum_functionality",
+                                    "Built app has no text input, saved state or buttons — Play "
+                                    "rejects apps with minimal functionality.", label))
 
     for path in _tracked_signing_secrets():
         findings.append(Finding("blocker", "signing_secrets_in_vcs",
@@ -320,6 +347,25 @@ def evaluate_catalog(companies: list[Company], allow_repetitive_factory: bool = 
     if len(set(present)) < len(present):
         findings.append(Finding("blocker", "duplicate_descriptions",
                                 "Two or more apps share an identical full description.", "catalog"))
+
+    # Archetype spread. Play's Spam policy lists "creating multiple apps with
+    # highly similar functionality, content, and user experience" as a
+    # violation, so what matters is how many apps share a feature set, not how
+    # many apps there are. Reported either way; it is the number a human needs
+    # in front of them before deciding to scale.
+    spread: dict[str, int] = {}
+    for company in companies:
+        spread[archetypes.for_sic(company.sic_codes).id] = (
+            spread.get(archetypes.for_sic(company.sic_codes).id, 0) + 1
+        )
+    if spread:
+        summary = ", ".join(f"{k}×{v}" for k, v in sorted(spread.items()))
+        biggest_id, biggest = max(spread.items(), key=lambda kv: kv[1])
+        findings.append(Finding("warning", "archetype_spread",
+                                f"Archetype distribution: {summary}. "
+                                f"{biggest} app(s) share the '{biggest_id}' feature set; apps "
+                                f"within one archetype differ only in branding and trade "
+                                f"figures.", "catalog"))
 
     if len(companies) > 2 and not allow_repetitive_factory:
         findings.append(Finding("blocker", "repetitive_app_factory",
