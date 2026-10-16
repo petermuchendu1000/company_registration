@@ -1301,6 +1301,35 @@ def v2_update_notes(cn):
     return jsonify({"status": "updated", "cn": cn, "notes": notes})
 
 
+@api_v2.route("/api/v2/me")
+def v2_me():
+    """
+    Who is signed in, for the page that is rendering.
+
+    Every surface needs this and none had it: the portal rendered an empty
+    name field, and the operator console could not show an admin the link to
+    their own console because it had no idea what role it was serving.
+
+    It reports the signed-in user and takes no argument — there is no way to
+    ask about somebody else. The role is already decided server-side by
+    auth's gate; sending it here only lets a page stop offering what it
+    would be refused.
+    """
+    from flask import g
+    user = g.user or {}
+    tenant = {}
+    try:
+        tenant = db.get_tenant(int(user.get("tenant_id"))) or {}
+    except (TypeError, ValueError):
+        pass
+    return jsonify({
+        "email": user.get("email", ""),
+        "role": user.get("role", "client"),
+        "tenant": tenant.get("slug", ""),
+        "tenant_name": tenant.get("name", ""),
+    })
+
+
 @api_v2.route("/health")
 def v2_health():
     return jsonify({"status": "ok", "ts": datetime.now().isoformat()})

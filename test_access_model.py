@@ -127,6 +127,41 @@ def test_client_can_see_its_own_companies_and_portal() -> None:
     print("  OK  a client can read its companies and open its portal")
 
 
+def test_every_role_can_ask_who_they_are() -> None:
+    """
+    The page needs this to decide what to offer — the admin console link,
+    the signed-in name. Without it the portal rendered an empty field.
+    """
+    for actor in (CLIENT, OPERATOR, ADMIN):
+        r = actor.get("/api/v2/me")
+        assert r.status_code == 200, f"{actor.role} refused /me: {r.status_code}"
+        body = r.get_json()
+        assert body["email"] == actor.email, body
+        assert body["role"] == actor.role, body
+        assert body["tenant"], body
+    print("  OK  every role can read its own identity")
+
+
+def test_me_reports_only_the_caller() -> None:
+    """It takes no argument, so there is no way to ask about anyone else."""
+    other = OPERATOR.email
+    for query in (f"?user_id=1&email={other}", f"?id=1", ""):
+        body = CLIENT.get("/api/v2/me" + query).get_json()
+        assert body["email"] == CLIENT.email, f"query {query!r} changed the answer: {body}"
+        assert body["role"] == "client", body
+    leaked = [k for k in CLIENT.get("/api/v2/me").get_json()
+              if "pass" in k.lower() or "hash" in k.lower()]
+    assert not leaked, f"password material in /me: {leaked}"
+    print("  OK  /me answers for the caller only, and carries no password material")
+
+
+def test_me_needs_a_session() -> None:
+    anon = flask_app.app.test_client()
+    assert anon.get("/api/v2/me",
+                    headers={"Accept": "application/json"}).status_code == 401
+    print("  OK  /me requires a session")
+
+
 def test_root_sends_each_role_to_its_own_surface() -> None:
     c = CLIENT.client.get("/")
     o = OPERATOR.client.get("/")
@@ -241,6 +276,9 @@ def main() -> int:
         test_client_cannot_read_a_stage_log,
         test_client_cannot_open_the_operator_console,
         test_client_can_see_its_own_companies_and_portal,
+        test_every_role_can_ask_who_they_are,
+        test_me_reports_only_the_caller,
+        test_me_needs_a_session,
         test_root_sends_each_role_to_its_own_surface,
         test_operator_keeps_its_powers,
         test_operator_is_refused_admin_endpoints,

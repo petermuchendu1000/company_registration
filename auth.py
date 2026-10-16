@@ -67,6 +67,7 @@ CLIENT_ENDPOINTS: set[str] = {
     "index",                   # "/" — redirects each role to its own surface
     "static",                  # stylesheet and script for the portal
     "api_v2.portal_page",      # the client's own page
+    "api_v2.v2_me",            # who is signed in; takes no argument
     "api_v2.v2_companies",     # their companies, scoped by tenant already
     "api_v2.v2_company",       # one company's progress
     "api_v2.v2_download",      # their certificate, ID and app bundle

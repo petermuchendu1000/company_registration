@@ -94,6 +94,11 @@
     <section class="side"><h2 class="sec">Job queue, now</h2><div class="panel" id="queue" style="padding:16px 18px"></div></section>
   </div>
   <section><h2 class="sec">Stages finished, last 7 days</h2><div class="panel" id="chart" style="padding:18px 20px 14px"></div></section>
+  <section>
+    <h2 class="sec">Logins</h2>
+    <div class="panel scroll" id="users"></div>
+    <p id="users-note" role="status" aria-live="polite" class="caveat" style="margin-top:10px"></p>
+  </section>
 </main></div>
 
 <script>
@@ -222,8 +227,91 @@ function renderChart(payload) {
     <p class="caveat">${esc(payload.caveat || "")}</p>`;
 }
 
+// ── Logins ───────────────────────────────────────────────────────────────────
+
+const USER_PAGE = 25;
+let userOffset = 0;
+let me = { email: "" };
+
+function shortDate(value) {
+  // Flask serialises a datetime as RFC 822 ("Fri, 16 Oct 2026 22:00:00 GMT"),
+  // not ISO. Slicing the first ten characters off that gave "Fri, 16 Oc".
+  if (!value) return "";
+  const d = new Date(value);
+  if (isNaN(d)) return String(value).slice(0, 11);
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function renderUsers(body) {
+  const rows = body.users.map((u) => {
+    // An admin changing their own role is the one case that can lock the
+    // console; the server refuses the last one, and the page does not
+    // offer it at all rather than letting someone discover it by 409.
+    const isSelf = u.email === me.email;
+    const options = body.roles.map((r) =>
+      `<option value="${esc(r)}"${r === u.role ? " selected" : ""}>${esc(r)}</option>`).join("");
+    return `<tr>
+      <td>${esc(u.email)}${isSelf ? ` <span class="muted">(you)</span>` : ""}</td>
+      <td><span class="mono">${esc(u.tenant)}</span></td>
+      <td>${isSelf
+            ? `<span class="muted">${esc(u.role)}</span>`
+            : `<label class="muted" style="display:none" for="role-${u.id}">Role for ${esc(u.email)}</label>
+               <select id="role-${u.id}" data-user="${u.id}" class="role-select"
+                 style="font:inherit;font-size:13px;background:var(--panel-2);color:var(--fg);
+                        border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-height:36px">
+                 ${options}</select>`}</td>
+      <td class="muted">${esc(shortDate(u.created_at))}</td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("users").innerHTML = `<table>
+    <thead><tr><th>Email</th><th>Tenant</th><th>Role</th><th>Created</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="4" class="muted">No logins.</td></tr>`}</tbody></table>`;
+
+  const from = body.total ? body.offset + 1 : 0;
+  const to = body.offset + body.users.length;
+  document.getElementById("users-note").innerHTML =
+    `Showing ${from}–${to} of ${body.total}. Admins first. ` +
+    `${body.offset > 0 ? `<a href="#" id="users-prev">Previous</a>` : ""}` +
+    `${body.offset > 0 && body.truncated ? " · " : ""}` +
+    `${body.truncated ? `<a href="#" id="users-next">Next</a>` : ""}`;
+
+  const prev = document.getElementById("users-prev");
+  const next = document.getElementById("users-next");
+  if (prev) prev.onclick = (e) => { e.preventDefault(); userOffset = Math.max(0, userOffset - USER_PAGE); loadUsers(); };
+  if (next) next.onclick = (e) => { e.preventDefault(); userOffset += USER_PAGE; loadUsers(); };
+
+  document.querySelectorAll(".role-select").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      const note = document.getElementById("users-note");
+      try {
+        const r = await fetch(`/api/v2/admin/users/${sel.dataset.user}/role`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ role: sel.value }),
+        });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
+        note.textContent = `Role updated. Takes effect on their next request.`;
+      } catch (err) {
+        note.textContent = `Could not change the role: ${err.message}`;
+        loadUsers();   // put the select back to what the server actually has
+      }
+    });
+  });
+}
+
+async function loadUsers() {
+  try {
+    renderUsers(await api(`/api/v2/admin/users?limit=${USER_PAGE}&offset=${userOffset}`));
+  } catch (e) {
+    document.getElementById("users-note").textContent = "Could not load logins: " + e.message;
+  }
+}
+
 (async function () {
   try {
+    me = await api("/api/v2/me").catch(() => ({ email: "" }));
     const [overview, tenants, queue, chart] = await Promise.all([
       api("/api/v2/admin/overview"),
       api("/api/v2/admin/tenants"),
@@ -236,6 +324,7 @@ function renderChart(payload) {
     renderQueue(queue);
     renderChart(chart);
     document.getElementById("took").textContent = overview.took_ms + " ms";
+    await loadUsers();
   } catch (e) {
     document.getElementById("alerts").innerHTML =
       `<p class="muted" style="margin:0">Could not load: ${esc(e.message)}</p>`;

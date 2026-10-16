@@ -56,6 +56,17 @@
       color: var(--muted);
     }
     .topbar-summary b { color: var(--text); }
+    .topbar-user {
+      display: flex; align-items: center; gap: 12px;
+      font-size: 12px; color: var(--muted); white-space: nowrap;
+    }
+    .topbar-user a { color: var(--blue); text-decoration: none; font-weight: 500; }
+    .topbar-user a:hover { text-decoration: underline; }
+    .role-pill {
+      font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+      border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px;
+    }
+    .role-pill.admin { color: #c9a3e8; border-color: #553f6b; background: #241a2e; }
 
     /* ── Layout ── */
     .layout { display: flex; flex: 1; overflow: hidden; }
@@ -957,6 +968,9 @@
     <span id="topbar-running-label"></span>
   </div>
   <div class="topbar-summary" id="topbar-summary"></div>
+  <!-- Filled by whoAmI(). The admin console link appears only for an admin;
+       an operator would be refused it, so offering it would be a dead end. -->
+  <div class="topbar-user" id="topbar-user"></div>
 </div>
 <div class="progress-strip" id="progress-strip" style="display:none">
   <div class="progress-fill" id="progress-fill"></div>
@@ -2841,8 +2855,34 @@ document.addEventListener("click", function(e) {
   previewFile(row.dataset.path, row.dataset.name, +(row.dataset.size || 0));
 });
 
+// ── Who is signed in ──────────────────────────────────────────────────────────
+
+async function whoAmI() {
+  const box = document.getElementById("topbar-user");
+  if (!box) return;
+  let me;
+  try {
+    me = await api("GET", "/api/v2/me");
+  } catch (e) {
+    return;   // the header is a convenience; never block the console on it
+  }
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // The admin console link is offered only to an admin. An operator reaching
+  // /admin gets a 403, so showing them the link would be a dead end.
+  const adminLink = me.role === "admin"
+    ? `<a href="/admin">Admin console</a>` : "";
+  box.innerHTML = `
+    <span class="role-pill ${me.role === "admin" ? "admin" : ""}">${esc(me.role)}</span>
+    ${me.tenant ? `<span>${esc(me.tenant)}</span>` : ""}
+    <span>${esc(me.email)}</span>
+    ${adminLink}
+    <a href="/logout">Sign out</a>`;
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
+whoAmI();
 loadCompanies();
 setInterval(loadCompanies, 10000);   // refresh sidebar every 10s when idle
 </script>
