@@ -403,6 +403,16 @@ if __name__ == "__main__":
     start_port = int(os.getenv("PORT", 5000))
     max_tries = 10
 
+    # Company files used to live in one flat tree keyed on company number and
+    # name, with no record of the owning tenant. Move any such directory into
+    # its tenant's subtree before serving; see company_paths.
+    try:
+        import company_paths
+        for _note in company_paths.migrate_all():
+            print(f"  [company-paths] {_note}")
+    except Exception as _e:  # noqa: BLE001 - never block startup on migration
+        print(f"  [company-paths] migration skipped: {_e}")
+
     # Debug mode exposes the Werkzeug console, which is remote code execution
     # for anyone who can reach the port. Opt in explicitly, for local work only.
     debug = os.getenv("FLASK_DEBUG", "0") == "1"

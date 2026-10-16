@@ -12,12 +12,12 @@ import openpyxl
 from flask import Blueprint, jsonify, request, send_file, abort
 
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
+import company_paths  # one definition of where a company's files live
 
 api_v2 = Blueprint("api_v2", __name__)
 
 ROOT     = Path(__file__).parent
 EXCEL    = ROOT / "pipeline_output" / "companies_pipeline.xlsx"
-COMP_DIR = ROOT / "pipeline_output" / "companies"
 DL_BASE  = ROOT / "pipeline_output"          # files must be under here to download
 
 # Ensure the companies table exists on startup (idempotent).
@@ -309,8 +309,15 @@ def _safe(name: str) -> str:
 
 
 def _co_dir(cn: str, name: str = "") -> Path:
-    folder = f"{_cn8(cn)} - {_safe(name)}" if name else _cn8(cn)
-    return COMP_DIR / folder
+    """
+    This tenant's directory for a company.
+
+    Tenant-scoped via company_paths: the old layout keyed the directory on
+    the number and name alone, so a leftover directory — from an earlier
+    run, a restored backup, or another tenant holding the same company
+    number — made a brand-new company report its stages already done.
+    """
+    return company_paths.company_dir(cn, name)
 
 
 _ROWS_CACHE = None  # retained for backwards-compat; caching now lives in db.py

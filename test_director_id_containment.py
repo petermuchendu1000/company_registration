@@ -120,7 +120,8 @@ def _run(rows, env=None, xb=None, make_output_dir=True, **kwargs):
     this listing rather than against the filesystem.
     """
     saved_env = {k: os.environ.get(k) for k in
-                 ("XBINDER_EMAIL", "XBINDER_PASSWORD", "COMPANIES_HOUSE_API_KEY")}
+                 ("XBINDER_EMAIL", "XBINDER_PASSWORD", "COMPANIES_HOUSE_API_KEY",
+                  "PIPELINE_OUTPUT_DIR")}
     saved_base = pipeline.BASE_DIR
     saved_mod = sys.modules.get("xbinder_auto")
     try:
@@ -131,6 +132,9 @@ def _run(rows, env=None, xb=None, make_output_dir=True, **kwargs):
             xb.install()
         with tempfile.TemporaryDirectory() as d:
             pipeline.BASE_DIR = Path(d)
+            # company_paths resolves the per-tenant company directory from
+            # this, independently of pipeline.BASE_DIR.
+            os.environ["PIPELINE_OUTPUT_DIR"] = str(Path(d) / "pipeline_output")
             # Every other stage creates this; the stage writes its scratch
             # profile straight into it without a mkdir. See
             # test_missing_output_dir_degrades_without_raising.
@@ -273,19 +277,22 @@ def test_exec_stage_reports_done_without_raising_when_unconfigured() -> None:
     unconfigured director_id must come back as a normal result.
     """
     import api_v2
-    saved = {k: os.environ.get(k) for k in ("XBINDER_EMAIL", "XBINDER_PASSWORD")}
+    saved = {k: os.environ.get(k) for k in
+             ("XBINDER_EMAIL", "XBINDER_PASSWORD", "PIPELINE_OUTPUT_DIR")}
     saved_base = pipeline.BASE_DIR
     try:
         for k in saved:
             os.environ.pop(k, None)
         with tempfile.TemporaryDirectory() as d:
             pipeline.BASE_DIR = Path(d)
+            os.environ["PIPELINE_OUTPUT_DIR"] = str(Path(d) / "pipeline_output")
             pipeline.db = FakeDb([_row()])
             out = api_v2._exec_stage("20000001", "director_id", _row())
         assert out == {"status": "done"}, out
     finally:
         pipeline.BASE_DIR = saved_base
         for k, v in saved.items():
+            os.environ.pop(k, None)
             if v is not None:
                 os.environ[k] = v
     print("  OK  an unconfigured director_id returns a result, so run-all reaches app/publish")

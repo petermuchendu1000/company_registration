@@ -27,10 +27,8 @@ _ROOT = Path(__file__).parent.parent.parent
 
 def _load_version(company_number: str, company_name: str = "") -> dict:
     """Read version.json for this company. Returns defaults if not found."""
-    import re as _re
-    safe = _re.sub(r'[\\/:*?"<>|]', "", company_name).strip()
-    folder = f"{company_number} - {safe}" if safe else company_number
-    ver_file = _ROOT / "pipeline_output" / "companies" / folder / "app" / "version.json"
+    import company_paths
+    ver_file = company_paths.company_dir(company_number, company_name) / "app" / "version.json"
     if ver_file.exists():
         try:
             data = json.loads(ver_file.read_text(encoding="utf-8"))
@@ -45,11 +43,9 @@ def _load_version(company_number: str, company_name: str = "") -> dict:
 
 def _load_privacy_url(company_number: str, company_name: str = "") -> str:
     """Read privacy_policy_url from the company's manifest.json if it exists."""
-    import re as _re
-    safe = _re.sub(r'[\\/:*?"<>|]', "", company_name).strip()
-    folder = f"{company_number} - {safe}" if safe else company_number
+    import company_paths
     candidates = [
-        _ROOT / "pipeline_output" / "companies" / folder / "app" / "manifest.json",
+        company_paths.company_dir(company_number, company_name) / "app" / "manifest.json",
         _ROOT / "pipeline_output" / "apps" / company_number / "manifest.json",  # legacy
     ]
     for manifest in candidates:

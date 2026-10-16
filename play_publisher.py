@@ -79,7 +79,9 @@ def _accounts_dir() -> Path:
 
 
 def _companies_dir() -> Path:
-    return Path(__file__).parent / "pipeline_output" / "companies"
+    """This tenant's subtree of the companies root. See company_paths."""
+    import company_paths
+    return company_paths.tenant_root()
 
 
 @dataclass
@@ -124,15 +126,15 @@ class Report:
 
 # ── Locating this company's generated artefacts ─────────────────────────────
 def _app_dir(company_number: str) -> Path | None:
-    """pipeline_output/companies/{cn} - {name}/app — name varies, so glob on cn."""
-    cn = str(company_number).zfill(8)
-    base = _companies_dir()
-    if not base.is_dir():
-        return None
-    for child in sorted(base.iterdir()):
-        if child.is_dir() and (child.name == cn or child.name.startswith(f"{cn} - ")):
-            return child / "app"
-    return None
+    """
+    This tenant's app directory for a company; the name varies, so the
+    lookup globs on the number — but inside the tenant's own subtree, not
+    across the whole companies root, which is what previously let one
+    tenant's build answer for another's.
+    """
+    import company_paths
+    found = company_paths.find_company_dir(company_number)
+    return (found / "app") if found else None
 
 
 def _listing_path(app_dir: Path) -> Path:

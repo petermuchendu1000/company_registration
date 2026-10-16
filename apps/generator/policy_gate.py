@@ -31,7 +31,6 @@ from .catalog import Company, load_companies
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_TEMPLATE = ROOT / "apps" / "template-shift-journal" / "app"
-COMPANIES_DIR = ROOT / "pipeline_output" / "companies"
 
 # Play's published limits.
 TITLE_MAX = 30
@@ -63,13 +62,15 @@ def _read_json(path: Path) -> dict:
 
 
 def app_dir_for(company_number: str) -> Path | None:
-    """pipeline_output/companies/{cn} - {name}/app — the name varies, so glob."""
-    cn = str(company_number).zfill(8)
-    if not COMPANIES_DIR.is_dir():
-        return None
-    for child in sorted(COMPANIES_DIR.iterdir()):
-        if child.is_dir() and (child.name == cn or child.name.startswith(f"{cn} - ")):
-            return child / "app"
+    """
+    This tenant's app directory for a company; the name varies, so the
+    lookup globs on the number, but only inside the tenant's own subtree.
+    See company_paths.
+    """
+    import company_paths
+    found = company_paths.find_company_dir(company_number)
+    if found:
+        return found / "app"
     return None
 
 
@@ -414,8 +415,12 @@ def run_gate(companies: list[Company], require_aab: bool = True,
 
 
 def write_report(findings: list[Finding], companies: list[Company]) -> Path:
-    COMPANIES_DIR.mkdir(parents=True, exist_ok=True)
-    path = COMPANIES_DIR / "play_policy_gate_report.json"
+    # Per tenant: the report names companies, so a shared path would put one
+    # tenant's company list where another tenant's run would overwrite it.
+    import company_paths
+    out_dir = company_paths.tenant_root()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "play_policy_gate_report.json"
     path.write_text(json.dumps({
         "company_count": len(companies),
         "blockers": sum(1 for f in findings if f.severity == "blocker"),

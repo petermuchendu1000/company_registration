@@ -206,10 +206,9 @@ def stage_match(dry_run: bool = False) -> None:
 
 
 def _company_app_dir(company_number: str, company_name: str) -> Path:
-    """pipeline_output/companies/{cn} - {name}/app — the current layout."""
-    safe = re.sub(r'[\\/:*?"<>|]', "", company_name).strip()
-    folder = f"{company_number} - {safe}" if safe else company_number
-    return BASE_DIR / "pipeline_output" / "companies" / folder / "app"
+    """This tenant's app directory for a company. See company_paths."""
+    import company_paths
+    return company_paths.company_dir(company_number, company_name) / "app"
 
 
 def _manifest_path(company_number: str, company_name: str) -> Path | None:
@@ -333,15 +332,12 @@ def stage_director_id(
         split_combined_id_image, load_director_profile,
     )
 
-    COMPANIES_DIR = BASE_DIR / "pipeline_output" / "companies"
     CH_BASE       = "https://api.company-information.service.gov.uk"
     ch_key        = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
 
-    import re as _re
+    import company_paths
     def _co_dir(cn: str, name: str) -> Path:
-        safe   = _re.sub(r'[\\/:*?"<>|]', "", name).strip()
-        folder = f"{cn} - {safe}" if safe else cn
-        return COMPANIES_DIR / folder
+        return company_paths.company_dir(cn, name)
 
     # ── Load director candidates from Supabase ──────────────────────────────
     candidates: list[tuple[str, str, str, str, str]] = []  # (cn, director_name, dob_str, director_gender, co_name)
@@ -839,6 +835,15 @@ def main() -> None:
         if not tenant:
             raise SystemExit(f"No such tenant: {args.tenant}")
         db.set_current_tenant(tenant["id"])
+
+    # Same migration the server runs: move any pre-tenant company directory
+    # into its tenant's subtree before any stage reads or writes one.
+    try:
+        import company_paths
+        for note in company_paths.migrate_all():
+            print(f"  [company-paths] {note}")
+    except Exception as e:  # noqa: BLE001 - never block a run on migration
+        print(f"  [company-paths] migration skipped: {e}")
 
     run = args.stage or "all"
     t0  = time.time()

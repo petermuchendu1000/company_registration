@@ -145,7 +145,12 @@ def tenant_company_file(raw_path: str) -> Path | None:
     """
     if not raw_path:
         return None
-    base = (ROOT / "pipeline_output" / "companies").resolve()
+    import company_paths
+
+    try:
+        base = company_paths.tenant_root().resolve()
+    except OSError:
+        return None
     try:
         target = Path(raw_path).resolve()
     except (OSError, ValueError, RuntimeError):
@@ -161,12 +166,20 @@ def tenant_company_file(raw_path: str) -> Path | None:
     if not company_number.isdigit():
         return None
 
+    # Holding a row for the number is necessary but no longer sufficient:
+    # the file must also sit in this tenant's own subtree (enforced above)
+    # and carry this tenant's ownership stamp. Two tenants may both hold
+    # company 20000001 — the primary key is (tenant_id, company_number) —
+    # and the row check alone served one tenant's files to the other.
     try:
-        owned = db.find_row(db.current_tenant_id(), company_number) is not None
+        if db.find_row(db.current_tenant_id(), company_number) is None:
+            return None
+        if not company_paths.belongs_to(target):
+            return None
     except Exception as exc:  # noqa: BLE001 - never leak a file on a lookup error
         logger.warning("tenant_company_file ownership check failed: %s", exc)
         return None
-    return target if owned else None
+    return target
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────

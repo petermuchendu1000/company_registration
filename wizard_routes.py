@@ -689,9 +689,10 @@ def pipeline_run_logs():
 @wizard.route("/api/company/<cn>/files")
 def company_files_api(cn):
     """File tree for a single company (only key files)."""
-    import re as _re
-    ROOT = os.path.dirname(os.path.abspath(__file__))
-    COMP_DIR = os.path.join(ROOT, "pipeline_output", "companies")
+    # Paths come from company_paths, which scopes them to this tenant:
+    # the shared root disclosed file names and sizes from another tenant
+    # holding the same company number.
+    import company_paths
 
     # Only list files for a company this tenant holds — otherwise the response
     # would disclose file names and sizes for someone else's company.
@@ -700,9 +701,7 @@ def company_files_api(cn):
         return jsonify({"error": "not found"}), 404
     name = str(row.get("Company Name") or "").strip()
 
-    safe = _re.sub(r'[\\/:*?"<>|]', "", name).strip()
-    folder = f"{cn.zfill(8)} - {safe}" if safe else cn.zfill(8)
-    cdir = os.path.join(COMP_DIR, folder)
+    cdir = str(company_paths.company_dir(cn, name))
     sections = []
 
     # Certificate — only _cert.pdf (skip the large original)

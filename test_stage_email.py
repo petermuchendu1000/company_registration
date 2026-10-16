@@ -66,14 +66,27 @@ ROW = {
 
 
 def _with_tree(fn):
-    """Run fn(base) with pipeline.BASE_DIR pointed at a temp tree."""
+    """
+    Run fn(base) against a temp tree.
+
+    Both knobs are needed: pipeline.BASE_DIR for the legacy
+    pipeline_output/apps layout the stage still falls back to, and
+    PIPELINE_OUTPUT_DIR for company_paths, which resolves the current
+    per-tenant layout.
+    """
+    import os
     original = pipeline.BASE_DIR
+    original_out = os.environ.get("PIPELINE_OUTPUT_DIR")
     with tempfile.TemporaryDirectory() as d:
         pipeline.BASE_DIR = Path(d)
+        os.environ["PIPELINE_OUTPUT_DIR"] = str(Path(d) / "pipeline_output")
         try:
             return fn(Path(d))
         finally:
             pipeline.BASE_DIR = original
+            os.environ.pop("PIPELINE_OUTPUT_DIR", None)
+            if original_out is not None:
+                os.environ["PIPELINE_OUTPUT_DIR"] = original_out
 
 
 def test_uses_the_shared_namecheap_helper() -> None:
@@ -91,7 +104,8 @@ def test_manifest_is_found_in_the_current_layout() -> None:
     pipeline.db = FakeDb([ROW])
 
     def run(base: Path) -> Path:
-        app = base / "pipeline_output" / "companies" / "20000001 - HARBOUR COURIERS LTD" / "app"
+        import company_paths
+        app = company_paths.company_dir("20000001", "HARBOUR COURIERS LTD") / "app"
         app.mkdir(parents=True)
         manifest = app / "manifest.json"
         manifest.write_text(json.dumps({"support_email": "old@example.com"}))
@@ -136,7 +150,8 @@ def test_dry_run_changes_nothing() -> None:
     pipeline.db = FakeDb([ROW])
 
     def run(base: Path) -> dict:
-        app = base / "pipeline_output" / "companies" / "20000001 - HARBOUR COURIERS LTD" / "app"
+        import company_paths
+        app = company_paths.company_dir("20000001", "HARBOUR COURIERS LTD") / "app"
         app.mkdir(parents=True)
         manifest = app / "manifest.json"
         manifest.write_text(json.dumps({"support_email": "old@example.com"}))

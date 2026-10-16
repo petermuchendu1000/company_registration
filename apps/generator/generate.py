@@ -46,7 +46,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 TEMPLATE_ROOT = os.path.join(ROOT, "apps", "template-shift-journal")
 APP_DIR = os.path.join(TEMPLATE_ROOT, "app")
 KEYSTORES_DIR = os.path.join(APP_DIR, "keystores")
-COMPANIES_DIR = os.path.join(ROOT, "pipeline_output", "companies")
 
 SDK_DIR_DEFAULT = toolchain.sdk_dir()
 DEFAULT_ARTIFACT = "aab"
@@ -102,10 +101,9 @@ def run_gradle(built: list[BuiltFlavor], variant: str = "Release", artifact: str
 
 
 def _co_dir(c) -> str:
-    """Return pipeline_output/companies/{cn} - {safe_name}/app for a Company."""
-    safe = re.sub(r'[\\/:*?"<>|]', "", c.company_name).strip()
-    folder = f"{c.company_number} - {safe}" if safe else c.company_number
-    return os.path.join(COMPANIES_DIR, folder, "app")
+    """This tenant's app directory for a Company. See company_paths."""
+    import company_paths
+    return str(company_paths.ensure_company_dir(c.company_number, c.company_name) / "app")
 
 
 def collect_artifacts(built: list[BuiltFlavor], variant: str = "release", artifacts: str = DEFAULT_ARTIFACT) -> dict[str, dict[str, str]]:
@@ -353,7 +351,8 @@ def main(argv: list[str] | None = None) -> int:
     if len(got) != len(built):
         print(f"\n  WARN: only {len(got)}/{len(built)} {artifact_label} collected.")
     else:
-        print(f"\n  OK: all {len(got)} {artifact_label} in {COMPANIES_DIR}")
+        import company_paths
+        print(f"\n  OK: all {len(got)} {artifact_label} in {company_paths.tenant_root()}")
 
     print("\n[4] Backing up keystores and generating install assets…")
     backup_and_make_assets(built, got)
