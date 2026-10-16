@@ -709,7 +709,13 @@ def _exec_stage(cn: str, stage: str, row: dict):
             "sic_codes": str(row.get("SIC Codes") or ""),
             "address": str(row.get("Address") or ""),
         }
-        r = register_company_domain(name, details)
+        # Pass what the row already holds: registering is a purchase, and the
+        # stage offers a re-run button once it is done.
+        r = register_company_domain(name, details,
+                                    current_domain=str(row.get("Domain") or ""))
+        if r.get("status") == "exists":
+            print(f"  {r.get('message')}")
+            return r
         if r.get("domain"):
             _update_excel_row(cn, {"Domain": r["domain"],
                                    "Domain Status": r.get("status", ""),

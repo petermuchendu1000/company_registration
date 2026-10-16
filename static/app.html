@@ -332,6 +332,12 @@
     .sdot-status.idle    { background: var(--border); }
 
     .stage-btns { display: flex; gap: 5px; flex-shrink: 0; }
+    .stage-locked {
+      display: inline-flex; align-items: center; padding: 3px 9px;
+      font-size: 11px; font-weight: 600; border-radius: 6px; cursor: help;
+      color: var(--green); border: 1px solid rgba(63,185,80,.35);
+      background: rgba(63,185,80,.07);
+    }
 
     /* ── Files / Tree ── */
     .files-section { margin-bottom: 24px; }
@@ -1626,12 +1632,20 @@ function buildStageRow(s, d) {
       btns += `<button class="btn btn-sm btn-ghost" onclick="viewLog('${s.key}')">Log</button>`;
     }
     // "Run" understates what the publish stage does, so it says what it is.
+    // A completed domain stage offers no re-run at all: the backend refuses
+    // to buy a second domain, so the button could only ever do nothing, and
+    // the one thing it must never do is look like it might buy another.
+    const domainOwned = s.key === "domain" && done;
     const runLabel = s.key === "publish"
       ? (done ? "↻ Re-validate" : "▶ Validate on Play")
       : (done || jobSt === "done" ? "↻ Re-run" : "▶ Run");
-    btns += `<button class="btn btn-sm ${done || jobSt==='done' ? '' : 'btn-primary'}" onclick="runStage('${s.key}')">
-      ${runLabel}
-    </button>`;
+    if (domainOwned) {
+      btns += `<span class="stage-locked" title="A domain is already registered for this company. Buying another is deliberate: use the Set button to change the recorded domain.">🔒 Registered</span>`;
+    } else {
+      btns += `<button class="btn btn-sm ${done || jobSt==='done' ? '' : 'btn-primary'}" onclick="runStage('${s.key}')">
+        ${runLabel}
+      </button>`;
+    }
     if (s.key === "director_id" && (done || jobSt === "done")) {
       btns += `<button class="btn btn-sm btn-orange" onclick="rerunId()">🔄 New Image</button>`;
     }

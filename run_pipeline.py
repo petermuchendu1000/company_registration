@@ -528,13 +528,69 @@ def _safe_folder_name(company_name):
     return name or 'unknown'
 
 
-def register_company_domain(company_name, details):
-    """Find cheapest domain and register it for a company."""
+#: Refuse to buy when the Namecheap balance is at or below this (account
+#: currency). A floor, not a quote — Namecheap's availability response carries
+#: no price, so this only catches the failure that actually happens: an empty
+#: account. Override with NAMECHEAP_MIN_BALANCE.
+DEFAULT_MIN_BALANCE = 15.0
+
+
+def register_company_domain(company_name, details, current_domain="",
+                            allow_additional=False):
+    """
+    Find the cheapest available domain and register it for a company.
+
+    Buying a domain spends real money and cannot be undone, so this refuses
+    to run twice for the same company. `current_domain` is whatever the
+    company row already holds; if it is set, nothing is purchased and the
+    existing domain is returned. That guard matters because the dashboard
+    offers a re-run button on a completed stage, and every click used to buy
+    another domain. Pass allow_additional=True to deliberately buy a second.
+    """
     from namecheap_automation import (
         find_cheapest_domain,
+        get_balance,
         get_existing_account_contact,
         register_domain,
     )
+
+    current_domain = (current_domain or "").strip()
+    if current_domain and not allow_additional:
+        print(f"  Already registered: {current_domain} — not buying another.")
+        return {
+            "status": "exists",
+            "domain": current_domain,
+            "message": (
+                f"{company_name} already has {current_domain}. Nothing was purchased. "
+                f"Pass allow_additional=True only if a second domain is genuinely wanted."
+            ),
+        }
+
+    # Funds first: everything below this line costs money, and failing at the
+    # purchase leaves a half-finished stage for a reason that was knowable.
+    try:
+        floor = float(os.getenv("NAMECHEAP_MIN_BALANCE", DEFAULT_MIN_BALANCE))
+    except ValueError:
+        floor = DEFAULT_MIN_BALANCE
+    balance = get_balance()
+    if "error" in balance:
+        print(f"  WARN: could not read Namecheap balance ({balance['error']}) — continuing.")
+    else:
+        try:
+            available = float(str(balance.get("available") or 0))
+        except ValueError:
+            available = 0.0
+        currency = balance.get("currency", "USD")
+        print(f"  Namecheap balance: {available:.2f} {currency}")
+        if available <= floor:
+            return {
+                "status": "error",
+                "error": (
+                    f"Namecheap balance is {available:.2f} {currency}, at or below the "
+                    f"{floor:.2f} floor. Top the account up, or lower "
+                    f"NAMECHEAP_MIN_BALANCE if you know the domain costs less."
+                ),
+            }
 
     # Find cheapest available domain
     search_result = find_cheapest_domain(company_name)
