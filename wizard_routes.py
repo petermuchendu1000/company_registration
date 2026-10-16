@@ -153,7 +153,10 @@ def email_pool_status():
         from email_pool import EmailPool
         pool = EmailPool()
         status = pool.status()
-        available_emails = [e for e in pool._emails if e not in pool._assignments]
+        # Was reaching into pool._emails / pool._assignments. Those were the
+        # spreadsheet's in-memory state and no longer exist; the pool is a
+        # per-tenant table now and answers this itself.
+        available_emails = pool.available(limit=50)
         return jsonify({
             "total": status["total"],
             "used": status["used"],
@@ -264,17 +267,23 @@ def email_pool_assign():
     if not company_number:
         return jsonify({"error": "company_number required"}), 400
     try:
-        from email_pool import EmailPool
+        from email_pool import EmailPool, PoolExhausted
         pool = EmailPool()
-        # Check if already assigned
-        existing = pool.get_assigned_email(company_number)
-        if existing:
-            return jsonify({"email": existing, "status": "already_assigned"})
-        # Assign next
-        result = pool.assign_next(company_number=company_number, company_name=company_name)
-        if result:
-            return jsonify({"email": result, "status": "assigned", "remaining": pool.available_count})
-        return jsonify({"error": "No emails available in pool"}), 400
+        # get_assigned_email returns a 3-tuple, and (None, None, None) is
+        # truthy — so this branch always fired and the route answered
+        # {"email": [null, null, null], "status": "already_assigned"} for a
+        # company that had never been assigned anything. Unpack it instead.
+        existing_email, _first, _last = pool.get_assigned_email(company_number)
+        if existing_email:
+            return jsonify({"email": existing_email, "status": "already_assigned",
+                            "remaining": pool.available_count})
+        try:
+            email, first, last = pool.assign_next(company_number=company_number,
+                                                  company_name=company_name)
+        except PoolExhausted as e:
+            return jsonify({"error": str(e)}), 409
+        return jsonify({"email": email, "name": f"{first} {last}",
+                        "status": "assigned", "remaining": pool.available_count})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

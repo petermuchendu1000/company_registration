@@ -114,6 +114,7 @@ USERS_TABLE = "users"
 # it tenant-scoped, out of logs, and out of any cross-tenant view.
 MANUAL_TABLE = "company_manual_inputs"
 JOBS_TABLE = "jobs"
+EMAIL_POOL_TABLE = "email_pool"
 
 VALID_ROLES = ("client", "operator")
 
@@ -320,6 +321,30 @@ def ensure_schema() -> None:
         # poll; without this it is a sequential scan of every job ever run.
         cur.execute(
             f"CREATE INDEX IF NOT EXISTS jobs_active_idx ON {JOBS_TABLE} (tenant_id, status)"
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {EMAIL_POOL_TABLE} (
+              tenant_id        INTEGER NOT NULL REFERENCES {TENANTS_TABLE}(id) ON DELETE CASCADE,
+              email            TEXT NOT NULL,
+              position         INTEGER NOT NULL DEFAULT 0,
+              company_number   TEXT,
+              company_name     TEXT NOT NULL DEFAULT '',
+              assigned_at      TIMESTAMPTZ,
+              PRIMARY KEY (tenant_id, email)
+            );
+            """
+        )
+        # One company holds at most one address. A partial unique index rather
+        # than a constraint, because the unassigned rows all have NULL here.
+        cur.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS email_pool_company_idx "
+            f"ON {EMAIL_POOL_TABLE} (tenant_id, company_number) "
+            f"WHERE company_number IS NOT NULL"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS email_pool_free_idx "
+            f"ON {EMAIL_POOL_TABLE} (tenant_id, position) WHERE company_number IS NULL"
         )
         conn.commit()
     _invalidate()
@@ -1138,6 +1163,130 @@ def reclaim_stale_jobs(worker_id: str) -> int:
         count = cur.rowcount
         conn.commit()
     return count
+
+
+# ── Email pool ──────────────────────────────────────────────────────────────
+# The Gmail accounts a tenant owns, one assigned per company. This lived in a
+# shared emails.xlsx keyed by company number alone, which meant two tenants
+# holding the same company number shared an assignment and drew from each
+# other's accounts. Concurrency was worse than that: every caller built its
+# own EmailPool, so the instance lock guarded nothing, and two stages running
+# at once rewrote the whole workbook under each other — eight concurrent
+# assignments produced one assignment and seven BadZipFile crashes.
+
+
+def import_emails(tenant_id: int, emails: list[str]) -> int:
+    """Add addresses to a tenant's pool. Returns how many were new."""
+    tid = _tid(tenant_id)
+    clean = [e.strip() for e in emails if e and e.strip()]
+    if not clean:
+        return 0
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COALESCE(MAX(position), -1) AS p FROM {EMAIL_POOL_TABLE} WHERE tenant_id = %s",
+            (tid,),
+        )
+        start = int(cur.fetchone()["p"]) + 1
+        added = 0
+        for offset, email in enumerate(clean):
+            cur.execute(
+                f"INSERT INTO {EMAIL_POOL_TABLE} (tenant_id, email, position) "
+                f"VALUES (%s, %s, %s) ON CONFLICT (tenant_id, email) DO NOTHING",
+                (tid, email, start + offset),
+            )
+            added += cur.rowcount
+        conn.commit()
+    return added
+
+
+def assigned_email(tenant_id: int, company_number: str) -> dict | None:
+    """The address already held by this company, or None."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT email, company_name, assigned_at FROM {EMAIL_POOL_TABLE} "
+            f"WHERE tenant_id = %s AND company_number = %s",
+            (_tid(tenant_id), str(company_number)),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def assign_email(tenant_id: int, company_number: str, company_name: str = "") -> dict | None:
+    """
+    Take the next free address for this company, atomically.
+
+    Idempotent: a company that already holds one gets it back without
+    consuming another. FOR UPDATE SKIP LOCKED is what makes concurrent
+    assignment safe — two transactions racing take different rows instead of
+    both picking the same one.
+
+    Returns None when the pool is exhausted, so the caller can say so rather
+    than treating it as a crash.
+    """
+    tid = _tid(tenant_id)
+    existing = assigned_email(tid, company_number)
+    if existing:
+        return existing
+
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            WITH picked AS (
+                SELECT email FROM {EMAIL_POOL_TABLE}
+                 WHERE tenant_id = %s AND company_number IS NULL
+                 ORDER BY position, email
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT 1
+            )
+            UPDATE {EMAIL_POOL_TABLE} p
+               SET company_number = %s, company_name = %s, assigned_at = now()
+              FROM picked
+             WHERE p.tenant_id = %s AND p.email = picked.email
+            RETURNING p.email, p.company_name, p.assigned_at
+            """,
+            (tid, str(company_number), company_name or "", tid),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    return dict(row) if row else None
+
+
+def release_email(tenant_id: int, company_number: str) -> bool:
+    """Return a company's address to the pool. True if one was held."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {EMAIL_POOL_TABLE} "
+            f"SET company_number = NULL, company_name = '', assigned_at = NULL "
+            f"WHERE tenant_id = %s AND company_number = %s",
+            (_tid(tenant_id), str(company_number)),
+        )
+        freed = cur.rowcount > 0
+        conn.commit()
+    return freed
+
+
+def available_emails(tenant_id: int, limit: int = 50) -> list[str]:
+    """Unassigned addresses, in assignment order."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT email FROM {EMAIL_POOL_TABLE} "
+            f"WHERE tenant_id = %s AND company_number IS NULL "
+            f"ORDER BY position, email LIMIT %s",
+            (_tid(tenant_id), int(limit)),
+        )
+        return [r["email"] for r in cur.fetchall()]
+
+
+def email_pool_status(tenant_id: int) -> dict:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COUNT(*) AS total, "
+            f"COUNT(company_number) AS used FROM {EMAIL_POOL_TABLE} WHERE tenant_id = %s",
+            (_tid(tenant_id),),
+        )
+        row = cur.fetchone()
+    total, used = int(row["total"]), int(row["used"])
+    return {"total": total, "used": used, "available": total - used}
 
 
 if __name__ == "__main__":

@@ -1,25 +1,39 @@
 """
-Email Pool Manager
-==================
-Manages a pool of Gmail accounts from emails.xlsx.
-Assigns one email per company, extracts plausible names from email addresses,
-and tracks usage to prevent reuse.
+Email pool — the Gmail accounts a tenant owns, one assigned per company.
 
-Usage:
-    from email_pool import EmailPool
-    pool = EmailPool()
-    email, first_name, last_name = pool.assign_next()
-    pool.mark_used(email, company_number="12345678", company_name="ACME LTD")
+Backed by Postgres, per tenant. It used to be a shared emails.xlsx keyed by
+company number alone, which had two faults:
+
+  * No tenant isolation. Two clients holding the same company number shared
+    an assignment, and both drew from the same list, so one client's work
+    consumed the other's accounts and could read back their address.
+  * No usable locking. Every caller constructed its own EmailPool, so the
+    instance lock guarded nothing, and assigning rewrote the entire workbook.
+    Eight concurrent assignments against the old implementation produced one
+    assignment and seven `BadZipFile: Truncated file header` crashes — readers
+    hitting a half-written file. Stages run in threads, so that was reachable.
+
+Load a tenant's accounts once from the spreadsheet they came in:
+
+    python email_pool.py import --tenant acme --file emails.xlsx
+    python email_pool.py status --tenant acme
+
+Usage is unchanged for callers:
+
+    pool = EmailPool()                      # binds to the current tenant
+    email, first, last = pool.assign_next(company_number="12345678")
 """
 
 import os
 import re
-import threading
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment
 
 BASE_DIR = os.path.dirname(__file__)
 EMAILS_FILE = os.path.join(BASE_DIR, "emails.xlsx")
+
+
+def _db():
+    import db
+    return db
 
 
 def extract_name_from_email(email):
@@ -70,141 +84,137 @@ def extract_name_from_email(email):
     return first_name, last_name
 
 
+class PoolExhausted(RuntimeError):
+    """Every address in this tenant's pool is already assigned."""
+
+
 class EmailPool:
-    """Manages a pool of Gmail accounts with assignment tracking."""
+    """One tenant's Gmail accounts. Thin wrapper over the db functions."""
 
-    def __init__(self, emails_file=None):
+    def __init__(self, tenant_id=None, emails_file=None):
+        # emails_file is accepted so the import path and older callers keep
+        # working; it is only read by import_from_file().
         self.emails_file = emails_file or EMAILS_FILE
-        self._emails = []
-        self._assignments = {}  # email -> {company_number, company_name}
-        self._lock = threading.Lock()
-        self._load()
+        self._tenant_id = tenant_id
 
-    def _load(self):
-        """Load emails and any existing assignments from the Excel file."""
-        if not os.path.exists(self.emails_file):
-            raise FileNotFoundError(f"Emails file not found: {self.emails_file}")
+    @property
+    def tenant_id(self):
+        if self._tenant_id is None:
+            self._tenant_id = _db().current_tenant_id()
+        return self._tenant_id
 
-        wb = openpyxl.load_workbook(self.emails_file, read_only=True)
+    # ── pool contents ──────────────────────────────────────────────────────
+
+    def import_from_file(self, path=None):
+        """Load addresses from an .xlsx with an Email column. Returns new count."""
+        import openpyxl
+
+        path = path or self.emails_file
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Emails file not found: {path}")
+
+        wb = openpyxl.load_workbook(path, read_only=True)
         ws = wb.active
-
-        headers = [str(c.value or "").strip().lower() for c in next(ws.iter_rows(min_row=1, max_row=1))]
-
+        headers = [str(c.value or "").strip().lower()
+                   for c in next(ws.iter_rows(min_row=1, max_row=1))]
         email_col = headers.index("email") if "email" in headers else 0
-        has_assigned = "assigned to (company number)" in headers
-        cn_col = headers.index("assigned to (company number)") if has_assigned else None
-        has_name_col = "assigned to (company name)" in headers
-        name_col = headers.index("assigned to (company name)") if has_name_col else None
 
+        emails = []
         for row in ws.iter_rows(min_row=2, values_only=True):
-            email = row[email_col] if email_col < len(row) else None
-            if not email or not isinstance(email, str):
-                continue
-            email = email.strip()
-            if not email:
-                continue
-
-            self._emails.append(email)
-
-            # Load existing assignment
-            if cn_col is not None and cn_col < len(row) and row[cn_col]:
-                company_number = str(row[cn_col]).strip()
-                company_name = str(row[name_col]).strip() if name_col is not None and name_col < len(row) and row[name_col] else ""
-                self._assignments[email] = {
-                    "company_number": company_number,
-                    "company_name": company_name,
-                }
-
+            value = row[email_col] if email_col < len(row) else None
+            if isinstance(value, str) and value.strip():
+                emails.append(value.strip())
         wb.close()
+        return _db().import_emails(self.tenant_id, emails)
+
+    def _counts(self):
+        return _db().email_pool_status(self.tenant_id)
 
     @property
     def total(self):
-        return len(self._emails)
+        return self._counts()["total"]
 
     @property
     def used_count(self):
-        return len(self._assignments)
+        return self._counts()["used"]
 
     @property
     def available_count(self):
-        return self.total - self.used_count
+        return self._counts()["available"]
+
+    # ── assignment ─────────────────────────────────────────────────────────
 
     def get_assigned_email(self, company_number):
-        """Check if a company already has an assigned email."""
-        for email, info in self._assignments.items():
-            if info["company_number"] == str(company_number):
-                first, last = extract_name_from_email(email)
-                return email, first, last
-        return None, None, None
+        """(email, first, last) for a company that already has one, else Nones."""
+        row = _db().assigned_email(self.tenant_id, company_number)
+        if not row:
+            return None, None, None
+        first, last = extract_name_from_email(row["email"])
+        return row["email"], first, last
 
     def assign_next(self, company_number=None, company_name=""):
-        """Assign the next available email. Returns (email, first_name, last_name).
-
-        If company_number is provided and already has an assignment, returns that.
         """
-        with self._lock:
-            # Check if company already has an email
-            if company_number:
-                existing = self.get_assigned_email(company_number)
-                if existing[0]:
-                    return existing
+        Assign the next free address. Returns (email, first, last).
 
-            # Find next unassigned email
-            for email in self._emails:
-                if email not in self._assignments:
-                    first_name, last_name = extract_name_from_email(email)
+        Idempotent per company. Raises PoolExhausted when nothing is free,
+        which is a RuntimeError as before, so existing handlers still catch it.
+        """
+        if not company_number:
+            raise ValueError(
+                "company_number is required: an address is assigned to a company, "
+                "and without one the assignment cannot be looked up again."
+            )
+        row = _db().assign_email(self.tenant_id, company_number, company_name)
+        if not row:
+            counts = self._counts()
+            raise PoolExhausted(
+                f"No available emails: all {counts['total']} addresses in this "
+                f"tenant's pool are assigned. Import more with "
+                f"`python email_pool.py import --tenant <slug> --file <xlsx>`."
+            )
+        first, last = extract_name_from_email(row["email"])
+        return row["email"], first, last
 
-                    self._assignments[email] = {
-                        "company_number": str(company_number) if company_number else "",
-                        "company_name": company_name,
-                    }
-                    self._save()
+    def available(self, limit=50):
+        """Addresses not yet assigned, in the order they will be handed out."""
+        return _db().available_emails(self.tenant_id, limit)
 
-                    return email, first_name, last_name
-
-        raise RuntimeError(f"No available emails! All {self.total} emails are assigned.")
-
-    def _save(self):
-        """Save the current state back to the Excel file."""
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Emails"
-
-        headers = ["Email", "Extracted Name", "Assigned To (Company Number)", "Assigned To (Company Name)"]
-        ws.append(headers)
-
-        # Style headers
-        header_fill = PatternFill(start_color="003078", end_color="003078", fill_type="solid")
-        header_font = Font(color="FFFFFF", bold=True, size=11)
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        for email in self._emails:
-            first, last = extract_name_from_email(email)
-            assignment = self._assignments.get(email, {})
-            ws.append([
-                email,
-                f"{first} {last}",
-                assignment.get("company_number", ""),
-                assignment.get("company_name", ""),
-            ])
-
-        # Column widths
-        ws.column_dimensions["A"].width = 40
-        ws.column_dimensions["B"].width = 25
-        ws.column_dimensions["C"].width = 30
-        ws.column_dimensions["D"].width = 45
-        ws.freeze_panes = "A2"
-
-        wb.save(self.emails_file)
+    def release(self, company_number):
+        """Return a company's address to the pool."""
+        return _db().release_email(self.tenant_id, company_number)
 
     def status(self):
-        """Print pool status."""
-        print(f"Email Pool: {self.total} total, {self.used_count} assigned, {self.available_count} available")
-        return {
-            "total": self.total,
-            "used": self.used_count,
-            "available": self.available_count,
-        }
+        counts = self._counts()
+        print(f"Email Pool: {counts['total']} total, {counts['used']} assigned, "
+              f"{counts['available']} available")
+        return counts
+
+
+def main(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Email pool admin")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    imp = sub.add_parser("import", help="load addresses from an .xlsx into a tenant's pool")
+    imp.add_argument("--tenant", required=True, help="tenant slug")
+    imp.add_argument("--file", default=EMAILS_FILE)
+    st = sub.add_parser("status", help="show pool counts for a tenant")
+    st.add_argument("--tenant", required=True)
+    args = parser.parse_args(argv)
+
+    db = _db()
+    tenant = db.get_tenant_by_slug(args.tenant)
+    if not tenant:
+        raise SystemExit(f"No such tenant: {args.tenant}")
+    db.ensure_schema()
+    pool = EmailPool(tenant_id=tenant["id"])
+
+    if args.cmd == "import":
+        added = pool.import_from_file(args.file)
+        print(f"Imported {added} new address(es) into '{args.tenant}'.")
+    pool.status()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
