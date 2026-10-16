@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory, Response
+from flask import Flask, request, jsonify, Response
 import requests as http_requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -98,7 +98,13 @@ def ch_get_raw(url, headers=None, stream=False):
 
 @app.route("/")
 def index():
-    return send_from_directory("static", "app.html")
+    # Send each role to the surface it is allowed to use. A client loading
+    # the operator console would get a page whose every control 403s.
+    from flask import redirect, g
+    user = getattr(g, "user", None)
+    if user and str(user.get("role") or "client") == "client":
+        return redirect("/portal")
+    return redirect("/app")
 
 
 # --- Company detail endpoints ---

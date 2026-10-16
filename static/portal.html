@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Your applications</title>
+<style>
+  :root {
+    --bg: #f4f6f5; --surface: #ffffff; --surface-2: #f8faf9;
+    --fg: #14181a; --fg-dim: #4e5a5c; --line: #d4dbd9; --line-soft: #eef2f1;
+    --accent: #0f6b60; --accent-soft: #e7f2f0; --accent-line: #a9ccc6;
+    --warn: #8c5200; --warn-soft: #fbf5e9; --warn-line: #d9c9a8;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 "Public Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  header.bar {
+    background: var(--surface); border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+    justify-content: space-between; padding: 14px 0;
+  }
+  .wrap { max-width: 1060px; margin-inline: auto; padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)); width: 100%; }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+  .dot { width: 28px; height: 28px; border-radius: 7px; background: var(--accent); }
+  .pill {
+    font-family: inherit; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid var(--accent-line); background: var(--accent-soft);
+    border-radius: 4px; padding: 3px 8px;
+  }
+  a { color: var(--accent); }
+
+  main { padding-block: 34px 56px; display: flex; flex-direction: column; gap: 26px; }
+  h1 { margin: 0 0 6px; font-size: clamp(1.6rem, 1.2rem + 1.6vw, 1.95rem); font-weight: 700; letter-spacing: -0.025em; text-wrap: balance; }
+  .lede { margin: 0; color: var(--fg-dim); font-size: 15px; max-width: 62ch; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .card-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline; justify-content: space-between; padding: 20px 24px 0; }
+  .co-name { margin: 0 0 4px; font-size: 19px; font-weight: 600; letter-spacing: -0.015em; }
+  .co-meta { margin: 0; font-size: 12.5px; color: var(--fg-dim); }
+  .track { width: 128px; height: 7px; border-radius: 4px; background: #e2e8e6; overflow: hidden; }
+  .track > i { display: block; height: 100%; background: var(--accent); }
+  .count { font-size: 13px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+
+  ol.steps { list-style: none; margin: 18px 0 0; padding: 0 24px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 30px; }
+  ol.steps li { display: grid; grid-template-columns: 20px 1fr auto; gap: 11px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line-soft); min-width: 0; }
+  .step-label { font-size: 14.5px; min-width: 0; }
+  .step-note { font-size: 12.5px; color: var(--fg-dim); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+  .step-note.pending { color: var(--warn); font-weight: 500; }
+
+  .files { margin-top: 18px; padding: 16px 24px 20px; background: var(--surface-2); border-top: 1px solid var(--line-soft); display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .files-label { font-size: 13px; font-weight: 600; color: var(--fg-dim); }
+  .file {
+    display: inline-flex; align-items: center; gap: 9px; text-decoration: none; color: var(--fg);
+    background: var(--surface); border: 1px solid #c3ccca; border-radius: 8px;
+    padding: 9px 14px; min-height: 44px; font-size: 14px; font-weight: 500;
+  }
+  .file:hover { border-color: var(--accent); }
+  .file .kind { font-size: 11.5px; color: var(--fg-dim); }
+
+  .note { border: 1px solid #c8d8d4; background: #eef5f3; border-radius: 12px; padding: 18px 22px; }
+  .note h2 { margin: 0 0 6px; font-size: 15.5px; font-weight: 600; }
+  .note p { margin: 0; font-size: 14.5px; color: #2c3638; max-width: 70ch; }
+  .muted { color: var(--fg-dim); font-size: 14.5px; }
+
+  @media (max-width: 720px) { ol.steps { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap" style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between">
+    <span class="brand"><span class="dot" aria-hidden="true"></span>Your applications</span>
+    <span style="display:flex;align-items:center;gap:13px">
+      <span class="pill">Client</span>
+      <a href="/logout" style="font-size:14px;font-weight:500">Sign out</a>
+    </span>
+  </div>
+</header>
+
+<div class="wrap">
+  <main>
+    <div>
+      <h1>Your applications</h1>
+      <p class="lede">We will email you when something needs your attention. There is nothing for you to run here.</p>
+    </div>
+    <div id="list"><p class="muted">Loading…</p></div>
+    <section class="note">
+      <h2>Need something changed?</h2>
+      <p>Contact your account manager — they can change any of this on your behalf.</p>
+    </section>
+  </main>
+</div>
+
+<script>
+// Client-friendly names. The internal stage keys mean nothing to a customer,
+// and two of them ("duns", "director_id") are jargon even internally.
+const STEPS = [
+  ["details",     "Company verified"],
+  ["duns",        "Business ID (DUNS)"],
+  ["certificate", "Certificate of incorporation"],
+  ["domain",      "Website address"],
+  ["email",       "Contact mailbox"],
+  ["director_id", "Director identity"],
+  ["app",         "Android app"],
+  ["publish",     "Google Play listing"],
+];
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const tick = `<svg width="18" height="18" viewBox="0 0 18 18" role="img" aria-label="Done">
+  <circle cx="9" cy="9" r="8.2" fill="#0f6b60"/>
+  <path d="M5.4 9.2l2.5 2.4 4.7-5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const waiting = `<svg width="18" height="18" viewBox="0 0 18 18" role="img" aria-label="Not yet started">
+  <circle cx="9" cy="9" r="7.4" fill="none" stroke="#b9c3c1" stroke-width="1.5"/></svg>`;
+
+function note(key, d) {
+  if (key === "domain" && d.domain) return esc(d.domain);
+  if (key === "email" && d.support_email) return esc(d.support_email);
+  if (key === "duns" && d.duns) return esc(d.duns);
+  if (key === "details" && d.status) return esc(d.status);
+  return "";
+}
+
+async function api(path) {
+  const r = await fetch(path, { headers: { Accept: "application/json" } });
+  if (r.status === 403) throw new Error("Your account cannot see this.");
+  if (!r.ok) throw new Error("Could not load (" + r.status + ")");
+  return r.json();
+}
+
+function fileLink(f, label, kind) {
+  if (!f) return "";
+  const href = "/api/v2/dl/" + encodeURIComponent(f.name) + "?path=" + encodeURIComponent(f.path);
+  return `<a class="file" href="${esc(href)}">${esc(label)}<span class="kind">${esc(kind)}</span></a>`;
+}
+
+function card(d) {
+  const stages = d.stages || {};
+  const done = STEPS.filter(([k]) => stages[k]).length;
+  const pct = Math.round((done / STEPS.length) * 100);
+
+  const rows = STEPS.map(([key, label]) => {
+    const ok = !!stages[key];
+    // Every unfinished step says the same thing. An earlier version said
+    // "With Google for review" for a pending publish, which claimed a
+    // submission that may never have happened — a company three steps in
+    // was told Google was reviewing it. Nothing in the payload distinguishes
+    // "submitted and waiting" from "not reached yet", so claim neither.
+    const extra = ok ? note(key, d) : "Not started yet";
+    const cls = ok ? "step-note" : "step-note pending";
+    return `<li>${ok ? tick : waiting}<span class="step-label">${esc(label)}</span>
+      <span class="${ok ? "step-note" : cls}">${esc(extra)}</span></li>`;
+  }).join("");
+
+  const files = d.files || {};
+  const cert = (files.certificate || [])[0];
+  const app = (files.app || []).find((f) => /\.aab$/i.test(f.name)) || (files.app || [])[0];
+  const links = [fileLink(cert, "Certificate of incorporation", "PDF"),
+                 fileLink(app, "Android app", "AAB")].filter(Boolean).join("");
+
+  return `<section class="card">
+    <div class="card-head">
+      <div style="min-width:0">
+        <h2 class="co-name">${esc(d.name || d.cn)}</h2>
+        <p class="co-meta mono">${esc(d.cn)}</p>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="count">${done} of ${STEPS.length} complete</span>
+        <div class="track" role="img" aria-label="${done} of ${STEPS.length} steps complete"><i style="width:${pct}%"></i></div>
+      </div>
+    </div>
+    <ol class="steps">${rows}</ol>
+    ${links ? `<div class="files"><span class="files-label">Your files</span>${links}</div>` : ""}
+  </section>`;
+}
+
+(async function () {
+  const list = document.getElementById("list");
+  try {
+    const companies = await api("/api/v2/companies");
+    const rows = Array.isArray(companies) ? companies : (companies.companies || []);
+    if (!rows.length) {
+      list.innerHTML = `<p class="muted">Nothing here yet. Your account manager will add your companies.</p>`;
+      return;
+    }
+    const details = await Promise.all(
+      rows.map((r) => api("/api/v2/company/" + encodeURIComponent(r.cn || r["Company Number"]))
+        .catch(() => null))
+    );
+    const html = details.filter(Boolean).map(card).join("");
+    list.innerHTML = html || `<p class="muted">Nothing to show yet.</p>`;
+  } catch (e) {
+    list.innerHTML = `<p class="muted">${esc(e.message)}</p>`;
+  }
+})();
+</script>
+</body>
+</html>

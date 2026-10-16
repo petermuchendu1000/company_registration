@@ -51,6 +51,31 @@ PUBLIC_ENDPOINTS: set[str] = {
     "api_v2.v2_health",  # uptime probe; returns no data
 }
 
+# Endpoints a signed-in client may reach. Everything else needs operator or
+# admin.
+#
+# An allowlist, not a deny-list, for the same reason PUBLIC_ENDPOINTS is one.
+# The route table carries endpoints that register domains, drive a browser and
+# upload to Play — wizard.domains_register and the duns_stealth_* family among
+# them — and a deny-list only protects what somebody remembered to put on it.
+# With an allowlist a route added tomorrow is operator-only the moment it
+# exists.
+#
+# Read-only is not the test: a client must also not read a stage log, which is
+# a GET. Logs carry tracebacks, server paths and third-party error text.
+CLIENT_ENDPOINTS: set[str] = {
+    "index",                   # "/" — redirects each role to its own surface
+    "static",                  # stylesheet and script for the portal
+    "api_v2.portal_page",      # the client's own page
+    "api_v2.v2_companies",     # their companies, scoped by tenant already
+    "api_v2.v2_company",       # one company's progress
+    "api_v2.v2_download",      # their certificate, ID and app bundle
+}
+
+# Cross-tenant endpoints. An operator must not reach these: they are scoped to
+# one tenant by design, and these read every tenant's data.
+ADMIN_ENDPOINTS: set[str] = set()
+
 SESSION_HOURS = int(os.getenv("SESSION_HOURS", "12"))
 
 # Login throttle: attempts per IP per window.
@@ -107,6 +132,24 @@ def _deny(status: int = 401):
     return redirect(url_for("auth.login", next=request.full_path))
 
 
+def _forbid(endpoint: str, role: str):
+    """
+    Refuse a signed-in user who lacks the role. 403, never 401: they are
+    authenticated, so sending them back to the login form would loop.
+    """
+    logger.warning("role %r refused %s", role, endpoint)
+    if _wants_json():
+        return jsonify({
+            "error": "not permitted for this account",
+            "role": role,
+        }), 403
+    return (
+        "<h1>Not permitted</h1>"
+        "<p>This page is not available to your account. "
+        "<a href=\"/\">Go back</a></p>"
+    ), 403
+
+
 # ── Decorators (the before_request hook already covers every route; these are
 #    for routes needing something stricter) ──────────────────────────────────
 def login_required(fn):
@@ -119,14 +162,43 @@ def login_required(fn):
 
 
 def operator_required(fn):
-    """For cross-tenant views. Clients must never reach these."""
+    """
+    Anything that runs the pipeline or changes a company.
+
+    An admin passes: admin is operator plus the cross-tenant views, not a
+    different job. The before_request gate already refuses a client every
+    endpoint outside CLIENT_ENDPOINTS; this is the belt to that braces, for a
+    route whose name somebody adds to the allowlist by mistake.
+    """
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         user = current_user()
         if user is None:
             return _deny()
-        if user.get("role") != "operator":
-            return _deny(403)
+        role = str(user.get("role") or "client")
+        if role not in ("operator", "admin"):
+            return _forbid(request.endpoint or fn.__name__, role)
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+def admin_required(fn):
+    """
+    For the cross-tenant views: every tenant's companies, the shared job
+    queue, mailbox pools, user administration. An operator is scoped to one
+    tenant and must not reach these.
+
+    Add the endpoint name to ADMIN_ENDPOINTS as well, so the before_request
+    gate refuses it even if this decorator is ever dropped.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if user is None:
+            return _deny()
+        role = str(user.get("role") or "client")
+        if role != "admin":
+            return _forbid(request.endpoint or fn.__name__, role)
         return fn(*args, **kwargs)
     return wrapper
 
@@ -337,6 +409,16 @@ def _require_login():
         return _deny()
 
     g.user = user
+
+    # Role gate. Enforced here rather than only by decorators, so a route that
+    # nobody decorated is still closed to a client — the same reason login is
+    # enforced here rather than by @login_required on each view.
+    role = str(user.get("role") or "client")
+    if endpoint in ADMIN_ENDPOINTS and role != "admin":
+        return _forbid(endpoint, role)
+    if role == "client" and endpoint not in CLIENT_ENDPOINTS:
+        return _forbid(endpoint, role)
+
     db.set_current_tenant(user["tenant_id"])
     return None
 

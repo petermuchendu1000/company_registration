@@ -13,6 +13,7 @@ from flask import Blueprint, jsonify, request, send_file, abort
 
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
 import company_paths  # one definition of where a company's files live
+from auth import operator_required  # second line behind auth's before_request gate
 
 api_v2 = Blueprint("api_v2", __name__)
 
@@ -812,6 +813,19 @@ def app_page():
     return send_file(ROOT / "static" / "app.html")
 
 
+@api_v2.route("/portal")
+def portal_page():
+    """
+    The client's page.
+
+    Separate from /app rather than /app with the controls hidden: a hidden
+    button is still a reachable endpoint, and the operator console calls
+    endpoints a client is refused. auth.CLIENT_ENDPOINTS lists what this page
+    is allowed to call.
+    """
+    return send_file(ROOT / "static" / "portal.html")
+
+
 @api_v2.route("/api/v2/companies")
 def v2_companies():
     rows = _all_rows()
@@ -925,6 +939,7 @@ def v2_company(cn):
 
 
 @api_v2.route("/api/v2/company/<cn>/fields", methods=["POST"])
+@operator_required
 def v2_update_fields(cn):
     """Manually override one or more company fields. Values are written to the
     company row; stage status and all info panels are recomputed on the next
@@ -955,6 +970,7 @@ def v2_update_fields(cn):
 
 
 @api_v2.route("/api/v2/company/<cn>/stage/<stage>", methods=["POST"])
+@operator_required
 def v2_run_stage(cn, stage):
     if stage not in STAGE_ORDER:
         return jsonify({"error": f"Unknown stage: {stage}"}), 400
@@ -971,6 +987,7 @@ def v2_run_stage(cn, stage):
 
 
 @api_v2.route("/api/v2/company/<cn>/run-all", methods=["POST"])
+@operator_required
 def v2_run_all(cn):
     """Run all pending stages in order for one company."""
     row = _find_row(cn)
@@ -1095,6 +1112,7 @@ def v2_search():
 
 
 @api_v2.route("/api/v2/company/add", methods=["POST"])
+@operator_required
 def v2_add_company():
     data = request.get_json(force=True) or {}
     cn   = _cn8(data.get("cn") or data.get("company_number") or "")
@@ -1113,6 +1131,7 @@ def v2_add_company():
 
 
 @api_v2.route("/api/v2/company/<cn>/version", methods=["POST"])
+@operator_required
 def v2_set_version(cn):
     """Save version_code + version_name for a company (does NOT rebuild — caller triggers that)."""
     row = _find_row(cn)
@@ -1131,6 +1150,7 @@ def v2_set_version(cn):
 
 
 @api_v2.route("/api/v2/company/<cn>/play-console", methods=["POST"])
+@operator_required
 def v2_save_play_console(cn):
     """Save all Play Console form sections for a company."""
     row = _find_row(cn)
@@ -1179,6 +1199,7 @@ def v2_save_play_console(cn):
 
 
 @api_v2.route("/api/v2/company/<cn>/rerun-id", methods=["POST"])
+@operator_required
 def v2_rerun_id(cn):
     """Delete existing director ID files and regenerate a new one via Xbinder."""
     row = _find_row(cn)
@@ -1222,6 +1243,7 @@ def v2_download(label=None):
 
 
 @api_v2.route("/api/v2/company/<cn>/archive", methods=["POST"])
+@operator_required
 def v2_archive_company(cn):
     """Archive a company (hide from main view, show in archive tab)."""
     row = _find_row(cn)
@@ -1232,6 +1254,7 @@ def v2_archive_company(cn):
 
 
 @api_v2.route("/api/v2/company/<cn>/unarchive", methods=["POST"])
+@operator_required
 def v2_unarchive_company(cn):
     """Unarchive a company (show in main view)."""
     row = _find_row(cn)
@@ -1242,6 +1265,7 @@ def v2_unarchive_company(cn):
 
 
 @api_v2.route("/api/v2/company/<cn>/status", methods=["POST"])
+@operator_required
 def v2_update_status(cn):
     """Update company status (Active, Declined, Pending, On Hold)."""
     row = _find_row(cn)
@@ -1260,6 +1284,7 @@ def v2_update_status(cn):
 
 
 @api_v2.route("/api/v2/company/<cn>/notes", methods=["POST"])
+@operator_required
 def v2_update_notes(cn):
     """Update company notes (max 1000 characters)."""
     row = _find_row(cn)

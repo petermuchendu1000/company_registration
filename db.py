@@ -116,7 +116,14 @@ MANUAL_TABLE = "company_manual_inputs"
 JOBS_TABLE = "jobs"
 EMAIL_POOL_TABLE = "email_pool"
 
-VALID_ROLES = ("client", "operator")
+#: client   — sees their own tenant's companies, read-only (auth.CLIENT_ENDPOINTS)
+#: operator — runs the pipeline for the tenant they belong to
+#: admin    — operator, plus the cross-tenant views (auth.ADMIN_ENDPOINTS)
+#:
+#: An admin still has a tenant_id: it is the tenant they are bound to on an
+#: ordinary request. Reaching across tenants is done by the *_all_tenants()
+#: helpers on an admin-only endpoint, never by leaving the tenant unbound.
+VALID_ROLES = ("client", "operator", "admin")
 
 # Tenant every pre-tenancy row is migrated into.
 DEFAULT_TENANT_SLUG = "default"
