@@ -14,19 +14,32 @@ Three defects these cover, all of which failed silently:
   3. The job-status route returned that stdout without checking who owned the
      company.
 
-Needs no database: the tenant binding is a ContextVar and the job registry is
-in memory.
+Needs a database: the job registry lives in Postgres (see test_jobs_store.py
+for the storage behaviour itself). These cover the layer above it — that the
+worker thread, the route and the build queue all use it correctly.
 
-    python test_job_tenancy.py
+    DATABASE_URL=postgresql://... python test_job_tenancy.py
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 
 import api_v2
 import db
+
+TENANTS: dict[str, int] = {}
+
+
+def _tenant(slug: str) -> int:
+    """A real tenant row — the jobs table has a foreign key to it."""
+    if slug not in TENANTS:
+        if not db.get_tenant_by_slug(slug):
+            db.create_tenant(slug, slug)
+        TENANTS[slug] = db.get_tenant_by_slug(slug)["id"]
+    return TENANTS[slug]
 
 
 def _wait_for(predicate, timeout: float = 5.0) -> bool:
@@ -49,11 +62,12 @@ def test_worker_thread_keeps_the_tenant() -> None:
             seen["tenant"] = f"raised: {e}"
         return "ok"
 
-    with db.tenant_scope(31):
+    tid = _tenant("jobsafe-a")
+    with db.tenant_scope(tid):
         api_v2._spawn("00000001", "details", record)
 
     assert _wait_for(lambda: "tenant" in seen), "worker never ran"
-    assert seen["tenant"] == 31, f"worker saw tenant {seen['tenant']!r}, expected 31"
+    assert seen["tenant"] == tid, f"worker saw tenant {seen['tenant']!r}, expected {tid}"
     print("  OK  worker thread runs bound to the spawning tenant")
 
 
@@ -61,20 +75,22 @@ def test_two_tenants_do_not_share_a_job() -> None:
     """Same company number, two clients: separate job state and separate logs."""
     cn = "00000002"
 
-    with db.tenant_scope(41):
-        api_v2._job_set(cn, "details", status="done", log="tenant 41 directors")
-    with db.tenant_scope(42):
-        api_v2._job_set(cn, "details", status="failed", log="tenant 42 directors")
+    a_id, b_id = _tenant("jobsafe-a"), _tenant("jobsafe-b")
+    for tid, status, log in ((a_id, "done", "tenant A directors"),
+                             (b_id, "failed", "tenant B directors")):
+        with db.tenant_scope(tid):
+            db.job_claim(tid, cn, "details", "test")
+            api_v2._job_set(cn, "details", status=status, log=log)
 
-    with db.tenant_scope(41):
+    with db.tenant_scope(a_id):
         a = api_v2._job_get(cn, "details")
-    with db.tenant_scope(42):
+    with db.tenant_scope(b_id):
         b = api_v2._job_get(cn, "details")
 
     assert a["status"] == "done", a
     assert b["status"] == "failed", b
-    assert "42" not in a["log"], f"tenant 41 can see tenant 42's log: {a['log']!r}"
-    assert "41" not in b["log"], f"tenant 42 can see tenant 41's log: {b['log']!r}"
+    assert "B" not in a["log"], f"tenant A can see tenant B's log: {a['log']!r}"
+    assert "A" not in b["log"], f"tenant B can see tenant A's log: {b['log']!r}"
     print("  OK  job state and logs are separate per tenant")
 
 
@@ -113,7 +129,8 @@ def test_build_slots_are_bounded() -> None:
         release.wait(5)
         return "done"
 
-    with db.tenant_scope(51):
+    tid = _tenant("jobsafe-a")
+    with db.tenant_scope(tid):
         api_v2._spawn("00000004", "app", blocker)
         assert started.wait(5), "first build never started"
         api_v2._spawn("00000005", "app", lambda: "second")
@@ -131,6 +148,10 @@ def test_build_slots_are_bounded() -> None:
 
 
 def main() -> int:
+    if not os.getenv("DATABASE_URL"):
+        print("DATABASE_URL not set — skipping (the job registry is in Postgres).")
+        return 0
+    db.ensure_schema()
     tests = [
         test_worker_thread_keeps_the_tenant,
         test_two_tenants_do_not_share_a_job,

@@ -113,6 +113,7 @@ USERS_TABLE = "users"
 # own name, personal address and ID document references. Personal data — keep
 # it tenant-scoped, out of logs, and out of any cross-tenant view.
 MANUAL_TABLE = "company_manual_inputs"
+JOBS_TABLE = "jobs"
 
 VALID_ROLES = ("client", "operator")
 
@@ -295,6 +296,30 @@ def ensure_schema() -> None:
               PRIMARY KEY (tenant_id, company_number)
             );
             """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {JOBS_TABLE} (
+              tenant_id       INTEGER NOT NULL REFERENCES {TENANTS_TABLE}(id) ON DELETE CASCADE,
+              company_number  TEXT NOT NULL,
+              stage           TEXT NOT NULL,
+              status          TEXT NOT NULL,
+              worker_id       TEXT NOT NULL DEFAULT '',
+              started_at      TIMESTAMPTZ,
+              finished_at     TIMESTAMPTZ,
+              heartbeat_at    TIMESTAMPTZ,
+              error           TEXT,
+              result          TEXT,
+              log             TEXT NOT NULL DEFAULT '',
+              updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (tenant_id, company_number, stage)
+            );
+            """
+        )
+        # The list view asks "what is this tenant running right now?" on every
+        # poll; without this it is a sequential scan of every job ever run.
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS jobs_active_idx ON {JOBS_TABLE} (tenant_id, status)"
         )
         conn.commit()
     _invalidate()
@@ -960,6 +985,159 @@ def set_password(user_id: int, password: str) -> None:
             (_hash(password), int(user_id)),
         )
         conn.commit()
+
+
+# ── Background jobs ─────────────────────────────────────────────────────────
+# One row per (tenant, company, stage): the latest run. Durable because an
+# in-memory registry loses every job on restart, leaves no history, and — the
+# reason it had to move — cannot tell "running" from "the process died
+# mid-build", so a crashed stage stays un-restartable forever.
+
+#: A job in one of these is holding or waiting on a slot and must not restart.
+ACTIVE_JOB_STATUSES = ("running", "queued")
+
+
+def job_claim(tenant_id: int, company_number: str, stage: str, worker_id: str,
+              status: str = "running") -> bool:
+    """
+    Take ownership of a stage, or return False if someone already holds it.
+
+    One statement, so it is the lock. Checking status and then spawning is two
+    statements with a gap in between, and two clicks landing in that gap both
+    passed — which is how the same build could run twice.
+    """
+    tid = _tid(tenant_id)
+    now = "now()" if status == "running" else "NULL"
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO {JOBS_TABLE}
+              (tenant_id, company_number, stage, status, worker_id,
+               started_at, finished_at, heartbeat_at, error, result, log, updated_at)
+            VALUES (%s, %s, %s, %s, %s, {now}, NULL, now(), NULL, NULL, '', now())
+            ON CONFLICT (tenant_id, company_number, stage) DO UPDATE SET
+              status       = EXCLUDED.status,
+              worker_id    = EXCLUDED.worker_id,
+              started_at   = EXCLUDED.started_at,
+              finished_at  = NULL,
+              heartbeat_at = now(),
+              error        = NULL,
+              result       = NULL,
+              log          = '',
+              updated_at   = now()
+            WHERE {JOBS_TABLE}.status NOT IN %s
+            RETURNING 1
+            """,
+            (tid, str(company_number), stage, status, worker_id, ACTIVE_JOB_STATUSES),
+        )
+        claimed = cur.fetchone() is not None
+        conn.commit()
+    return claimed
+
+
+def job_update(tenant_id: int, company_number: str, stage: str, **fields) -> None:
+    """Patch a claimed job. Unknown keys are rejected rather than ignored."""
+    allowed = {"status", "started_at", "finished_at", "heartbeat_at",
+               "error", "result", "log", "worker_id"}
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"not job columns: {sorted(unknown)}")
+    if not fields:
+        return
+    assignments = ", ".join(f"{k} = %s" for k in fields)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {JOBS_TABLE} SET {assignments}, updated_at = now() "
+            f"WHERE tenant_id = %s AND company_number = %s AND stage = %s",
+            (*fields.values(), _tid(tenant_id), str(company_number), stage),
+        )
+        conn.commit()
+
+
+def _job_row(row: dict) -> dict:
+    """Shape a row for the API: ISO timestamps, no nulls the UI must special-case."""
+    def iso(value):
+        return value.isoformat() if value else None
+
+    return {
+        "stage": row["stage"],
+        "status": row["status"],
+        "started_at": iso(row.get("started_at")),
+        "finished_at": iso(row.get("finished_at")),
+        "error": row.get("error"),
+        "result": row.get("result"),
+        "log": row.get("log") or "",
+    }
+
+
+def job_get(tenant_id: int, company_number: str, stage: str) -> dict | None:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM {JOBS_TABLE} "
+            f"WHERE tenant_id = %s AND company_number = %s AND stage = %s",
+            (_tid(tenant_id), str(company_number), stage),
+        )
+        row = cur.fetchone()
+    return _job_row(row) if row else None
+
+
+def jobs_for_company(tenant_id: int, company_number: str) -> dict[str, dict]:
+    """Every stage's latest job, keyed by stage — one query, not one per stage."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM {JOBS_TABLE} WHERE tenant_id = %s AND company_number = %s",
+            (_tid(tenant_id), str(company_number)),
+        )
+        rows = cur.fetchall()
+    return {r["stage"]: _job_row(r) for r in rows}
+
+
+def active_jobs(tenant_id: int) -> dict[str, list[str]]:
+    """
+    Company number -> the stages it currently has running or queued.
+
+    The list view polls this every couple of seconds for the whole tenant, so
+    it reads only what it renders: no logs, no finished jobs.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT company_number, stage, status FROM {JOBS_TABLE} "
+            f"WHERE tenant_id = %s AND status IN %s",
+            (_tid(tenant_id), ACTIVE_JOB_STATUSES),
+        )
+        rows = cur.fetchall()
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        out.setdefault(r["company_number"], []).append(r["stage"])
+    return out
+
+
+def reclaim_stale_jobs(worker_id: str) -> int:
+    """
+    Fail any job left running by a process that is gone. Returns how many.
+
+    Called once at startup. A job row says "running" because a thread in some
+    process said so; if that process died — deploy, OOM, crash — nothing will
+    ever finish the row, and the dashboard would refuse to restart the stage
+    for as long as the row stood. Rows belonging to *this* worker are left
+    alone so a second call mid-run cannot kill live work.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {JOBS_TABLE}
+               SET status      = 'failed',
+                   error       = 'Interrupted: the server restarted while this stage was '
+                                 || status || '. Nothing was corrupted; run it again.',
+                   finished_at = now(),
+                   updated_at  = now()
+             WHERE status IN %s AND worker_id <> %s
+            """,
+            (ACTIVE_JOB_STATUSES, worker_id),
+        )
+        count = cur.rowcount
+        conn.commit()
+    return count
 
 
 if __name__ == "__main__":

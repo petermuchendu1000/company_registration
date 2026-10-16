@@ -4,7 +4,7 @@ Register with:  from api_v2 import api_v2; app.register_blueprint(api_v2)
 """
 from __future__ import annotations
 
-import io, json, os, re, shutil, sys, threading, time, traceback
+import io, json, os, re, shutil, socket, sys, threading, time, traceback, uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +25,28 @@ try:
     db.ensure_schema()
 except Exception as _e:
     print(f"  [db] ensure_schema at import failed: {_e}")
+
+
+def reclaim_interrupted_jobs() -> int:
+    """
+    Fail jobs left behind by a process that is gone. Call once, at startup.
+
+    A row says "running" because a thread in some process said so. If that
+    process died — deploy, OOM, kill — nothing will ever finish the row, and
+    every later attempt to run that stage is refused as "already running".
+    This is the reason the registry had to be durable rather than in memory:
+    an in-memory one forgot the job entirely, which hid the interruption from
+    the client instead of reporting it.
+    """
+    try:
+        reclaimed = db.reclaim_stale_jobs(WORKER_ID)
+        if reclaimed:
+            print(f"  [jobs] marked {reclaimed} interrupted job(s) failed after restart")
+        return reclaimed
+    except Exception as e:  # noqa: BLE001 - never block startup on this
+        print(f"  [jobs] could not reclaim interrupted jobs: {e}")
+        return 0
+
 
 STAGE_ORDER = ["details", "duns", "certificate", "domain", "email", "director_id", "app"]
 
@@ -64,7 +86,10 @@ EDITABLE_FIELDS = {
 }
 
 # ── Job state ──────────────────────────────────────────────────────────────
-_JOBS: dict[str, dict] = {}   # key: "{cn8}:{stage}"
+# Job rows live in Postgres (db.job_*). Only the live log tail is in memory:
+# it is flushed to the row every couple of seconds, and reading it from
+# memory while a stage runs keeps the dashboard's 2.5s poll off the database
+# for output that is about to be overwritten anyway.
 _LOCK = threading.Lock()
 _CO_LOCKS: dict[str, threading.Lock] = {}   # per-company serialisation
 
@@ -81,34 +106,37 @@ def _tenant() -> int:
     return db.current_tenant_id()
 
 
-def _jk(cn: str, stage: str, tenant_id: int | None = None) -> str:
-    """
-    Job key.
+#: Identifies this server process in the jobs table. A job row claimed by a
+#: different id belongs to a process that is no longer here.
+WORKER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
-    Keyed by tenant as well as company: the primary key is
-    (tenant_id, company_number), so two clients can hold the same company, and
-    a key of just the number would have them sharing job state — and each
-    other's captured stdout, which carries directors, emails and DUNS numbers.
-    """
+
+def _jk(cn: str, stage: str, tenant_id: int | None = None) -> str:
+    """Key for the in-memory live-log buffer. Tenant-scoped like the rows."""
     tid = _tenant() if tenant_id is None else tenant_id
     return f"{tid}:{cn}:{stage}"
 
 
 def _job_get(cn: str, stage: str, tenant_id: int | None = None) -> dict:
-    key = _jk(cn, stage, tenant_id)
-    with _LOCK:
-        j = dict(_JOBS.get(key, {}))
-    if j.get("status") == "running":
-        live = _TEE.get_log(key)
+    """
+    One stage's latest job.
+
+    The persisted log is flushed every couple of seconds, so while a stage is
+    running the in-memory buffer is ahead of the row; prefer it, and fall back
+    to the row once the thread is gone.
+    """
+    tid = _tenant() if tenant_id is None else tenant_id
+    job = db.job_get(tid, cn, stage) or {}
+    if job.get("status") in db.ACTIVE_JOB_STATUSES:
+        live = _TEE.get_log(_jk(cn, stage, tid))
         if live:
-            j["log"] = live
-    return j
+            job["log"] = live
+    return job
 
 
 def _job_set(cn: str, stage: str, tenant_id: int | None = None, **kw) -> None:
-    key = _jk(cn, stage, tenant_id)
-    with _LOCK:
-        _JOBS.setdefault(key, {}).update(kw)
+    tid = _tenant() if tenant_id is None else tenant_id
+    db.job_update(tid, cn, stage, **kw)
 
 
 # ── Stdout capture ─────────────────────────────────────────────────────────
@@ -171,8 +199,35 @@ sys.stdout = _TEE
 _BUILD_SLOTS = threading.Semaphore(max(1, int(os.getenv("MAX_CONCURRENT_BUILDS", "1"))))
 _HEAVY_STAGES = {"app"}
 
-#: A job holding a build slot has not started yet but must not be restarted.
-_ACTIVE_STATUSES = {"running", "queued"}
+
+
+
+#: How often a running job writes its log and heartbeat back to the row.
+#: Short enough that a crash loses little, long enough not to hammer the
+#: database for a build that prints for minutes.
+_FLUSH_SECONDS = 2.0
+
+#: Longest log kept per job. A Gradle build prints a lot, and the row is read
+#: on every poll; past this the head is dropped, which is the part a reader
+#: has already seen.
+_LOG_LIMIT = 200_000
+
+
+def _trim(log: str) -> str:
+    if len(log) <= _LOG_LIMIT:
+        return log
+    return "…earlier output trimmed…\n" + log[-_LOG_LIMIT:]
+
+
+def _heartbeat(tenant_id: int, cn: str, stage: str, key: str, stop: threading.Event) -> None:
+    """Flush the live log and touch the heartbeat until the stage finishes."""
+    while not stop.wait(_FLUSH_SECONDS):
+        try:
+            db.job_update(tenant_id, cn, stage,
+                          log=_trim(_TEE.get_log(key)),
+                          heartbeat_at=datetime.now())
+        except Exception as e:  # noqa: BLE001 - never kill the stage over a flush
+            print(f"  [jobs] heartbeat failed for {cn}/{stage}: {e}")
 
 
 def _run_tracked(tenant_id: int, cn: str, stage: str, fn) -> None:
@@ -183,41 +238,55 @@ def _run_tracked(tenant_id: int, cn: str, stage: str, fn) -> None:
     ContextVar, and a new thread starts with an empty context — so without
     this the job either raises, or silently falls back to SINGLE_TENANT_SLUG
     and writes another client's row.
+
+    The caller has already claimed the job row, so this owns it.
     """
     key = _jk(cn, stage, tenant_id)
     heavy = stage in _HEAVY_STAGES
 
-    if heavy and not _BUILD_SLOTS.acquire(blocking=False):
-        _job_set(cn, stage, tenant_id=tenant_id, status="queued",
-                 started_at=None, finished_at=None, error=None, log=None)
+    if heavy:
+        # Claimed as "queued"; promote to "running" once a slot frees.
         _BUILD_SLOTS.acquire()
+        db.job_update(tenant_id, cn, stage, status="running",
+                      started_at=datetime.now(), heartbeat_at=datetime.now())
 
-    _job_set(cn, stage, tenant_id=tenant_id, status="running",
-             started_at=datetime.now().isoformat(),
-             finished_at=None, error=None, log=None)
     _TEE.bind(key)
+    stop = threading.Event()
+    beat = threading.Thread(
+        target=_heartbeat, args=(tenant_id, cn, stage, key, stop), daemon=True,
+    )
+    beat.start()
     try:
         with db.tenant_scope(tenant_id):
             result = fn()
-        log = _TEE.unbind()
-        _job_set(cn, stage, tenant_id=tenant_id, status="done",
-                 finished_at=datetime.now().isoformat(),
-                 log=log, result=str(result)[:500])
+        stop.set()
+        log = _trim(_TEE.unbind())
+        db.job_update(tenant_id, cn, stage, status="done",
+                      finished_at=datetime.now(), log=log,
+                      result=str(result)[:500])
     except Exception as e:
-        log = _TEE.unbind()
-        _job_set(cn, stage, tenant_id=tenant_id, status="failed",
-                 finished_at=datetime.now().isoformat(),
-                 error=str(e),
-                 log=log + "\n" + traceback.format_exc())
+        stop.set()
+        log = _trim(_TEE.unbind() + "\n" + traceback.format_exc())
+        db.job_update(tenant_id, cn, stage, status="failed",
+                      finished_at=datetime.now(), error=str(e), log=log)
         raise
     finally:
+        stop.set()
         if heavy:
             _BUILD_SLOTS.release()
 
 
-def _spawn(cn: str, stage: str, fn) -> None:
-    """Run fn() in a daemon thread, tracking job state and capturing stdout."""
+def _spawn(cn: str, stage: str, fn) -> bool:
+    """
+    Claim a stage and run it in a daemon thread. False if already active.
+
+    The claim is what serialises concurrent starts: it is one statement, so
+    two requests racing on the same stage cannot both win.
+    """
     tenant_id = _tenant()   # read here: the worker thread will not inherit it
+    initial = "queued" if stage in _HEAVY_STAGES else "running"
+    if not db.job_claim(tenant_id, cn, stage, WORKER_ID, status=initial):
+        return False
 
     def _worker():
         try:
@@ -226,6 +295,7 @@ def _spawn(cn: str, stage: str, fn) -> None:
             pass  # already recorded on the job
 
     threading.Thread(target=_worker, daemon=True).start()
+    return True
 
 
 # ── Excel helpers ──────────────────────────────────────────────────────────
@@ -655,7 +725,11 @@ def v2_companies():
     rows = _all_rows()
     archived_param = request.args.get("archived", "false").lower()
     show_archived = archived_param == "true"
-    
+
+    # Every active job for this tenant in one query. The dashboard polls this
+    # route every 2.5s; asking per company per stage was 7xN round trips a tick.
+    active = db.active_jobs(_tenant())
+
     out = []
     for row in rows:
         cn = _cn8(row.get("Company Number"))
@@ -668,7 +742,7 @@ def v2_companies():
             continue
         
         stages = _compute_stages(cn, row)
-        running = [s for s in STAGE_ORDER if _job_get(cn, s).get("status") in _ACTIVE_STATUSES]
+        running = active.get(cn, [])
         company_status = str(row.get("Company Status") or "").strip() or "Active"
         
         out.append({
@@ -700,10 +774,12 @@ def v2_company(cn):
     a_email     = str(row.get("Assigned Email") or "")
     domain_val  = str(row.get("Domain") or "")
 
-    jobs = {}
-    for s in STAGE_ORDER:
-        j = _job_get(cn, s)
-        if j: jobs[s] = {k: v for k, v in j.items() if k != "log"}
+    # One query for every stage. Polled every 2.5s, so a query per stage was
+    # seven round trips per company per tick.
+    jobs = {
+        stage: {k: v for k, v in job.items() if k != "log"}
+        for stage, job in db.jobs_for_company(_tenant(), cn).items()
+    }
 
     return jsonify({
         "cn":               cn,
@@ -794,10 +870,10 @@ def v2_run_stage(cn, stage):
     if not row:
         return jsonify({"error": "Company not found"}), 404
 
-    if _job_get(cn, stage).get("status") in _ACTIVE_STATUSES:
+    # The claim inside _spawn is the guard: one statement, so two clicks
+    # landing together cannot both start the stage.
+    if not _spawn(cn, stage, lambda: _exec_stage(cn, stage, _find_row(cn) or row)):
         return jsonify({"error": "Already running"}), 409
-
-    _spawn(cn, stage, lambda: _exec_stage(cn, stage, _find_row(cn) or row))
     return jsonify({"status": "started", "cn": cn, "stage": stage})
 
 
@@ -808,7 +884,7 @@ def v2_run_all(cn):
     if not row:
         return jsonify({"error": "Company not found"}), 404
 
-    running = [s for s in STAGE_ORDER if _job_get(cn, s).get("status") in _ACTIVE_STATUSES]
+    running = db.active_jobs(_tenant()).get(cn, [])
     if running:
         return jsonify({"error": f"'{running[0]}' is already running"}), 409
 
@@ -822,6 +898,9 @@ def v2_run_all(cn):
                     already_done = _compute_stages(cn, fresh).get(stage)
                 if already_done:
                     continue
+                initial = "queued" if stage in _HEAVY_STAGES else "running"
+                if not db.job_claim(tenant_id, cn, stage, WORKER_ID, status=initial):
+                    break  # someone else is running this stage
                 try:
                     _run_tracked(
                         tenant_id, cn, stage,
@@ -1008,7 +1087,7 @@ def v2_rerun_id(cn):
     row = _find_row(cn)
     if not row:
         return jsonify({"error": "Company not found"}), 404
-    if _job_get(cn, "director_id").get("status") in _ACTIVE_STATUSES:
+    if _job_get(cn, "director_id").get("status") in db.ACTIVE_JOB_STATUSES:  # noqa: SIM102
         return jsonify({"error": "Already running"}), 409
     _spawn(cn, "director_id", lambda: _exec_stage(cn, "director_id", _find_row(cn) or row))
     return jsonify({"status": "started", "cn": cn, "stage": "director_id"})
@@ -1093,3 +1172,8 @@ def v2_update_notes(cn):
 @api_v2.route("/health")
 def v2_health():
     return jsonify({"status": "ok", "ts": datetime.now().isoformat()})
+
+
+# Runs once per process, after WORKER_ID exists. Any job still marked running
+# or queued belongs to a process that is no longer here.
+reclaim_interrupted_jobs()
