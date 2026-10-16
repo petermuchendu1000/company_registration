@@ -123,10 +123,19 @@ def _alerts(summary: list[dict], queue: dict) -> list[dict]:
     # /tenants has the per-tenant detail.
     groups: dict[str, dict] = {}
 
-    def flag(kind: str, severity: str, row: dict, action: str, phrase) -> None:
+    def flag(kind: str, severity: str, row: dict, action: str,
+             phrase: str, group_phrase: str | None = None) -> None:
+        """
+        `phrase` describes one tenant; `group_phrase` describes several.
+
+        They differ because a per-tenant number cannot speak for a group:
+        "3 tenants — 1 mailbox left" would be the first tenant's count worn
+        by all three.
+        """
         g = groups.setdefault(kind, {
             "severity": severity, "kind": kind, "action": action,
-            "tenants": [], "count": 0, "phrase": phrase,
+            "tenants": [], "count": 0,
+            "phrase": phrase, "group_phrase": group_phrase or phrase,
         })
         g["count"] += 1
         if len(g["tenants"]) < 3:
@@ -139,9 +148,14 @@ def _alerts(summary: list[dict], queue: dict) -> list[dict]:
         elif row["pool_total"] == 0 and row["live_companies"]:
             flag("pool_missing", "critical", row, "import addresses",
                  "has companies but no mailbox pool at all")
-        elif 0 < row["pool_available"] <= POOL_LOW:
+        elif 0 < row["pool_available"] <= POOL_LOW and row["live_companies"]:
+            # Only when there are companies to consume them. A pool filled
+            # ahead of a tenant's first company is not a problem, and warning
+            # about it trains people to skim past the list.
+            n = row["pool_available"]
             flag("pool_low", "warning", row, "import addresses",
-                 f"{row['pool_available']} mailboxes left")
+                 f"{n} mailbox{'' if n == 1 else 'es'} left",
+                 "running low on mailboxes")
         if row["live_companies"] and not row["users"]:
             flag("no_users", "warning", row, "create a user",
                  "has companies but no login, so nobody can see them")
@@ -156,7 +170,7 @@ def _alerts(summary: list[dict], queue: dict) -> list[dict]:
             "tenant": g["tenants"][0] if g["count"] == 1 else None,
             "tenants": g["tenants"], "count": g["count"],
             "message": (f"{subject} — {g['phrase']}." if g["count"] == 1
-                        else f"{g['count']} tenants — {g['phrase']} ({subject})."),
+                        else f"{g['count']} tenants — {g['group_phrase']} ({subject})."),
             "action": g["action"],
         })
 
@@ -320,10 +334,33 @@ def admin_throughput():
     })
 
 
+#: Logins returned per page. Bounded for the same reason the tenant table is:
+#: an unbounded list is fine until it is not, and the console is where that
+#: shows up worst.
+USER_PAGE = 100
+
+
 @admin_api.route("/api/v2/admin/users")
 @admin_required
 def admin_users():
-    return jsonify({"users": db.admin_user_list(), "roles": list(db.VALID_ROLES)})
+    try:
+        limit = max(1, min(int(request.args.get("limit", USER_PAGE)), 500))
+    except (TypeError, ValueError):
+        limit = USER_PAGE
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+
+    users = db.admin_user_list(limit=limit, offset=offset)
+    total = db.admin_user_count()
+    return jsonify({
+        "users": users,
+        "total": total,
+        "offset": offset,
+        "truncated": offset + len(users) < total,
+        "roles": list(db.VALID_ROLES),
+    })
 
 
 # ── writes ──────────────────────────────────────────────────────────────────

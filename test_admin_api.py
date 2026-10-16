@@ -421,6 +421,178 @@ def test_the_last_admin_cannot_demote_themselves() -> None:
     print("  OK  the only remaining admin cannot demote themselves")
 
 
+def _fake_row(slug, **over):
+    row = {"slug": slug, "live_companies": 1, "users": 1,
+           "pool_total": 50, "pool_available": 50, "failed": 0}
+    row.update(over)
+    return row
+
+
+EMPTY_QUEUE = {"running": [], "queued": [], "failures": [],
+               "failed_total": 0, "failed_tenants": 0, "failures_truncated": False}
+
+
+def test_a_pool_warning_needs_companies_to_matter() -> None:
+    """A pool filled before a tenant's first company is not a problem."""
+    idle = admin_api._alerts([_fake_row("idle", live_companies=0, pool_available=1)],
+                             EMPTY_QUEUE)
+    assert not [a for a in idle if a["kind"] == "pool_low"], idle
+    busy = admin_api._alerts([_fake_row("busy", pool_available=1)], EMPTY_QUEUE)
+    assert [a for a in busy if a["kind"] == "pool_low"], busy
+    print("  OK  a low pool is only flagged for a tenant that has companies")
+
+
+def test_one_tenant_keeps_its_number_and_a_group_does_not_borrow_it() -> None:
+    """
+    "3 tenants — 1 mailbox left" would be the first tenant's count worn by
+    all three.
+    """
+    one = admin_api._alerts([_fake_row("solo", pool_available=1)], EMPTY_QUEUE)
+    msg = next(a["message"] for a in one if a["kind"] == "pool_low")
+    assert "1 mailbox left" in msg, msg
+    assert "mailboxes" not in msg, f"bad plural: {msg}"
+
+    many = admin_api._alerts(
+        [_fake_row("a", pool_available=1), _fake_row("b", pool_available=7)],
+        EMPTY_QUEUE)
+    grouped = next(a for a in many if a["kind"] == "pool_low")
+    assert grouped["count"] == 2, grouped
+    assert "1 mailbox left" not in grouped["message"], \
+        f"a group borrowed one tenant's number: {grouped['message']}"
+    print("  OK  a single tenant keeps its count; a group does not borrow it")
+
+
+# ── the user list is bounded ────────────────────────────────────────────────
+
+def test_the_user_list_is_bounded_and_reports_the_total() -> None:
+    body = ADMIN.get("/api/v2/admin/users?limit=2").get_json()
+    assert len(body["users"]) <= 2, len(body["users"])
+    assert body["total"] >= len(body["users"]), body["total"]
+    if body["total"] > 2:
+        assert body["truncated"] is True, body
+    big = ADMIN.get("/api/v2/admin/users?limit=99999").get_json()
+    assert len(big["users"]) <= 500, len(big["users"])
+    junk = ADMIN.get("/api/v2/admin/users?limit=abc&offset=-5").get_json()
+    assert len(junk["users"]) <= 100 and junk["offset"] == 0, junk["offset"]
+    print("  OK  the user list is bounded, paged, and reports the full total")
+
+
+def test_user_paging_does_not_repeat_or_skip() -> None:
+    first = ADMIN.get("/api/v2/admin/users?limit=5&offset=0").get_json()["users"]
+    second = ADMIN.get("/api/v2/admin/users?limit=5&offset=5").get_json()["users"]
+    ids_a = [u["id"] for u in first]
+    ids_b = [u["id"] for u in second]
+    assert len(set(ids_a)) == len(ids_a), "a page repeated a user"
+    assert not (set(ids_a) & set(ids_b)), "two pages overlap"
+    print("  OK  consecutive pages neither repeat nor overlap")
+
+
+def test_admins_sort_to_the_first_page() -> None:
+    users = ADMIN.get("/api/v2/admin/users?limit=500").get_json()["users"]
+    roles = [u["role"] for u in users]
+    if "admin" in roles and "client" in roles:
+        assert roles.index("admin") < roles.index("client"), \
+            "a client sorted above an admin"
+    print("  OK  admins come first, so the console shows who can reach it")
+
+
+# ── cleaning up test tenants ────────────────────────────────────────────────
+
+def test_the_signature_never_matches_a_real_name() -> None:
+    """
+    The guard that matters. A person names a tenant acme or borough; the
+    suites name one alpha-1f3598a9. Only the second shape is disposable.
+    """
+    pattern = db._test_slug_re()
+    for safe in ("acme", "borough", "portal-demo", "default", "alpha",
+                 "alpha-production", "beta-client", "e2e", "acme-holdings",
+                 "mailpool-a", "jobtest-b", "alpha-1f3598a", "alpha-1f3598a9x",
+                 "ALPHA-1f3598a9", "alpha-1F3598A9", "alpha-zzzzzzzz"):
+        assert not pattern.match(safe), f"the signature matched a real name: {safe!r}"
+    for debris in ("alpha-1f3598a9", "beta-00000000", "e2efail-2475afca",
+                   "adm-bad-125bb5a2"):
+        assert pattern.match(debris), f"the signature missed test debris: {debris!r}"
+    print("  OK  the delete signature matches test debris and no plausible real name")
+
+
+def test_a_short_prefix_is_refused() -> None:
+    """A two-letter prefix would match far too much."""
+    for bad in ("a", "ab", "A-B", "x y"):
+        try:
+            db._test_slug_re((bad,))
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted an unsafe prefix: {bad!r}")
+    print("  OK  an unsafe test prefix is refused")
+
+
+def test_delete_refuses_a_tenant_without_the_signature() -> None:
+    """Passing a real tenant's id must delete nothing, not trim the list."""
+    real_id = db.create_tenant(f"realco-{uuid.uuid4().hex[:6]}", "Real Co")
+    try:
+        try:
+            db.delete_tenants([real_id], confirm=True)
+        except ValueError as e:
+            assert "signature" in str(e), e
+        else:
+            raise AssertionError("a tenant without the signature was deleted")
+        assert db.get_tenant(real_id) is not None, "the real tenant is gone"
+    finally:
+        # This fixture cannot carry the signature — that is the point of it —
+        # so the guarded delete will not take it, and leaving it behind would
+        # add a tenant per run to the very debris this cleanup exists to
+        # remove. Removed directly, which only a test may do.
+        with db._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {db.TENANTS_TABLE} WHERE id = %s", (real_id,))
+    print("  OK  deleting refuses any tenant that lacks the signature")
+
+
+def test_dry_run_deletes_nothing() -> None:
+    doomed = db.create_tenant(db.test_tenant_slug("cpaths"), "throwaway")
+    out = db.delete_tenants([doomed], confirm=False)
+    assert out["deleted"] == 0 and out.get("dry_run") is True, out
+    assert db.get_tenant(doomed) is not None, "a dry run deleted it anyway"
+    db.delete_tenants([doomed], confirm=True)
+    print("  OK  without confirm the delete reports what it would do and stops")
+
+
+def test_deleting_a_test_tenant_takes_its_rows_with_it() -> None:
+    victim = db.create_tenant(db.test_tenant_slug("cpaths"), "throwaway")
+    db.add_company(victim, "60000001", "THROWAWAY LTD", "2021-01-01")
+    db.create_user(victim, f"gone-{uuid.uuid4().hex[:8]}@example.com", PASSWORD, "client")
+    db.import_emails(victim, [f"gone-{uuid.uuid4().hex[:8]}@gmail.com"])
+    db.job_claim(victim, "60000001", "details", "test-worker")
+
+    found = [t for t in db.find_test_tenants() if t["id"] == victim]
+    assert found, "find_test_tenants did not see a freshly created test tenant"
+    assert found[0]["companies"] == 1 and found[0]["users"] == 1, found[0]
+
+    out = db.delete_tenants([victim], confirm=True)
+    assert out["deleted"] == 1, out
+    assert db.get_tenant(victim) is None
+    with db.tenant_scope(victim):
+        pass  # binding a dead tenant is harmless; the rows are what matter
+    assert not [t for t in db.find_test_tenants() if t["id"] == victim]
+    print("  OK  deleting a test tenant removes it and everything cascading off it")
+
+
+def test_file_cleanup_stays_inside_the_companies_root() -> None:
+    """A slug is a path segment; it must not be able to point outside."""
+    import company_paths
+    root = company_paths.companies_root()
+    sentinel = root.parent / "do-not-delete.txt"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("keep", encoding="utf-8")
+    try:
+        removed = db.delete_test_tenant_files(
+            ["../do-not-delete.txt", "acme", "alpha-deadbeef"])
+        assert removed == [] or removed == ["alpha-deadbeef"], removed
+        assert sentinel.exists(), "file cleanup escaped the companies root"
+    finally:
+        sentinel.unlink(missing_ok=True)
+    print("  OK  file cleanup refuses traversal and non-signature names")
+
+
 def main() -> int:
     tests = [
         test_every_admin_endpoint_is_gated,
@@ -448,6 +620,17 @@ def main() -> int:
         test_import_refuses_junk_and_unknown_tenants,
         test_changing_a_role_works_and_validates,
         test_the_last_admin_cannot_demote_themselves,
+        test_a_pool_warning_needs_companies_to_matter,
+        test_one_tenant_keeps_its_number_and_a_group_does_not_borrow_it,
+        test_the_user_list_is_bounded_and_reports_the_total,
+        test_user_paging_does_not_repeat_or_skip,
+        test_admins_sort_to_the_first_page,
+        test_the_signature_never_matches_a_real_name,
+        test_a_short_prefix_is_refused,
+        test_delete_refuses_a_tenant_without_the_signature,
+        test_dry_run_deletes_nothing,
+        test_deleting_a_test_tenant_takes_its_rows_with_it,
+        test_file_cleanup_stays_inside_the_companies_root,
     ]
     failures = 0
     for test in tests:

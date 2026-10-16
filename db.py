@@ -51,8 +51,10 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
+import re
 import threading
 import time
+import uuid
 
 import psycopg2
 import psycopg2.extras
@@ -1492,19 +1494,166 @@ def admin_throughput(days: int = 7) -> list[dict]:
         ]
 
 
-def admin_user_list() -> list[dict]:
-    """Every login, with its tenant. Password hashes are never selected."""
+def admin_user_list(limit: int | None = None, offset: int = 0) -> list[dict]:
+    """
+    Logins with their tenant. Password hashes are never selected — the
+    column is not in the SELECT, rather than stripped afterwards.
+
+    limit=None returns every row, which is what the alert and guard code
+    wants; the endpoint passes a bound.
+    """
+    sql = f"""
+        SELECT u.id, u.email, u.role, u.created_at,
+               u.tenant_id, t.slug AS tenant
+          FROM {USERS_TABLE} u
+          JOIN {TENANTS_TABLE} t ON t.id = u.tenant_id
+         -- Admins first: on an instance with many logins the few that can
+         -- reach this console are the ones being looked for.
+         ORDER BY (u.role = 'admin') DESC, (u.role = 'operator') DESC,
+                  t.slug, u.email
+    """
+    params: list = []
+    if limit is not None:
+        sql += " LIMIT %s OFFSET %s"
+        params += [int(limit), max(0, int(offset))]
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def admin_user_count() -> int:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS n FROM {USERS_TABLE}")
+        return int(cur.fetchone()["n"])
+
+
+# ── Test fixtures, and removing them ────────────────────────────────────────
+#
+# The suites create a tenant per run so they never collide, which after a few
+# hundred runs leaves a database where the admin console's tenant list is
+# almost entirely debris.
+#
+# Cleanup matches a SIGNATURE, not a prefix: "<known prefix>-<8 hex>", the
+# shape test_tenant_slug writes. A plain name a person would choose — acme,
+# borough, portal-demo — cannot match it however it starts, so no amount of
+# bad luck with prefixes deletes a real tenant and everything cascading off
+# it. Fixed-slug fixtures (mailpool-a, jobtest-b) are deliberately NOT
+# matched: they are indistinguishable from a name somebody meant.
+
+TEST_TENANT_PREFIXES = (
+    "acl", "adm-ok", "adm-bad", "adm-solo", "alpha", "beta",
+    "e2e", "e2efail", "e2eother", "cpaths",
+)
+
+_TEST_SLUG_SUFFIX = r"-[0-9a-f]{8}$"
+
+
+def _test_slug_re(extra_prefixes: tuple[str, ...] = ()) -> re.Pattern:
+    prefixes = tuple(TEST_TENANT_PREFIXES) + tuple(extra_prefixes)
+    for prefix in prefixes:
+        # A one- or two-character prefix would match far too much.
+        if len(prefix) < 3 or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", prefix):
+            raise ValueError(f"unsafe test-tenant prefix: {prefix!r}")
+    alternation = "|".join(re.escape(p) for p in prefixes)
+    return re.compile(rf"^(?:{alternation}){_TEST_SLUG_SUFFIX}")
+
+
+def test_tenant_slug(prefix: str) -> str:
+    """
+    The canonical name for a tenant a test creates.
+
+    Use it rather than inventing a slug, so cleanup can tell test debris
+    from a real tenant without guessing.
+    """
+    if prefix not in TEST_TENANT_PREFIXES:
+        raise ValueError(
+            f"{prefix!r} is not in TEST_TENANT_PREFIXES; add it there so "
+            f"clean-test-tenants knows the name is disposable"
+        )
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def find_test_tenants(extra_prefixes: tuple[str, ...] = ()) -> list[dict]:
+    """Tenants whose slug has the test signature, with what would go with them."""
+    pattern = _test_slug_re(extra_prefixes)
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT u.id, u.email, u.role, u.created_at,
-                   u.tenant_id, t.slug AS tenant
-              FROM {USERS_TABLE} u
-              JOIN {TENANTS_TABLE} t ON t.id = u.tenant_id
-             ORDER BY t.slug, u.email
+            SELECT t.id, t.slug, t.created_at,
+                   (SELECT COUNT(*) FROM {TABLE} c WHERE c.tenant_id = t.id)            AS companies,
+                   (SELECT COUNT(*) FROM {USERS_TABLE} u WHERE u.tenant_id = t.id)      AS users,
+                   (SELECT COUNT(*) FROM {JOBS_TABLE} j WHERE j.tenant_id = t.id)       AS jobs,
+                   (SELECT COUNT(*) FROM {EMAIL_POOL_TABLE} e WHERE e.tenant_id = t.id) AS emails
+              FROM {TENANTS_TABLE} t
+             ORDER BY t.id
             """
         )
-        return [dict(r) for r in cur.fetchall()]
+        return [dict(r) for r in cur.fetchall() if pattern.match(r["slug"] or "")]
+
+
+def delete_tenants(tenant_ids: list[int], *, confirm: bool = False,
+                   extra_prefixes: tuple[str, ...] = ()) -> dict:
+    """
+    Delete tenants and everything that cascades off them.
+
+    Refuses without confirm=True, and refuses any id whose slug does not
+    carry the test signature — so passing a real tenant's id, by a slip or
+    by a caller that built the list wrongly, deletes nothing.
+    """
+    ids = [int(i) for i in tenant_ids]
+    if not ids:
+        return {"deleted": 0, "slugs": [], "refused": []}
+
+    pattern = _test_slug_re(extra_prefixes)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT id, slug FROM {TENANTS_TABLE} WHERE id = ANY(%s)", (ids,)
+        )
+        found = {int(r["id"]): r["slug"] for r in cur.fetchall()}
+
+        refused = [slug for tid, slug in found.items() if not pattern.match(slug or "")]
+        if refused:
+            raise ValueError(
+                "refusing to delete tenants that do not carry the test "
+                f"signature: {sorted(refused)}"
+            )
+
+        if not confirm:
+            return {"deleted": 0, "slugs": sorted(found.values()),
+                    "refused": [], "dry_run": True}
+
+        cur.execute(
+            f"DELETE FROM {TENANTS_TABLE} WHERE id = ANY(%s) RETURNING slug",
+            (sorted(found),),
+        )
+        gone = sorted(r["slug"] for r in cur.fetchall())
+    return {"deleted": len(gone), "slugs": gone, "refused": [], "dry_run": False}
+
+
+def delete_test_tenant_files(slugs: list[str],
+                             extra_prefixes: tuple[str, ...] = ()) -> list[str]:
+    """
+    Remove the on-disk tree for deleted test tenants.
+
+    Dropping the rows and leaving the directories would keep the artifact
+    scan walking them for ever. Guarded by the same signature, and nothing
+    outside the companies root is touched.
+    """
+    import shutil
+    import company_paths
+
+    pattern = _test_slug_re(extra_prefixes)
+    root = company_paths.companies_root().resolve()
+    removed: list[str] = []
+    for slug in slugs:
+        if not pattern.match(slug or ""):
+            continue
+        target = (root / slug).resolve()
+        if target.parent != root or not target.is_dir():
+            continue
+        shutil.rmtree(target, ignore_errors=True)
+        removed.append(slug)
+    return removed
 
 
 def set_user_role(user_id: int, role: str) -> bool:
@@ -1551,10 +1700,52 @@ if __name__ == "__main__":
                            help="list workbook cells an import would not carry over")
     p_chk.add_argument("path", nargs="?", default="pipeline_output/companies_pipeline.xlsx")
 
+    p_clean = sub.add_parser(
+        "clean-test-tenants",
+        help="delete tenants the test suites left behind (lists them first)")
+    p_clean.add_argument("--yes", action="store_true",
+                         help="actually delete; without it this only lists")
+    p_clean.add_argument("--prefix", action="append", default=[],
+                         help="an extra test prefix to match (repeatable)")
+    p_clean.add_argument("--keep-files", action="store_true",
+                         help="leave each tenant's directory on disk")
+
     args = parser.parse_args()
     ensure_schema()
 
-    if args.cmd == "add-tenant":
+    if args.cmd == "clean-test-tenants":
+        extra = tuple(args.prefix)
+        found = find_test_tenants(extra)
+        if not found:
+            print("No test tenants found. Nothing to do.")
+            raise SystemExit(0)
+
+        totals = {k: sum(int(t[k]) for t in found)
+                  for k in ("companies", "users", "jobs", "emails")}
+        print(f"\n  {len(found)} test tenant(s) match the signature "
+              f"<prefix>-<8 hex>:\n")
+        for t in found[:15]:
+            print(f"    {t['slug']:28} companies={t['companies']:<4} "
+                  f"users={t['users']:<3} jobs={t['jobs']:<4} emails={t['emails']}")
+        if len(found) > 15:
+            print(f"    … and {len(found) - 15} more")
+        print(f"\n  Deleting them also removes {totals['companies']} companies, "
+              f"{totals['users']} users,\n  {totals['jobs']} job rows and "
+              f"{totals['emails']} pool addresses. This cannot be undone.\n")
+
+        if not args.yes:
+            print("  Nothing deleted. Re-run with --yes to go ahead.\n")
+            raise SystemExit(0)
+
+        result = delete_tenants([t["id"] for t in found], confirm=True,
+                                extra_prefixes=extra)
+        print(f"  Deleted {result['deleted']} tenant(s).")
+        if not args.keep_files:
+            removed = delete_test_tenant_files(result["slugs"], extra)
+            print(f"  Removed {len(removed)} tenant director"
+                  f"{'y' if len(removed) == 1 else 'ies'} from disk.")
+        print()
+    elif args.cmd == "add-tenant":
         print(f"tenant {args.slug} -> id {create_tenant(args.slug, args.name)}")
     elif args.cmd == "add-user":
         t = get_tenant_by_slug(args.tenant_slug)
