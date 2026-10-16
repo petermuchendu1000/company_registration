@@ -293,7 +293,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--artifact", default=DEFAULT_ARTIFACT, choices=["apk", "aab", "both"], help="Artifact type to build")
     p.add_argument("--sdk", default=SDK_DIR_DEFAULT)
     p.add_argument("--skip-build", action="store_true", help="Generate flavors but don't run Gradle")
+    p.add_argument("--tenant", metavar="SLUG",
+                   help="Tenant whose companies to build. Defaults to the tenant already "
+                        "bound to this process, or SINGLE_TENANT_SLUG.")
     args = p.parse_args(argv)
+
+    if args.tenant:
+        import sys as _sys
+        if ROOT not in _sys.path:
+            _sys.path.insert(0, ROOT)
+        import db as _db
+        tenant = _db.get_tenant_by_slug(args.tenant)
+        if not tenant:
+            print(f"No such tenant: {args.tenant}")
+            return 2
+        _db.set_current_tenant(tenant["id"])
 
     companies = load_companies(
         limit=None if args.company else args.count,
@@ -332,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(got) != len(built):
         print(f"\n  WARN: only {len(got)}/{len(built)} {artifact_label} collected.")
     else:
-        print(f"\n  OK: all {len(got)} {artifact_label} in {OUTPUT_DIR}")
+        print(f"\n  OK: all {len(got)} {artifact_label} in {COMPANIES_DIR}")
 
     print("\n[4] Backing up keystores and generating install assets…")
     backup_and_make_assets(built, got)

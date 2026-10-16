@@ -1,16 +1,26 @@
-"""Load the company catalog from the processed pipeline Excel."""
+"""Load the company catalog from the tenant-scoped datastore."""
 from __future__ import annotations
 import os
 import re
+import sys
 from dataclasses import dataclass
 from typing import Iterable
-import openpyxl
 
-EXCEL_PATH_DEFAULT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "pipeline_output",
-    "companies_pipeline.xlsx",
-)
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _db():
+    """
+    Import the top-level db module.
+
+    This package is imported both as `apps.generator.*` from the repo root and
+    via a sys.path insert from pipeline.py, so the root is put on the path here
+    rather than assumed.
+    """
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    import db
+    return db
 
 # SIC code -> archetype. Only "shift" exists today; the rest are placeholders
 # for future archetype modules and currently fall back to "shift".
@@ -76,46 +86,34 @@ class Company:
 
 
 def load_companies(
-    excel_path: str = EXCEL_PATH_DEFAULT,
+    tenant_id: int | None = None,
     limit: int | None = None,
     company_numbers: list[str] | None = None,
 ) -> list[Company]:
-    """Read companies from the pipeline Excel. Skips rows without a company number."""
-    wb = openpyxl.load_workbook(excel_path, data_only=True, read_only=True)
-    ws = wb.active
-    rows = ws.iter_rows(values_only=True)
-    header = next(rows)
+    """
+    Load one tenant's companies. Skips rows without a company number.
 
-    def col(name: str) -> int:
-        for i, h in enumerate(header):
-            if h and h.strip().lower() == name.lower():
-                return i
-        raise KeyError(f"column not found: {name}")
+    tenant_id defaults to whatever is bound to the current request or job.
+    db.current_tenant_id() raises when nothing is bound, so a caller that
+    forgets gets an error instead of another client's companies.
+    """
+    db = _db()
+    tid = db.current_tenant_id() if tenant_id is None else tenant_id
+    rows = db.all_rows(tid)
 
-    def col_optional(name: str) -> int | None:
-        """Return column index or None if the column doesn't exist yet."""
-        for i, h in enumerate(header):
-            if h and h.strip().lower() == name.lower():
-                return i
-        return None
-
-    idx_num    = col("Company Number")
-    idx_name   = col("Company Name")
-    idx_sic    = col("SIC Codes")
-    idx_domain = col("Domain")
-    idx_email  = col("Assigned Email")
-    idx_short  = col_optional("Short Name")
-    idx_addr   = col_optional("Address")
+    def field(row: dict, label: str) -> str:
+        value = row.get(label)
+        return str(value).strip() if value is not None else ""
 
     # Normalise filter set once
     filter_set = {n.zfill(8) if n.isdigit() and len(n) < 8 else n for n in (company_numbers or [])}
 
     out: list[Company] = []
     for row in rows:
-        if not row or not row[idx_num]:
+        cn = field(row, "Company Number")
+        if not cn:
             continue
 
-        cn = str(row[idx_num]).strip()
         # Pad to 8 digits (Companies House format)
         if cn.isdigit() and len(cn) < 8:
             cn = cn.zfill(8)
@@ -123,37 +121,28 @@ def load_companies(
         if filter_set and cn not in filter_set:
             continue
 
-        sic_raw = (row[idx_sic] or "")
+        sic_raw = field(row, "SIC Codes")
         primary_sic = sic_raw.split(",")[0].strip() if sic_raw else ""
         archetype = SIC_ARCHETYPE.get(primary_sic, DEFAULT_ARCHETYPE)
 
-        domain = (row[idx_domain] or "").strip() if row[idx_domain] else ""
-        email  = (row[idx_email] or "").strip() if row[idx_email] else ""
+        domain = field(row, "Domain")
+        email = field(row, "Assigned Email")
         support = f"dev@{domain}" if domain else (email or "support@example.uk")
-
-        short = ""
-        if idx_short is not None:
-            short = (row[idx_short] or "").strip() if row[idx_short] else ""
-
-        addr = ""
-        if idx_addr is not None:
-            addr = (row[idx_addr] or "").strip() if row[idx_addr] else ""
 
         out.append(Company(
             company_number=cn,
-            company_name=(row[idx_name] or "").strip(),
+            company_name=field(row, "Company Name"),
             sic_codes=sic_raw,
             domain=domain,
             support_email=support,
             archetype=archetype,
-            short_name=short,
-            address=addr,
+            short_name=field(row, "Short Name"),
+            address=field(row, "Address"),
         ))
 
         if limit is not None and len(out) >= limit:
             break
 
-    wb.close()
     return out
 
 
@@ -166,7 +155,6 @@ def summarize(companies: Iterable[Company]) -> str:
 
 
 if __name__ == "__main__":
-    import sys
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     cs = load_companies(limit=n)
     print(summarize(cs))
