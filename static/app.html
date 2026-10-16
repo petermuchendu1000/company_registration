@@ -674,6 +674,14 @@
 
     /* ── Play Console section ── */
     .pc-section { margin-bottom: 24px; }
+    .pc-released-note {
+      margin: 10px 0 14px; padding: 11px 14px; border-radius: 9px; font-size: 12.5px;
+      line-height: 1.55; color: var(--text);
+      border: 1px solid rgba(63,185,80,.35); background: rgba(63,185,80,.07);
+    }
+    .pc-released-note strong { color: var(--green); }
+    .pc-acc-badge.done[title] { cursor: help; }
+
     .pc-status-badge {
       display: inline-block; margin-left: 8px;
       padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
@@ -1802,7 +1810,20 @@ async function saveAndRebuild() {
 
 // ── Play Console form ─────────────────────────────────────────────────────────
 
-function pcBadge(pc) {
+// A committed release is observed fact and outranks the checkboxes. The Play
+// Developer API cannot create an app and will not release to one that is not
+// set up, so a release that went through is proof the Console side happened —
+// whether or not anyone ticked a box here afterwards.
+function pcReleased(d) {
+  return !!(d && d.publish && d.publish.committed);
+}
+
+function pcBadge(pc, d) {
+  if (pcReleased(d)) {
+    const p = d.publish;
+    return `<span class="pc-status-badge ready" title="A committed release exists, so the Console setup it depends on is done">`
+         + `✓ Live on ${x(p.track || "Play")}${p.version_code ? ` · v${p.version_code}` : ""}</span>`;
+  }
   const allDone = pc.policy_confirmed && pc.signing_tos_accepted && pc.export_laws_accepted &&
                   pc.ratings_iarc_agreed && pc.legal_compliance;
   const any = pc.policy_confirmed || pc.signing_tos_accepted || pc.export_laws_accepted || pc.app_name;
@@ -1813,12 +1834,26 @@ function pcBadge(pc) {
 
 function renderPcSection(d, pc) {
   const cn    = d.cn;
-  const s1ok  = pc.policy_confirmed && pc.signing_tos_accepted && pc.export_laws_accepted;
-  const s3ok  = !!pc.ratings_iarc_agreed;
-  const s4ok  = !!pc.legal_compliance;
+  const released = pcReleased(d);
+  // Scope the inference to what a release actually proves. Any committed
+  // release means the app exists in Console and app signing is in place —
+  // the API cannot create an app, and will not take a bundle for one that is
+  // not enrolled. The App Content declarations (IARC, target audience) are
+  // only enforced on a production release, so a release to internal proves
+  // nothing about them and they stay as attestations.
+  const provenByRelease = released;
+  const productionRelease = released && (d.publish.track || "").toLowerCase() === "production";
 
-  function ab(isAuto, isDone) {
+  const s1ok  = provenByRelease ||
+                (pc.policy_confirmed && pc.signing_tos_accepted && pc.export_laws_accepted);
+  const s3ok  = productionRelease || !!pc.ratings_iarc_agreed;
+  const s4ok  = productionRelease || !!pc.legal_compliance;
+
+  function ab(isAuto, isDone, byEvidence) {
     if (isAuto) return `<span class="pc-acc-badge auto">✓ Auto</span>`;
+    if (isDone && byEvidence) {
+      return `<span class="pc-acc-badge done" title="Not ticked here — a committed release could not exist unless this was done">✓ Verified by release</span>`;
+    }
     return isDone ? `<span class="pc-acc-badge done">✓ Done</span>` : `<span class="pc-acc-badge action">⚠ Action</span>`;
   }
 
@@ -1831,8 +1866,17 @@ function renderPcSection(d, pc) {
   return `
   <div class="pc-section">
     <div class="section-title">Google Play Console
-      <span id="pc-badge">${pcBadge(pc)}</span>
+      <span id="pc-badge">${pcBadge(pc, d)}</span>
     </div>
+
+    ${released ? `<div class="pc-released-note">
+      <strong>Released.</strong> ${x(d.publish.package_name || "This app")} is live on
+      <strong>${x(d.publish.track || "Play")}</strong> as version code
+      <strong>${d.publish.version_code ?? "?"}</strong>${d.publish.at ? ` (${x(new Date(d.publish.at).toLocaleDateString())})` : ""}.
+      Google will not accept a release for an app that does not exist in Console with
+      app signing set up, so those steps are done whatever the boxes below say.
+      ${productionRelease ? "" : "The App Content declarations are only enforced on a production release, so they are still yours to confirm."}
+    </div>` : ""}
 
     <!-- Insights panel -->
     <div class="pc-insights" id="pc-insights">
@@ -1917,7 +1961,7 @@ function renderPcSection(d, pc) {
     <details class="pc-accordion">
       <summary>
         <span class="pc-acc-chevron">▶</span><span class="pc-acc-num">1</span>
-        <span class="pc-acc-title">Create App</span>${ab(false, s1ok)}
+        <span class="pc-acc-title">Create App</span>${ab(false, s1ok, provenByRelease && !(pc.policy_confirmed && pc.signing_tos_accepted && pc.export_laws_accepted))}
       </summary>
       <div class="pc-accordion-body">
         ${!s1ok ? '<div class="pc-action-pill">⚠ Tick the 3 declarations below to complete</div>' : '<div class="pc-auto-pill">✓ All declarations confirmed</div>'}
@@ -2000,7 +2044,7 @@ function renderPcSection(d, pc) {
     <details class="pc-accordion">
       <summary>
         <span class="pc-acc-chevron">▶</span><span class="pc-acc-num">3</span>
-        <span class="pc-acc-title">Content Ratings (IARC)</span>${ab(false, s3ok)}
+        <span class="pc-acc-title">Content Ratings (IARC)</span>${ab(false, s3ok, productionRelease && !pc.ratings_iarc_agreed)}
       </summary>
       <div class="pc-accordion-body">
         ${!s3ok ? '<div class="pc-action-pill">⚠ Agree to IARC terms below to complete</div>' : '<div class="pc-auto-pill">✓ IARC terms agreed</div>'}
@@ -2029,7 +2073,7 @@ function renderPcSection(d, pc) {
     <details class="pc-accordion">
       <summary>
         <span class="pc-acc-chevron">▶</span><span class="pc-acc-num">4</span>
-        <span class="pc-acc-title">Target Audience &amp; Content</span>${ab(false, s4ok)}
+        <span class="pc-acc-title">Target Audience &amp; Content</span>${ab(false, s4ok, productionRelease && !pc.legal_compliance)}
       </summary>
       <div class="pc-accordion-body">
         ${!s4ok ? '<div class="pc-action-pill">⚠ Confirm legal compliance below</div>' : '<div class="pc-auto-pill">✓ Confirmed</div>'}
@@ -2219,7 +2263,9 @@ async function savePcForm() {
     const res = await api("POST", `/api/v2/company/${cn}/play-console`, body);
     toast("Play Console data saved", "success");
     const badge = document.getElementById("pc-badge");
-    if (badge) badge.outerHTML = pcBadge(res);
+    // Pass the detail too: the badge reports a committed release when there
+    // is one, and that fact does not come from the form being saved.
+    if (badge) badge.outerHTML = pcBadge(res, S.detail);
   } catch(e) {
     toast("Save failed: " + e.message, "error");
   }
