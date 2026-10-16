@@ -60,108 +60,150 @@ def stage_check() -> None:
 
 # ── Stage 2: Domain matching ─────────────────────────────────────────────────
 
-def stage_match(dry_run: bool = False) -> None:
-    _banner("STAGE 2 — Domain matching")
-    import requests
-    import xml.etree.ElementTree as ET
-    import re
+#: Below this, a domain is not confidently anyone's.
+MATCH_THRESHOLD = 0.5
+#: A tie this close is not a winner, it is two candidates.
+MATCH_AMBIGUITY_MARGIN = 0.05
+#: The plain substring rule is too generous on a very short core: a
+#: three-letter domain is a substring of a great many company names.
+MIN_SUBSTRING_CORE = 4
 
-    API_URL = "https://api.namecheap.com/xml.response"
-    NS = {"nc": "http://api.namecheap.com/xml.response"}
+_MATCH_STOPWORDS = {
+    "ltd", "limited", "plc", "cic", "llc", "uk", "the", "and", "of",
+    "for", "services", "group", "solutions", "holdings", "enterprises",
+    "international", "global", "management", "consulting", "associates",
+}
 
-    _STOPWORDS = {
-        "ltd", "limited", "plc", "cic", "llc", "uk", "the", "and", "of",
-        "for", "services", "group", "solutions", "holdings", "enterprises",
-        "international", "global", "management", "consulting", "associates",
-    }
 
-    def _normalize(s: str) -> str:
-        s = s.lower()
-        s = re.sub(r"[^a-z0-9 ]", " ", s)
-        words = [w for w in s.split() if w not in _STOPWORDS and len(w) > 1]
-        return " ".join(words)
+def _match_normalize(s: str) -> str:
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    words = [w for w in s.split() if w not in _MATCH_STOPWORDS and len(w) > 1]
+    return " ".join(words)
 
-    def _domain_core(domain: str) -> str:
-        sld = domain.lower().split(".")[0]
-        return re.sub(r"[^a-z0-9]", "", sld)
 
-    def _score(company_norm: str, dom_core: str) -> float:
-        if not dom_core:
-            return 0.0
-        company_core = company_norm.replace(" ", "")
-        if dom_core in company_core:
-            return 0.9
-        if len(dom_core) >= 7 and all(c in company_core for c in dom_core):
-            pos = 0; seq = 0
-            for ch in dom_core:
-                idx = company_core.find(ch, pos)
-                if idx >= 0:
-                    seq += 1; pos = idx + 1
-            if seq / len(dom_core) >= 0.85:
-                return seq / len(dom_core)
-        company_words = set(company_norm.split())
-        dom_words = set(re.findall(r"[a-z]{3,}", dom_core))
-        if dom_words:
-            overlap = len(company_words & dom_words) / len(dom_words)
-            if overlap >= 0.5:
-                return overlap
+def _domain_core(domain: str) -> str:
+    sld = domain.lower().split(".")[0]
+    return re.sub(r"[^a-z0-9]", "", sld)
+
+
+def _match_score(company_norm: str, dom_core: str) -> float:
+    if not dom_core:
         return 0.0
+    company_core = company_norm.replace(" ", "")
+    if len(dom_core) >= MIN_SUBSTRING_CORE and dom_core in company_core:
+        return 0.9
+    if len(dom_core) >= 7 and all(c in company_core for c in dom_core):
+        pos = 0
+        seq = 0
+        for ch in dom_core:
+            idx = company_core.find(ch, pos)
+            if idx >= 0:
+                seq += 1
+                pos = idx + 1
+        if seq / len(dom_core) >= 0.85:
+            return seq / len(dom_core)
+    company_words = set(company_norm.split())
+    dom_words = set(re.findall(r"[a-z]{3,}", dom_core))
+    if dom_words:
+        overlap = len(company_words & dom_words) / len(dom_words)
+        if overlap >= 0.5:
+            return overlap
+    return 0.0
 
-    base = {
-        "ApiUser":  os.environ["NAMECHEAP_API_USER"],
-        "ApiKey":   os.environ["NAMECHEAP_API_KEY"],
-        "UserName": os.environ["NAMECHEAP_USERNAME"],
-        "ClientIp": os.environ["NAMECHEAP_CLIENT_IP"],
-    }
 
-    r = requests.get(API_URL, params={**base, "Command": "namecheap.domains.getList", "PageSize": "100"}, timeout=30)
-    root = ET.fromstring(r.text)
-    domains = [d.get("Name") for d in root.findall(".//nc:Domain", NS) if d.get("Name")]
-    print(f"  Namecheap domains: {domains}")
+def _rank_candidates(domain: str, companies: list[tuple[str, str, str]]) -> list[tuple[float, str, str, str]]:
+    """(score, cn, name, existing_domain) for every company, best first."""
+    dom_core = _domain_core(domain)
+    scored = [
+        (_match_score(_match_normalize(name), dom_core), cn, name, existing)
+        for cn, name, existing in companies
+    ]
+    # Sort by score, then company number, so a tie is resolved the same way
+    # on every run instead of by whatever order the rows came back in.
+    return sorted(scored, key=lambda t: (-t[0], t[1]))
 
-    # Load companies from Supabase
+
+def stage_match(dry_run: bool = False) -> None:
+    """
+    Pair domains already in the Namecheap account with companies.
+
+    Reports what it actually did. The previous version printed "MATCH" and
+    then wrote nothing whenever the best-scoring company already had a
+    domain — the line claimed a pairing that never happened — and it picked
+    between equally-scoring companies by whichever row came back first.
+    """
+    _banner("STAGE — Domain matching")
+    from namecheap_automation import get_domain_list
+
+    listing = get_domain_list()
+    if "error" in listing:
+        print(f"  ERROR — could not read the domain list: {listing['error']}")
+        return
+    domains = [d["name"] for d in listing["domains"] if d.get("name")]
+    print(f"  {len(domains)} domain(s) in the Namecheap account")
+    if not domains:
+        return
+
+    tenant_id = db.current_tenant_id()
     companies = []   # (cn, name, existing_domain)
-    for _r in db.all_rows(db.current_tenant_id()):
+    for _r in db.all_rows(tenant_id):
         cn   = str(_r.get("Company Number") or "").strip()
         name = str(_r.get("Company Name") or "").strip()
         dom  = str(_r.get("Domain") or "").strip()
         if cn and name:
             companies.append((cn, name, dom))
 
-    written = 0
-    for domain in domains:
-        dom_core   = _domain_core(domain)
-        best_score = 0.0
-        best_cn    = ""
-        best_name  = ""
-        for cn, name, existing in companies:
-            score = _score(_normalize(name), dom_core)
-            if score > best_score:
-                best_score = score; best_cn = cn; best_name = name
+    if not companies:
+        print("  No companies to match against.")
+        return
 
-        if best_score >= 0.5:
-            print(f"  MATCH  {domain!r:42s} -> {best_cn} {best_name!r}  (score={best_score:.2f})")
-            if not dry_run:
-                for cn, name, existing in companies:
-                    if cn == best_cn and not existing:
-                        db.update_row(db.current_tenant_id(), cn, {"Domain": domain})
-                        # Update in-memory list too so next iteration sees it
-                        companies = [
-                            (c, n, domain if c == best_cn else d)
-                            for c, n, d in companies
-                        ]
-                        written += 1
-                        break
-        else:
-            print(f"  SKIP   {domain!r:42s} (best score={best_score:.2f})")
+    written = taken = ambiguous = unmatched = 0
+    for domain in sorted(domains):
+        ranked = _rank_candidates(domain, companies)
+        best = ranked[0]
+        runner_up = ranked[1] if len(ranked) > 1 else (0.0, "", "", "")
+
+        if best[0] < MATCH_THRESHOLD:
+            print(f"  SKIP   {domain!r:42s} best score {best[0]:.2f}, below {MATCH_THRESHOLD}")
+            unmatched += 1
+            continue
+
+        if runner_up[0] >= best[0] - MATCH_AMBIGUITY_MARGIN:
+            # Two companies fit equally well. Picking one by row order is how
+            # a domain ends up on the wrong company's app listing.
+            print(f"  AMBIG  {domain!r:42s} {best[1]} {best[2]!r} ({best[0]:.2f}) vs "
+                  f"{runner_up[1]} {runner_up[2]!r} ({runner_up[0]:.2f}) — set it by hand")
+            ambiguous += 1
+            continue
+
+        score, cn, name, existing = best
+        if existing:
+            if existing.lower() == domain.lower():
+                print(f"  OK     {domain!r:42s} already on {cn} {name!r}")
+            else:
+                print(f"  TAKEN  {domain!r:42s} best match {cn} {name!r} already has "
+                      f"{existing!r} — not changed")
+                taken += 1
+            continue
+
+        print(f"  MATCH  {domain!r:42s} -> {cn} {name!r}  (score={score:.2f})")
+        if dry_run:
+            continue
+        db.update_row(tenant_id, cn, {"Domain": domain})
+        # Keep the in-memory list in step so the next domain sees this one
+        # as taken rather than pairing with the same company again.
+        companies = [(c, n, domain if c == cn else d) for c, n, d in companies]
+        written += 1
 
     if dry_run:
-        print("\n  [Dry run — not writing]")
+        print("\n  [Dry run — nothing written]")
     else:
-        print(f"\n  {written} new domain(s) written to Supabase.")
+        print(f"\n  {written} domain(s) assigned")
+    if taken or ambiguous or unmatched:
+        print(f"  {taken} best-match already had a domain, {ambiguous} ambiguous, "
+              f"{unmatched} below threshold")
 
-
-# ── Stage 3: Dev email setup ─────────────────────────────────────────────────
 
 def _company_app_dir(company_number: str, company_name: str) -> Path:
     """pipeline_output/companies/{cn} - {name}/app — the current layout."""

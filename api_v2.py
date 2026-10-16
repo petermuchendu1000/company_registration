@@ -1054,7 +1054,11 @@ def v2_search():
         try:
             sys.path.insert(0, str(ROOT))
             from run_pipeline import ch_get
-            data = ch_get(f"/search/companies?q={q}&items_per_page=20")
+            # Params, not an f-string. Interpolating the query meant a
+            # company name containing "&" — "H & M", "Marks & Spencer" —
+            # terminated the q parameter and the rest became stray
+            # parameters, so the search silently looked for something else.
+            data = ch_get("/search/companies", {"q": q, "items_per_page": 20})
             for item in (data.get("items") or []):
                 if item.get("company_status", "").lower() != "active": continue
                 item_cn = _cn8(item.get("company_number", ""))

@@ -638,23 +638,59 @@ def get_balance():
     return {"error": "Could not parse balance", "raw": resp["raw"]}
 
 
-def get_domain_list():
-    """Get list of all domains in the account."""
-    resp = _api_call("domains.getList", {"PageSize": "100"})
-    if resp["status"] != "OK":
-        return {"error": f"Failed: {resp['errors']}"}
+#: Namecheap's documented maximum for domains.getList.
+_DOMAIN_PAGE_SIZE = 100
+#: Stop runaway paging on an account far larger than expected.
+_DOMAIN_PAGE_LIMIT = 50
 
+
+def get_domain_list():
+    """
+    Every domain in the account.
+
+    Paged. One request returns at most 100, and the caller that matters here
+    walks the whole account to pair domains with companies — so an account
+    over 100 domains used to have everything past the first page silently
+    ignored.
+
+    Paging stops on a short page rather than on a total from the response:
+    Namecheap documents Page and PageSize as request parameters, but the
+    published example response does not show the paging block, and guessing
+    a field name would be the same mistake in a new place.
+    """
     domains = []
-    for node in resp["root"].iter():
-        if "Domain" in node.tag and node.attrib.get("Name"):
-            domains.append({
-                "name": node.attrib.get("Name", ""),
-                "id": node.attrib.get("ID", ""),
-                "expires": node.attrib.get("Expires", ""),
-                "is_expired": node.attrib.get("IsExpired", ""),
-                "auto_renew": node.attrib.get("AutoRenew", ""),
-                "whoisguard": node.attrib.get("WhoisGuard", ""),
-            })
+    seen = set()
+    for page in range(1, _DOMAIN_PAGE_LIMIT + 1):
+        resp = _api_call("domains.getList",
+                         {"PageSize": str(_DOMAIN_PAGE_SIZE), "Page": str(page)})
+        if resp["status"] != "OK":
+            if domains:
+                # Partial data is worse than none for a matcher: it would
+                # look like the missing domains simply are not registered.
+                return {"error": f"Failed on page {page}: {resp['errors']}"}
+            return {"error": f"Failed: {resp['errors']}"}
+
+        batch = []
+        for node in resp["root"].iter():
+            if "Domain" in node.tag and node.attrib.get("Name"):
+                batch.append({
+                    "name": node.attrib.get("Name", ""),
+                    "id": node.attrib.get("ID", ""),
+                    "expires": node.attrib.get("Expires", ""),
+                    "is_expired": node.attrib.get("IsExpired", ""),
+                    "auto_renew": node.attrib.get("AutoRenew", ""),
+                    "whoisguard": node.attrib.get("WhoisGuard", ""),
+                })
+
+        fresh = [d for d in batch if d["name"] not in seen]
+        for d in fresh:
+            seen.add(d["name"])
+        domains.extend(fresh)
+
+        # A short page is the last page. No new names also ends it, which
+        # covers a server that ignores Page and keeps returning page one.
+        if len(batch) < _DOMAIN_PAGE_SIZE or not fresh:
+            break
 
     return {"domains": domains, "count": len(domains)}
 
