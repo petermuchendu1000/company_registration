@@ -401,8 +401,16 @@ def _compute_stages(cn: str, row: dict) -> dict:
     ad = cdir / "app" / "artifacts"
     has_app = ad.is_dir() and any(f.endswith((".apk", ".aab")) for f in os.listdir(ad))
 
+    # "details" means Companies House has actually been read, not that
+    # somebody typed a name. A manually added company starts with a number, a
+    # name and sometimes a year — and used to show the stage as Done with an
+    # empty address, no SIC codes and no directors. Status and address come
+    # only from the lookup (or a deliberate manual override, which is the
+    # same claim made by a person).
+    fetched = bool(str(row.get("Status") or "").strip()) or bool(str(row.get("Address") or "").strip())
+
     return {
-        "details":     bool(name),
+        "details":     bool(name) and fetched,
         "duns":        bool(row.get("DUNS Number")),
         "certificate": has_cert,
         "domain":      bool(row.get("Domain")),
@@ -686,9 +694,16 @@ def _exec_stage(cn: str, stage: str, row: dict):
             "Address":                d.get("address", ""),
             "Directors":              d.get("director_names", ""),
             "Director Nationalities": d.get("director_nationalities", ""),
+            # Months and years, from the officers resource. This was written
+            # from a key get_company_details never returned, so every run
+            # replaced whatever was there with an empty string.
             "Director DOB":           d.get("director_dobs", ""),
-            "Director Gender":        d.get("director_genders", ""),
+            # Director Gender is deliberately absent: Companies House does
+            # not publish gender, so this stage has nothing to say about it
+            # and must not overwrite what a person entered by hand.
         })
+        print(f"  {len(d.get('directors') or [])} serving director(s) "
+              f"from {d.get('officers_seen', 0)} officer record(s)")
         return d
 
     elif stage == "duns":

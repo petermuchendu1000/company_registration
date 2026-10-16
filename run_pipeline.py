@@ -385,22 +385,73 @@ def find_companies_by_nationality(nationality, count=1):
 # Step 2: Get detailed company data
 # ============================================================
 
+#: Officers are returned a page at a time. Resigned officers are in the same
+#: list as serving ones, so a company with a long history can fill the first
+#: page entirely with people who left — and the old single unpaged request
+#: would then report that it has no directors.
+_OFFICER_PAGE = 100
+_OFFICER_PAGE_LIMIT = 5
+
+
+def _all_officers(company_number):
+    """Every officer, following pagination. Oldest companies need it most."""
+    first = ch_get(f"/company/{company_number}/officers",
+                   {"items_per_page": _OFFICER_PAGE})
+    items = list(first.get("items") or [])
+    total = int(first.get("total_results") or len(items))
+
+    pages = 1
+    while len(items) < total and pages < _OFFICER_PAGE_LIMIT:
+        nxt = ch_get(
+            f"/company/{company_number}/officers",
+            {"items_per_page": _OFFICER_PAGE, "start_index": len(items)},
+        )
+        batch = list(nxt.get("items") or [])
+        if not batch:
+            break
+        items.extend(batch)
+        pages += 1
+    return items
+
+
+def _dob_text(officer):
+    """
+    "YYYY-MM" for an officer, or "".
+
+    Companies House publishes month and year only — there is no day in the
+    public record, so this is as precise as the source gets.
+    """
+    dob = officer.get("date_of_birth") or {}
+    year, month = dob.get("year"), dob.get("month")
+    if not year:
+        return ""
+    return f"{int(year):04d}-{int(month):02d}" if month else f"{int(year):04d}"
+
+
 def get_company_details(company_number):
-    """Get full company details from Companies House."""
+    """
+    Company profile and serving directors from Companies House.
+
+    Everything here comes from the API. Notably absent: gender. The officers
+    resource has no such field, so this never claims to know one — the stage
+    that writes these values used to blank the operator's manual entry with
+    an empty string on every run.
+    """
     profile = ch_get(f"/company/{company_number}")
-    officers_data = ch_get(f"/company/{company_number}/officers")
+    officers = _all_officers(company_number)
 
     addr = profile.get("registered_office_address", {})
     address_parts = [addr.get(k, "") for k in ["address_line_1", "address_line_2", "locality", "region", "postal_code", "country"] if addr.get(k)]
 
-    # Active directors
+    # Serving directors only.
     directors = []
-    for o in officers_data.get("items", []):
+    for o in officers:
         if not o.get("resigned_on") and "director" in (o.get("officer_role", "") or "").lower():
             directors.append({
                 "name": o.get("name", ""),
                 "nationality": o.get("nationality", ""),
                 "appointed_on": o.get("appointed_on", ""),
+                "date_of_birth": _dob_text(o),
             })
 
     sic_codes = profile.get("sic_codes", [])
@@ -419,6 +470,10 @@ def get_company_details(company_number):
         "directors": directors,
         "director_names": "; ".join(d["name"] for d in directors),
         "director_nationalities": "; ".join(d["nationality"] for d in directors),
+        # Same order and separator as the two above, so the three line up
+        # director-for-director in the UI.
+        "director_dobs": "; ".join(d["date_of_birth"] for d in directors),
+        "officers_seen": len(officers),
     }
 
 
