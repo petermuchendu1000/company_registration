@@ -673,13 +673,22 @@ def stage_publish(
     """
     Push each built app to Google Play.
 
-    Dry run unless `commit` is True. A dry run uploads nothing: the edit is
-    validated by Play and then discarded, which is the cheapest way to find
-    out that a listing, an AAB or a Data Safety answer would be rejected.
-    Committing is outward-facing and effectively irreversible — a version
-    code cannot be reused — so it never happens implicitly.
+    Dry run unless `commit` is True.
+
+    A dry run is not a local check. It needs Play credentials, uploads the
+    real bundle and listing into a draft edit, has Play validate it, then
+    deletes the edit so nothing is released. It is the only way to learn that
+    Play would reject a listing, an AAB or a Data Safety answer before a
+    release depends on it — but it spends bandwidth, API quota and most
+    likely a version code.
+
+    Committing is outward-facing and effectively irreversible, so it never
+    happens implicitly.
     """
-    _banner(f"STAGE — Play publish ({'COMMIT' if commit else 'dry run'}, track={track})")
+    _banner(
+        f"STAGE — Play publish ({'COMMIT — RELEASES TO PLAY' if commit else 'dry run — uploads, validates, discards'}, "
+        f"track={track})"
+    )
 
     import play_publisher
 
@@ -718,7 +727,7 @@ def stage_publish(
             print(f"    published  {rep.package_name} v{rep.version_code} -> {rep.track}")
         else:
             print(f"    validated  {rep.package_name} v{rep.version_code} "
-                  f"(dry run — nothing reached Play)")
+                  f"(uploaded to a draft edit, then discarded — not released)")
         ok += 1
 
     verb = "published" if commit else "validated"
@@ -744,8 +753,8 @@ def main() -> None:
     p.add_argument("--track",       default="internal",
                    help="Play track for the publish stage (default: internal)")
     p.add_argument("--commit",      action="store_true",
-                   help="Publish stage: actually release to Play. Without this the edit is "
-                        "validated and discarded.")
+                   help="Publish stage: actually release to Play. Without it the bundle is "
+                        "still uploaded to a draft edit and validated, then discarded.")
     args = p.parse_args()
 
     _load_env()

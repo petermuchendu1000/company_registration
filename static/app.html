@@ -1087,6 +1087,20 @@
 // waiting on a slot, so it must not offer a Run button.
 const ACTIVE_JOB_STATUSES = ["running", "queued"];
 
+// Stages that reach outside this machine: they spend money, submit to a
+// third party, or upload to Google. Both the single Run button and Run All
+// confirm before any of these — the map used to live inside runAll, so the
+// per-stage button registered domains and uploaded bundles with no warning.
+const COSTLY_STAGES = {
+  domain:      "Domain Registration — buys a domain. Costs money, not reversible.",
+  certificate: "Certificate Download — drives a browser session against Companies House.",
+  duns:        "DUNS Lookup — submits a request to Dun & Bradstreet.",
+  publish:     "Play Release (validation) — uploads the signed bundle, listing and "
+             + "graphics to a draft edit on Google Play, has Play validate it, then "
+             + "discards the edit. Nothing is released, but the upload is real and the "
+             + "version code should be treated as spent.",
+};
+
 const STAGES = [
   { key: "details",     label: "Company Details",    icon: "🏢" },
   { key: "duns",        label: "DUNS Number",         icon: "D" },
@@ -1425,7 +1439,7 @@ function renderDetail() {
                      value="${ver.version_code}" min="1" style="width:80px;" />
               <button class="btn btn-ghost btn-sm" onclick="bumpVC()">+1 Bump</button>
             </div>
-            <div class="version-hint">Must increase with every Play Store upload</div>
+            <div class="version-hint">Must increase for every upload to Play — including a validation run, which uploads the bundle too</div>
           </div>
           <div class="version-field" style="flex:1;min-width:130px;">
             <div class="version-field-label">Version Name</div>
@@ -1603,8 +1617,12 @@ function buildStageRow(s, d) {
     } else if (jobSt === "done" || done) {
       btns += `<button class="btn btn-sm btn-ghost" onclick="viewLog('${s.key}')">Log</button>`;
     }
+    // "Run" understates what the publish stage does, so it says what it is.
+    const runLabel = s.key === "publish"
+      ? (done ? "↻ Re-validate" : "▶ Validate on Play")
+      : (done || jobSt === "done" ? "↻ Re-run" : "▶ Run");
     btns += `<button class="btn btn-sm ${done || jobSt==='done' ? '' : 'btn-primary'}" onclick="runStage('${s.key}')">
-      ${done || jobSt==='done' ? "↻ Re-run" : "▶ Run"}
+      ${runLabel}
     </button>`;
     if (s.key === "director_id" && (done || jobSt === "done")) {
       btns += `<button class="btn btn-sm btn-orange" onclick="rerunId()">🔄 New Image</button>`;
@@ -2309,6 +2327,10 @@ function selectCompany(cn) {
 
 async function runStage(stage) {
   if (!S.selectedCn) return;
+  if (COSTLY_STAGES[stage]) {
+    const label = STAGES.find(s => s.key === stage)?.label || stage;
+    if (!confirm(`${label} for ${S.detail?.name || S.selectedCn}\n\n${COSTLY_STAGES[stage]}\n\nContinue?`)) return;
+  }
   try {
     await api("POST", `/api/v2/company/${S.selectedCn}/stage/${stage}`);
     toast(`Started: ${STAGES.find(s=>s.key===stage)?.label || stage}`, "info");
@@ -2323,13 +2345,10 @@ async function runAll() {
 
   // Identify pending stages and flag expensive/irreversible ones
   const pending  = STAGES.filter(s => !S.detail.stages?.[s.key]);
-  const COSTLY   = { domain: "Domain Registration (costs money, irreversible)",
-                     certificate: "Certificate Download (browser automation)",
-                     duns: "DUNS Lookup (external submission)" };
-  const costly   = pending.filter(s => COSTLY[s.key]);
+  const costly   = pending.filter(s => COSTLY_STAGES[s.key]);
 
   if (costly.length) {
-    const lines = costly.map(s => `• ${COSTLY[s.key]}`).join("\n");
+    const lines = costly.map(s => `• ${COSTLY_STAGES[s.key]}`).join("\n");
     const ok = confirm(
       `Run ${pending.length} pending stage${pending.length > 1 ? "s" : ""} for ${S.detail.name}?\n\n` +
       `Includes:\n${lines}\n\nContinue?`
@@ -2678,6 +2697,25 @@ document.getElementById("filter-tabs").addEventListener("click", e => {
 document.getElementById("status-filter").addEventListener("change", e => {
   S.statusFilter = e.target.value;
   renderSidebar();
+});
+
+// ── Escape closes whatever is open ────────────────────────────────────────────
+// Every overlay and the log drawer closed only on a backdrop click or an ✕.
+// Escape is the dismissal people reach for first, and without it a modal that
+// covers the page is a trap for anyone working from the keyboard. Innermost
+// first, so Escape peels one layer at a time rather than clearing the lot.
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  const layers = [
+    ["preview-overlay", closePreview],
+    ["edit-overlay",    closeEditModal],
+    ["add-overlay",     closeAddModal],
+    ["log-drawer",      closeLog],
+  ];
+  for (const [id, close] of layers) {
+    const el = document.getElementById(id);
+    if (el && el.classList.contains("open")) { close(); return; }
+  }
 });
 
 // ── Modal close on overlay click ──────────────────────────────────────────────

@@ -754,8 +754,11 @@ def _exec_stage(cn: str, stage: str, row: dict):
             print(f"  warn   {w}")
         if not rep.ok:
             raise RuntimeError("; ".join(rep.errors) or "publish preflight failed")
-        print(f"  validated {rep.package_name} v{rep.version_code} — "
-              f"nothing reached Play. Use pipeline.py --stage publish --commit to release.")
+        print(f"  validated {rep.package_name} v{rep.version_code} on Play — "
+              f"the bundle and listing were uploaded to a draft edit and the edit "
+              f"was discarded, so nothing was released.")
+        print(f"  To release:  python pipeline.py --stage publish "
+              f"--company {cn} --commit")
         return rep.as_dict()
 
     raise ValueError(f"Unknown stage: {stage}")

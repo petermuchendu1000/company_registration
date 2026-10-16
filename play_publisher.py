@@ -340,8 +340,21 @@ def publish(
     Upload the AAB, write the listing and graphics, stage a release on `track`,
     and validate the edit.
 
-    With dry_run=True (the default) the edit is validated and then deleted, so
-    nothing reaches Google Play. Pass dry_run=False to commit.
+    A dry run is NOT an offline check. It needs a working service account and
+    an app that already exists in Play Console, and it performs the whole
+    sequence for real: it opens a draft edit, uploads the AAB, sends the store
+    listing text, replaces the graphics and stages the release on `track`.
+    Only the final commit is skipped — the edit is validated by Play and then
+    deleted, so none of it is applied and nothing goes live.
+
+    What a dry run still costs: bandwidth for the full bundle, Play API quota,
+    and most likely a version code. Google's own description of the upload is
+    that it "puts the APK in a storage area, so it can be assigned to a track
+    in this or a subsequent edit" — that storage outlives the edit, and the
+    published docs do not say a deleted edit releases the code. Treat a
+    version code spent on a dry run as spent.
+
+    Pass dry_run=False to commit and release.
     """
     # Preflight first. Importing the Google client up here meant a machine
     # without it reported "No module named googleapiclient" and nothing else,
@@ -455,7 +468,12 @@ def publish(
         edits.validate(editId=edit_id, packageName=pkg).execute()
         if dry_run:
             edits.delete(editId=edit_id, packageName=pkg).execute()
-            rep.warn("dry_run: edit validated then discarded, nothing published")
+            rep.warn(
+                "dry run: the AAB, listing and graphics were uploaded to a draft "
+                "edit, Play validated it, and the edit was discarded. Nothing was "
+                f"released. Version code {rep.version_code} should be treated as "
+                "spent — reuse is not guaranteed after an edit is deleted."
+            )
         else:
             edits.commit(editId=edit_id, packageName=pkg).execute()
             rep.committed = True
