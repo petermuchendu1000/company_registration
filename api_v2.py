@@ -387,8 +387,16 @@ def _compute_stages(cn: str, row: dict) -> dict:
 
     has_cert = bool(row.get("Certificate Downloaded"))
     if not has_cert:
+        # The fallback looked for "*_cert.pdf", a name from an older tree that
+        # nothing in this one has ever written — the downloader saves
+        # Certificate_{cn}.pdf. So a company whose row field was cleared could
+        # never be recognised again with the PDF sitting right there. Match on
+        # a real PDF of a plausible size instead of on a naming convention.
         cd = cdir / "certificate"
-        has_cert = cd.is_dir() and any(f.endswith("_cert.pdf") for f in os.listdir(cd))
+        has_cert = cd.is_dir() and any(
+            f.lower().endswith(".pdf") and (cd / f).stat().st_size >= 1024
+            for f in os.listdir(cd)
+        )
 
     ad = cdir / "app" / "artifacts"
     has_app = ad.is_dir() and any(f.endswith((".apk", ".aab")) for f in os.listdir(ad))
@@ -698,9 +706,14 @@ def _exec_stage(cn: str, stage: str, row: dict):
         from run_pipeline import download_certificate
         out = str(_co_dir(cn, name) / "certificate")
         path, err = _with_retry(lambda: download_certificate(cn, out))
-        if path:
-            _update_excel_row(cn, {"Certificate Downloaded": True, "Certificate Path": path})
-        return {"path": path, "error": err}
+        # download_certificate reports failure by returning a reason, not by
+        # raising, so _with_retry never saw it and the job was recorded as
+        # done with the stage still showing Pending. Raise so the job says
+        # what happened and run-all stops instead of carrying on.
+        if not path:
+            raise RuntimeError(err or "Certificate download failed")
+        _update_excel_row(cn, {"Certificate Downloaded": True, "Certificate Path": path})
+        return {"path": path}
 
     elif stage == "domain":
         from run_pipeline import register_company_domain
@@ -1152,13 +1165,20 @@ def v2_rerun_id(cn):
 
 
 @api_v2.route("/api/v2/dl")
-def v2_download():
+@api_v2.route("/api/v2/dl/<label>")
+def v2_download(label=None):
     """Serve one of this tenant's company files.
 
     auth.tenant_company_file enforces both that the path stays inside
     pipeline_output/companies and that the signed-in tenant owns the company.
 
     ?inline=1  — serve inline (for in-browser preview); default is attachment download.
+
+    The optional /<label> segment is cosmetic and never used to find the
+    file: Chrome's embedded PDF viewer titles itself from the last path
+    segment, not from Content-Disposition, so without it the certificate
+    preview is headed "dl". The file always comes from ?path, which is what
+    tenant_company_file checks.
     """
     from auth import tenant_company_file
 
@@ -1169,7 +1189,10 @@ def v2_download():
     if resolved is None:
         return abort(404)
     inline = request.args.get("inline", "0") == "1"
-    return send_file(resolved, as_attachment=not inline)
+    # download_name even when inline: without a filename in the
+    # Content-Disposition, the browser's PDF viewer titles the tab from the
+    # URL and shows "dl" above the certificate.
+    return send_file(resolved, as_attachment=not inline, download_name=resolved.name)
 
 
 @api_v2.route("/api/v2/company/<cn>/archive", methods=["POST"])

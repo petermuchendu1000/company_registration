@@ -706,51 +706,115 @@ def setup_play_console_domain_assets(result, google_txt_token="", google_txt_hos
 # Step 4: Download certificate of incorporation
 # ============================================================
 
+#: Smallest plausible certificate. Companies House occasionally answers 200
+#: with a near-empty body; a 300-byte "PDF" is not a certificate.
+MIN_CERTIFICATE_BYTES = 1024
+
+
+def _is_incorporation(item):
+    cat = (item.get("category") or "").lower()
+    desc = (item.get("description") or "").lower()
+    ftype = (item.get("type") or "").upper()
+    return cat == "incorporation" or ftype == "NEWINC" or "incorporat" in desc
+
+
+def _find_incorporation_filing(company_number):
+    """
+    The incorporation filing, or (None, reason).
+
+    Filing history comes back newest first and one page holds at most 100
+    entries, so for a company that has filed more than that the incorporation
+    is not on the first page at all. The old code asked for one page and, on
+    not finding it, fell back to the last item of that page — which for a
+    long-lived company is simply the hundredth-newest filing, saved and
+    labelled as the certificate of incorporation. Page to the end instead.
+    """
+    first = ch_get(f"/company/{company_number}/filing-history", {"items_per_page": 100})
+    items = list(first.get("items") or [])
+    total = int(first.get("total_count") or len(items))
+
+    for item in items:
+        if _is_incorporation(item) and item.get("links", {}).get("document_metadata"):
+            return item, None
+
+    # Not on page one. The incorporation is the oldest filing, so go to the
+    # end rather than walking every page in between.
+    if total > len(items):
+        tail = ch_get(
+            f"/company/{company_number}/filing-history",
+            {"items_per_page": 100, "start_index": max(total - 100, 0)},
+        )
+        tail_items = list(tail.get("items") or [])
+        for item in tail_items:
+            if _is_incorporation(item) and item.get("links", {}).get("document_metadata"):
+                return item, None
+        items = tail_items or items
+
+    # Last resort: the oldest filing that has a document. Only sound because
+    # we are now looking at the genuinely oldest page, and the caller is told
+    # which filing was used rather than being left to assume.
+    with_docs = [i for i in items if i.get("links", {}).get("document_metadata")]
+    if with_docs:
+        return with_docs[-1], None
+
+    return None, "No filing with an attached document"
+
+
 def download_certificate(company_number, output_dir):
-    """Download the certificate of incorporation PDF."""
+    """
+    Download the certificate of incorporation PDF.
+
+    Returns (filepath, None) or (None, reason). Callers treat a reason as a
+    failure, so nothing here returns a path it is not confident in.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
-    data = ch_get(f"/company/{company_number}/filing-history", {"items_per_page": 100})
+    filing, reason = _find_incorporation_filing(company_number)
+    if filing is None:
+        return None, reason
 
-    # Look for incorporation filing
-    doc_link = None
-    for item in data.get("items", []):
-        cat = (item.get("category") or "").lower()
-        desc = (item.get("description") or "").lower()
-        ftype = (item.get("type") or "").upper()
-        if cat == "incorporation" or ftype == "NEWINC" or "incorporat" in desc:
-            doc_link = item.get("links", {}).get("document_metadata")
-            if doc_link:
-                break
+    doc_link = filing.get("links", {}).get("document_metadata")
+    used = filing.get("description") or filing.get("type") or "unknown filing"
+    if not _is_incorporation(filing):
+        print(f"    WARN: no incorporation filing found; using oldest document "
+              f"instead ({used}, {filing.get('date', 'undated')})")
 
-    # Fallback: earliest filing with a document
-    if not doc_link:
-        filings_with_docs = [
-            item for item in data.get("items", [])
-            if item.get("links", {}).get("document_metadata")
-        ]
-        if filings_with_docs:
-            doc_link = filings_with_docs[-1].get("links", {}).get("document_metadata")
-
-    if not doc_link:
-        return None, "No documents available"
-
-    # Build full URL
-    if doc_link.startswith("/"):
-        content_url = f"{BASE_URL}{doc_link}/content"
-    else:
-        content_url = f"{doc_link}/content"
+    content_url = f"{BASE_URL}{doc_link}/content" if doc_link.startswith("/") else f"{doc_link}/content"
 
     resp = ch_get_raw(content_url, headers={"Accept": "application/pdf"}, stream=True)
+    if resp is None:
+        return None, "No response from Companies House after retries"
     if resp.status_code != 200:
         return None, f"HTTP {resp.status_code}"
 
+    # Validate before committing to disk. A 200 whose body is an HTML error
+    # page used to be written out as a .pdf, and every later check — the
+    # stage badge, the file tree, the Play listing — then counted a broken
+    # file as a certificate.
+    chunks = resp.iter_content(chunk_size=8192)
+    try:
+        head = next(chunks)
+    except StopIteration:
+        return None, "Companies House returned an empty document"
+    if not head.startswith(b"%PDF-"):
+        sniff = head[:60].decode("utf-8", "replace").strip()
+        return None, f"Response is not a PDF (starts with {sniff!r})"
+
     filename = f"Certificate_{company_number}.pdf"
     filepath = os.path.join(output_dir, filename)
+    written = 0
     with open(filepath, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=8192):
+        f.write(head)
+        written += len(head)
+        for chunk in chunks:
             f.write(chunk)
+            written += len(chunk)
 
+    if written < MIN_CERTIFICATE_BYTES:
+        os.remove(filepath)
+        return None, f"Document is only {written} bytes — not a usable certificate"
+
+    print(f"    Saved {filename} ({written:,} bytes) from: {used}")
     return filepath, None
 
 

@@ -2308,7 +2308,9 @@ async function previewFile(path, name, size) {
   document.getElementById("preview-size").textContent = size ? fmtSize(size) : "";
 
   const body      = document.getElementById("preview-body");
-  const inlineUrl = `/api/v2/dl?path=${encodeURIComponent(path)}&inline=1`;
+  // The filename segment is only there so the browser's PDF viewer shows it
+  // as the title; the server resolves the file from ?path alone.
+  const inlineUrl = `/api/v2/dl/${encodeURIComponent(name)}?path=${encodeURIComponent(path)}&inline=1`;
 
   if (isImg) {
     body.innerHTML = `<div class="preview-img-wrap"><img class="preview-img" src="${inlineUrl}" alt="${x(name)}" /></div>`;
