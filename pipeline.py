@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -162,86 +163,110 @@ def stage_match(dry_run: bool = False) -> None:
 
 # ── Stage 3: Dev email setup ─────────────────────────────────────────────────
 
-def stage_email(dry_run: bool = False) -> None:
-    _banner("STAGE 3 — dev@ email forwarding")
-    import requests
-    import xml.etree.ElementTree as ET
+def _company_app_dir(company_number: str, company_name: str) -> Path:
+    """pipeline_output/companies/{cn} - {name}/app — the current layout."""
+    safe = re.sub(r'[\\/:*?"<>|]', "", company_name).strip()
+    folder = f"{company_number} - {safe}" if safe else company_number
+    return BASE_DIR / "pipeline_output" / "companies" / folder / "app"
 
-    APPS_DIR   = BASE_DIR / "pipeline_output" / "apps"
-    API_URL    = "https://api.namecheap.com/xml.response"
-    NS         = {"nc": "http://api.namecheap.com/xml.response"}
 
-    def _api():
-        return {
-            "ApiUser":  os.environ["NAMECHEAP_API_USER"],
-            "ApiKey":   os.environ["NAMECHEAP_API_KEY"],
-            "UserName": os.environ["NAMECHEAP_USERNAME"],
-            "ClientIp": os.environ["NAMECHEAP_CLIENT_IP"],
-        }
+def _manifest_path(company_number: str, company_name: str) -> Path | None:
+    """The app manifest, current layout first, legacy second."""
+    candidates = [
+        _company_app_dir(company_number, company_name) / "manifest.json",
+        BASE_DIR / "pipeline_output" / "apps" / company_number / "manifest.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
 
-    # Load companies with a domain + assigned email from Supabase
+
+def stage_email(dry_run: bool = False, company_numbers: list[str] | None = None) -> None:
+    """
+    Point dev@<domain> at the Gmail assigned to the company.
+
+    That address is the developer contact on the Play listing, so a silent
+    failure here is a blocked submission later.
+
+    This used to re-implement the Namecheap calls inline — its own parameter
+    building, its own XML parsing, its own API URL — against
+    api.namecheap.com hardcoded, which ignored NAMECHEAP_SANDBOX, and with no
+    retry on a rate limit. namecheap_automation already does all of that, and
+    preserves any other mailboxes on the domain, so the stage calls it.
+    """
+    _banner("STAGE — dev@ email forwarding")
+    from namecheap_automation import ensure_dev_email_forwarding
+
+    tenant_id = db.current_tenant_id()
+    wanted = set(company_numbers or [])
+
     companies = []
-    for r in db.all_rows(db.current_tenant_id()):
+    for r in db.all_rows(tenant_id):
         cn     = str(r.get("Company Number") or "").strip()
+        name   = str(r.get("Company Name") or "").strip()
         domain = str(r.get("Domain") or "").strip()
         email  = str(r.get("Assigned Email") or "").strip()
-        if cn and domain and email:
-            companies.append((cn, domain, email))
+        if not cn or (wanted and cn not in wanted):
+            continue
+        if domain and email:
+            companies.append((cn, name, domain, email))
 
-    print(f"  Companies with domains: {len(companies)}")
+    if not companies:
+        print("  No company has both a domain and an assigned email yet.")
+        return
 
-    for cn, domain, assigned_email in companies:
+    print(f"  {len(companies)} company(ies) with a domain and an assigned email")
+
+    configured = skipped = failed = 0
+    for cn, name, domain, assigned_email in companies:
         dev_email = f"dev@{domain}"
         print(f"\n  [{cn}] {domain}")
 
-        # Get existing forwards
-        params = {**_api(), "Command": "namecheap.domains.dns.getEmailForwarding", "DomainName": domain}
-        r = requests.get(API_URL, params=params, timeout=30)
-        root = ET.fromstring(r.text)
-
-        if root.get("Status") == "ERROR":
-            errs = [e.text for e in root.findall(".//nc:Error", NS)]
-            if any("DNS" in (e or "") for e in errs):
-                print(f"    SKIP — external DNS")
-                continue
-            print(f"    ERROR — {errs}")
-            continue
-
-        existing = [(fw.get("mailbox", ""), fw.text or "") for fw in root.findall(".//nc:Forward", NS)]
-        existing = [(mb, ft) for mb, ft in existing if mb and ft]
-
-        if any(mb == "dev" for mb, _ in existing):
-            print(f"    OK — {dev_email} already set up")
+        if dry_run:
+            print(f"    DRY — would ensure {dev_email} -> {assigned_email}")
         else:
-            new_fwd = existing + [("dev", assigned_email)]
-            if dry_run:
-                print(f"    DRY — would create {dev_email} -> {assigned_email}")
+            result = ensure_dev_email_forwarding(domain, assigned_email)
+            error = str(result.get("error") or "")
+            if result.get("status") == "configured":
+                print(f"    OK  — {dev_email} -> {assigned_email}")
+                configured += 1
+            elif "dns" in error.lower():
+                # The domain's DNS is not with Namecheap, so it cannot host
+                # the forward. Not a failure of this run; the operator has to
+                # move DNS or set the forward wherever it lives.
+                print(f"    SKIP — {domain} uses external DNS; forwarding must be set there")
+                skipped += 1
+                continue
             else:
-                set_params = {**_api(), "Command": "namecheap.domains.dns.setEmailForwarding", "DomainName": domain}
-                for i, (mb, ft) in enumerate(new_fwd, 1):
-                    set_params[f"mailbox{i}"]   = mb
-                    set_params[f"ForwardTo{i}"] = ft
-                sr = requests.get(API_URL, params=set_params, timeout=30)
-                sroot = ET.fromstring(sr.text)
-                if sroot.get("Status") == "ERROR":
-                    errs = [e.text for e in sroot.findall(".//nc:Error", NS)]
-                    print(f"    ERROR setting forwarding — {errs}")
-                    continue
-                print(f"    SET — {dev_email} -> {assigned_email}")
+                print(f"    ERROR — {error or result.get('message') or 'unknown'}")
+                failed += 1
+                continue
 
-        # Update manifest
-        manifest_path = APPS_DIR / cn / "manifest.json"
-        if manifest_path.exists():
+        # The app manifest carries support_email into the Play listing. This
+        # only ever looked in pipeline_output/apps/{cn}, a layout nothing has
+        # written since the per-company folders landed, so the file was never
+        # found and the update silently did nothing.
+        manifest_path = _manifest_path(cn, name)
+        if manifest_path is None:
+            print(f"    note — no app manifest yet; run the app stage to pick up {dev_email}")
+            continue
+        try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if data.get("support_email") != dev_email:
-                if dry_run:
-                    print(f"    DRY — manifest support_email: {data.get('support_email')!r} -> {dev_email!r}")
-                else:
-                    data["support_email"] = dev_email
-                    manifest_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                    print(f"    UPD — manifest support_email -> {dev_email}")
-            else:
-                print(f"    OK  — manifest already has {dev_email}")
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"    WARN — could not read {manifest_path.name}: {e}")
+            continue
+        if data.get("support_email") == dev_email:
+            print(f"    OK  — manifest already has {dev_email}")
+        elif dry_run:
+            print(f"    DRY — manifest support_email: {data.get('support_email')!r} -> {dev_email!r}")
+        else:
+            data["support_email"] = dev_email
+            manifest_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            print(f"    UPD — manifest support_email -> {dev_email}")
+
+    if not dry_run:
+        print(f"\n  {configured} configured, {skipped} skipped (external DNS), {failed} failed")
 
 
 # ── Stage 4: Director ID (XBINDER) ──────────────────────────────────────────
@@ -786,7 +811,7 @@ def main() -> None:
         stage_duns(company_numbers=args.company, dry_run=args.dry_run)
 
     if run in ("all", "email"):
-        stage_email(dry_run=args.dry_run)
+        stage_email(dry_run=args.dry_run, company_numbers=args.company)
 
     if run in ("all", "director_id"):
         stage_director_id(
