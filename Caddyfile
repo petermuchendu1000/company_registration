@@ -1,0 +1,38 @@
+# Reverse proxy and TLS.
+#
+# SITE_ADDRESS comes from .env. Set it to the hostname and Caddy obtains and
+# renews a certificate automatically; left at the default ":80" it serves
+# plain HTTP, which is for local use only.
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# An APK or AAB download, and a Gradle build triggered from the
+	# dashboard, both outlast the default two-minute proxy timeout.
+	reverse_proxy app:5000 {
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+
+	request_body {
+		# Matches MAX_UPLOAD_MB in the application, which rejects anything
+		# larger itself; this stops an oversized body reaching it at all.
+		max_size 25MB
+	}
+
+	header {
+		# The dashboard is same-origin and loads no third-party frames.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

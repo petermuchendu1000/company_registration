@@ -1,0 +1,45 @@
+# Keep the build context small, and keep secrets out of image layers.
+# Anything COPYd in is readable by anyone who can pull the image, and
+# deleting it in a later layer does not remove it from the earlier one.
+
+# Credentials and private data
+.env
+.env.*
+!.env.example
+secrets/
+*.jks
+*.keystore
+*service_account*.json
+*.xlsx
+apps/generator/.master_secret
+
+# Generated output — mounted as a volume at runtime, never baked in
+pipeline_output/
+ggplay/
+
+# Version control and editor state
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+
+# Python and build caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+venv/
+.venv/
+
+# Android and Gradle build output (the image builds its own)
+**/build/
+**/.gradle/
+**/local.properties
+
+# Local scratch
+*.log
+*.png
+node_modules/

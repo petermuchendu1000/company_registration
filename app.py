@@ -400,6 +400,19 @@ def api_duns_stealth_full(company_number):
 
 if __name__ == "__main__":
     import os
+
+    # Fail here, by name, rather than at the first database call or the first
+    # stage that needs a credential. `python config.py check` says what each
+    # setting is and which stages it unlocks.
+    import config
+    config.require_startup_settings()
+    _status = config.inspect()
+    for _warning in _status.warnings:
+        print(f"  [config] warning: {_warning}")
+    if _status.stages_blocked:
+        print(f"  [config] {len(_status.stages_ready)}/{len(config.STAGES)} stages ready; "
+              f"unavailable: {', '.join(sorted(_status.stages_blocked))}")
+
     start_port = int(os.getenv("PORT", 5000))
     max_tries = 10
 

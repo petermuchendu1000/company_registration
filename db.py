@@ -124,11 +124,14 @@ DEFAULT_TENANT_SLUG = "default"
 
 # ── Connection ──────────────────────────────────────────────────────────────
 def _dsn() -> str:
-    dsn = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
+    # config resolves the DATABASE_URL / SUPABASE_DB_URL alias and loads .env,
+    # so this is the one place either name is read.
+    import config
+    dsn = config.database_url()
     if not dsn:
         raise RuntimeError(
-            "DATABASE_URL not set. Add it to .env "
-            "(postgresql://...pooler.supabase.com:5432/postgres)."
+            "DATABASE_URL not set. Copy .env.example to .env and fill it in, "
+            "or run `python config.py check` to see what is missing."
         )
     return dsn
 

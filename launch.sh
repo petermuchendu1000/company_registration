@@ -40,24 +40,13 @@ else
     note "no .env file (relying on the environment)"
 fi
 
-[ -n "${DATABASE_URL:-}" ] \
-    && note "DATABASE_URL set" \
-    || bad "DATABASE_URL — the datastore is Postgres; see db.py"
-
-if [ -n "${FLASK_SECRET_KEY:-}" ]; then
-    note "FLASK_SECRET_KEY set"
-else
-    # Not fatal: app.py generates one. It is fatal to sessions on restart.
-    note "WARNING  FLASK_SECRET_KEY unset — sessions will not survive a restart"
+# Configuration is declared in config.py, which knows which settings gate
+# which stages. Checking it here too would be a second copy to drift out of
+# step with the first, which is how this preflight came to claim an unset
+# FLASK_SECRET_KEY was harmless after it had become fatal.
+if ! "$PYTHON" config.py check; then
+    fail=1
 fi
-
-if [ -z "${SINGLE_TENANT_SLUG:-}" ]; then
-    note "multi-tenant mode (every request must authenticate)"
-else
-    note "WARNING  SINGLE_TENANT_SLUG=${SINGLE_TENANT_SLUG} — all unbound work lands on that tenant"
-fi
-
-note "builds run ${MAX_CONCURRENT_BUILDS:-1} at a time (MAX_CONCURRENT_BUILDS)"
 
 # Android toolchain: reported, never fatal. Every stage but the app build
 # works without it, and a client may only want the earlier stages today.

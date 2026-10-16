@@ -1,0 +1,96 @@
+# The whole system: database, application, reverse proxy.
+#
+#   cp .env.example .env     and fill in DATABASE_URL and FLASK_SECRET_KEY
+#   docker compose up -d
+#   docker compose run --rm app check      what is configured, and what it unlocks
+#
+# Secrets are read from .env; nothing sensitive is written here. The Play
+# service account keys are mounted read-only from ./secrets, which .gitignore
+# already excludes.
+
+name: company-factory
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-factory}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-company_factory}
+      # Without this the cluster is initialised with the host's locale and a
+      # restore onto a different host can fail on collation.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-factory} -d ${POSTGRES_DB:-company_factory}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    # Not published. Only the app reaches it, over the compose network.
+    expose:
+      - "5432"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Composed here so the compose file is the single place the service
+      # names are known; everything else comes from .env unchanged.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-factory}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-company_factory}
+      PIPELINE_OUTPUT_DIR: /data/pipeline_output
+      PLAY_SERVICE_ACCOUNTS_DIR: /run/secrets/play_service_accounts
+      # TLS is terminated by Caddy, so the session cookie can be Secure.
+      SESSION_COOKIE_SECURE: "1"
+      FLASK_DEBUG: "0"
+    env_file:
+      # Optional on purpose. Without it the app still starts and
+      # `config.py check` reports which stages are unavailable and why;
+      # requiring the file means a missing .env fails before anything can
+      # say what is missing.
+      - path: .env
+        required: false
+    volumes:
+      - app-data:/data
+      - gradle-cache:/var/cache/gradle
+      - ./secrets/play_service_accounts:/run/secrets/play_service_accounts:ro
+    expose:
+      - "5000"
+    # A Gradle build is memory-hungry and this box is shared. Without a cap a
+    # runaway build takes the database down with it.
+    deploy:
+      resources:
+        limits:
+          memory: ${APP_MEMORY_LIMIT:-6g}
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      # Set SITE_ADDRESS to your hostname for automatic TLS. Left at the
+      # default it serves plain HTTP on :80, which is fine locally and is
+      # not fine on a public address.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  db-data:
+  app-data:
+  gradle-cache:
+  caddy-data:
+  caddy-config:
