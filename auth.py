@@ -177,12 +177,12 @@ _LOGIN_HTML = """<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in</title>
 <style>
-  :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --fg:#13151a;
-          --muted:#5b6472; --line:#d9dee6; --accent:#2f6fed; --err:#b3261e; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#14161a; --card:#1c1f25; --fg:#e8eaed; --muted:#9aa4b2;
-            --line:#2c313a; --accent:#5b8dff; --err:#f2b8b5; }
-  }
+  /* Same tokens as static/app.html. The dashboard has no light mode, so
+     following prefers-color-scheme here meant signing in on a white page and
+     landing in a black one. */
+  :root { color-scheme: dark; --bg:#0d1117; --card:#161b22; --fg:#e6edf3;
+          --muted:#8b949e; --line:#30363d; --accent:#2f81f7; --err:#f85149;
+          --field:#0d1117; }
   * { box-sizing:border-box; }
   body { margin:0; min-height:100vh; display:grid; place-items:center;
          background:var(--bg); color:var(--fg); padding:16px;
@@ -193,13 +193,14 @@ _LOGIN_HTML = """<!doctype html>
   p.sub { margin:0 0 20px; color:var(--muted); font-size:13px; }
   label { display:block; font-size:13px; margin:14px 0 5px; color:var(--muted); }
   input { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:7px;
-          background:var(--bg); color:var(--fg); font-size:15px; }
+          background:var(--field); color:var(--fg); font-size:15px; }
   input:focus { outline:2px solid var(--accent); outline-offset:1px; border-color:transparent; }
   button { width:100%; margin-top:20px; padding:10px; border:0; border-radius:7px;
            background:var(--accent); color:#fff; font-size:15px; font-weight:500; cursor:pointer; }
   button:hover { filter:brightness(1.08); }
   .err { margin:14px 0 0; padding:9px 11px; border-radius:7px; font-size:13px;
-         color:var(--err); border:1px solid var(--err); background:transparent; }
+         color:var(--err); border:1px solid rgba(248,81,73,.4);
+         background:rgba(248,81,73,.08); }
 </style></head>
 <body>
   <form class="card" method="post">

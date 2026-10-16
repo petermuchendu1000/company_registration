@@ -1095,6 +1095,7 @@ const STAGES = [
   { key: "email",       label: "Email Assignment",    icon: "✉" },
   { key: "director_id", label: "Director ID",         icon: "🪪" },
   { key: "app",         label: "Android App",         icon: "📱" },
+  { key: "publish",     label: "Play Release",        icon: "🚀" },
 ];
 
 // ── SIC code lookup ───────────────────────────────────────────────────────────
@@ -1147,6 +1148,16 @@ function stageDetail(key, d) {
     case "email":       return d.email ? `Email · ${d.email}` : "";
     case "director_id": return d.stages?.director_id ? (d.directors ? d.directors.split(";")[0].trim() : "Generated") : "";
     case "app":         return d.stages?.app ? "✓ Built" : "";
+    case "publish": {
+      const p = d.publish;
+      if (!p) return "";
+      if (p.committed) return `✓ Live on ${x(p.track)} · v${p.version_code ?? "?"}`;
+      // A receipt without a commit is a dry run: Play accepted the edit and
+      // it was discarded. Saying "validated" rather than "done" keeps the
+      // difference visible, because the release still has not happened.
+      if (p.ok) return `Validated (not released) · v${p.version_code ?? "?"}`;
+      return `Blocked · ${x(p.errors?.[0] || "see log")}`;
+    }
     default:            return "";
   }
 }
@@ -1255,8 +1266,11 @@ async function pollTick() {
 
 function renderSummary() {
   const total    = S.companies.length;
-  const complete = S.companies.filter(c => c.n_done === 7).length;
-  const partial  = S.companies.filter(c => c.n_done > 0 && c.n_done < 7).length;
+  // Derived from STAGES, never a literal. The count was hardcoded to 7 in
+  // five places; adding an eighth stage silently made a 7-of-8 company
+  // report as complete, both here and in the sidebar badge.
+  const complete = S.companies.filter(c => c.n_done === STAGES.length).length;
+  const partial  = S.companies.filter(c => c.n_done > 0 && c.n_done < STAGES.length).length;
   const pending  = S.companies.filter(c => c.n_done === 0).length;
   document.getElementById("topbar-summary").innerHTML =
     `<span>${total} companies</span>` +
@@ -1265,7 +1279,7 @@ function renderSummary() {
     `<span style="color:var(--muted)"><b>${pending}</b> pending</span>`;
 
   // Progress strip
-  const totalStages = total * 7;
+  const totalStages = total * STAGES.length;
   const doneStages  = S.companies.reduce((s, c) => s + (c.n_done || 0), 0);
   const pct = totalStages > 0 ? (doneStages / totalStages * 100).toFixed(1) : 0;
   const strip = document.getElementById("progress-strip");
@@ -1308,8 +1322,8 @@ function filteredList() {
   }
   
   // Filter by completion status (when not in archive tab)
-  if (S.filter === "complete") list = list.filter(c => c.n_done === 7);
-  else if (S.filter === "partial") list = list.filter(c => c.n_done > 0 && c.n_done < 7);
+  if (S.filter === "complete") list = list.filter(c => c.n_done === STAGES.length);
+  else if (S.filter === "partial") list = list.filter(c => c.n_done > 0 && c.n_done < STAGES.length);
   else if (S.filter === "pending") list = list.filter(c => c.n_done === 0);
   
   return list;
@@ -1353,7 +1367,7 @@ function renderDetail() {
   const statusCls = d.status === "active" ? "badge-green" : d.status ? "badge-red" : "";
   const statusBadge = d.status ? `<span class="badge ${statusCls}">${x(d.status)}</span>` : "";
   const typeBadge   = d.type   ? `<span class="badge badge-gray">${x(d.type)}</span>` : "";
-  const doneBadge   = `<span class="badge ${n_done===7?'badge-green':n_done>0?'badge-orange':'badge-gray'}">${n_done}/7</span>`;
+  const doneBadge   = `<span class="badge ${n_done===STAGES.length?'badge-green':n_done>0?'badge-orange':'badge-gray'}">${n_done}/${STAGES.length}</span>`;
   const running     = hasRunningJobs();
 
   const stageHtml = STAGES.map(s => buildStageRow(s, d)).join("");

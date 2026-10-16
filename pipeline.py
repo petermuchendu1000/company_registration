@@ -599,9 +599,135 @@ def print_summary() -> None:
         print(f"  {cn_dir.name}  APK:{apk_ok}  AAB:{aab_ok}  Policy:{pp_ok}  Domain:{dom_ok}  ID:{id_ok}  email={email}")
 
 
+# ── Stage: DUNS lookup ───────────────────────────────────────────────────────
+
+def stage_duns(company_numbers: list[str] | None = None, dry_run: bool = False) -> None:
+    """
+    Fetch a D-U-N-S number for every company that has none.
+
+    The dashboard has run this per company for a while; the pipeline could
+    not, so a batch run produced apps for companies with no DUNS and the gap
+    was only visible one row at a time.
+    """
+    _banner("STAGE — DUNS lookup")
+    from run_pipeline import get_duns_number
+
+    tenant_id = db.current_tenant_id()
+    wanted = set(company_numbers or [])
+    todo = []
+    for row in db.all_rows(tenant_id):
+        cn = str(row.get("Company Number") or "").strip()
+        if not cn or (wanted and cn not in wanted):
+            continue
+        if str(row.get("DUNS Number") or "").strip():
+            continue
+        todo.append((cn, str(row.get("Company Name") or "")))
+
+    if not todo:
+        print("  Every company already has a DUNS number — nothing to do.")
+        return
+
+    print(f"  {len(todo)} company(ies) without a DUNS number:")
+    for cn, name in todo:
+        print(f"    {cn}  {name}")
+    if dry_run:
+        print("  --dry-run: no lookups performed.")
+        return
+
+    found = submitted = failed = 0
+    for cn, name in todo:
+        try:
+            r = get_duns_number(cn, headless=True) or {}
+        except Exception as e:  # noqa: BLE001 - one bad lookup must not stop the batch
+            print(f"    {cn}  ERROR  {type(e).__name__}: {e}")
+            failed += 1
+            continue
+
+        if r.get("duns_number"):
+            db.update_row(tenant_id, cn, {
+                "DUNS Number": r["duns_number"], "DUNS Status": "found",
+            })
+            print(f"    {cn}  {r['duns_number']}")
+            found += 1
+        elif r.get("status") == "submitted":
+            db.update_row(tenant_id, cn, {
+                "DUNS Status": "submitted",
+                "DUNS Email Used": r.get("temp_email", ""),
+            })
+            print(f"    {cn}  request submitted ({r.get('temp_email', '')})")
+            submitted += 1
+        else:
+            print(f"    {cn}  not found  {r.get('error') or r.get('status') or ''}")
+            failed += 1
+
+    print(f"\n  {found} found, {submitted} submitted, {failed} unresolved")
+
+
+# ── Stage: Play publish ──────────────────────────────────────────────────────
+
+def stage_publish(
+    company_numbers: list[str] | None = None,
+    track: str = "internal",
+    commit: bool = False,
+) -> None:
+    """
+    Push each built app to Google Play.
+
+    Dry run unless `commit` is True. A dry run uploads nothing: the edit is
+    validated by Play and then discarded, which is the cheapest way to find
+    out that a listing, an AAB or a Data Safety answer would be rejected.
+    Committing is outward-facing and effectively irreversible — a version
+    code cannot be reused — so it never happens implicitly.
+    """
+    _banner(f"STAGE — Play publish ({'COMMIT' if commit else 'dry run'}, track={track})")
+
+    import play_publisher
+
+    tenant_id = db.current_tenant_id()
+    wanted = set(company_numbers or [])
+    targets = []
+    for row in db.all_rows(tenant_id):
+        cn = str(row.get("Company Number") or "").strip()
+        if not cn or (wanted and cn not in wanted):
+            continue
+        targets.append((cn, str(row.get("Company Name") or "")))
+
+    if not targets:
+        print("  No companies selected.")
+        return
+
+    ok = blocked = errored = 0
+    for cn, name in targets:
+        print(f"\n  {cn}  {name}")
+        try:
+            rep = play_publisher.publish(cn, track=track, dry_run=not commit)
+        except Exception as e:  # noqa: BLE001 - one failure must not stop the batch
+            print(f"    ERROR  {type(e).__name__}: {e}")
+            errored += 1
+            continue
+
+        for w in rep.warnings:
+            print(f"    warn   {w}")
+        if not rep.ok:
+            for err in rep.errors:
+                print(f"    BLOCK  {err}")
+            blocked += 1
+            continue
+
+        if rep.committed:
+            print(f"    published  {rep.package_name} v{rep.version_code} -> {rep.track}")
+        else:
+            print(f"    validated  {rep.package_name} v{rep.version_code} "
+                  f"(dry run — nothing reached Play)")
+        ok += 1
+
+    verb = "published" if commit else "validated"
+    print(f"\n  {ok} {verb}, {blocked} blocked, {errored} errored")
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-STAGES = ["check", "match", "email", "director_id", "build"]
+STAGES = ["check", "match", "duns", "email", "director_id", "build", "publish"]
 
 
 def main() -> None:
@@ -612,9 +738,31 @@ def main() -> None:
     p.add_argument("--artifact",    default="both", choices=["apk", "aab", "both"])
     p.add_argument("--dry-run",     action="store_true", help="Preview changes without writing")
     p.add_argument("--no-headless", action="store_true", help="Show browser window during XBINDER download (debug)")
+    p.add_argument("--tenant",      metavar="SLUG",
+                   help="Tenant whose companies to process. Defaults to the tenant already "
+                        "bound to this process, or SINGLE_TENANT_SLUG.")
+    p.add_argument("--track",       default="internal",
+                   help="Play track for the publish stage (default: internal)")
+    p.add_argument("--commit",      action="store_true",
+                   help="Publish stage: actually release to Play. Without this the edit is "
+                        "validated and discarded.")
     args = p.parse_args()
 
     _load_env()
+
+    # Committing is outward-facing and a version code cannot be reused, so it
+    # has to be asked for on its own, not swept along by a whole-pipeline run.
+    if args.commit and args.stage != "publish":
+        raise SystemExit(
+            "--commit releases to Google Play and cannot be combined with a full run.\n"
+            "Run it deliberately:  python pipeline.py --stage publish --commit"
+        )
+
+    if args.tenant:
+        tenant = db.get_tenant_by_slug(args.tenant)
+        if not tenant:
+            raise SystemExit(f"No such tenant: {args.tenant}")
+        db.set_current_tenant(tenant["id"])
 
     run = args.stage or "all"
     t0  = time.time()
@@ -624,6 +772,9 @@ def main() -> None:
 
     if run in ("all", "match"):
         stage_match(dry_run=args.dry_run)
+
+    if run in ("all", "duns"):
+        stage_duns(company_numbers=args.company, dry_run=args.dry_run)
 
     if run in ("all", "email"):
         stage_email(dry_run=args.dry_run)
@@ -640,6 +791,15 @@ def main() -> None:
             company_numbers=args.company,
             skip_build=args.skip_build,
             artifact=args.artifact,
+        )
+
+    if run in ("all", "publish"):
+        # In a full run this is a validation pass: it reports what Play would
+        # reject without sending anything. See the --commit guard above.
+        stage_publish(
+            company_numbers=args.company,
+            track=args.track,
+            commit=args.commit and run == "publish",
         )
 
     print_summary()

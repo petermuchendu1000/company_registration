@@ -43,6 +43,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,17 @@ def _listing_path(app_dir: Path) -> Path:
     return nested if nested.is_file() else app_dir / "play_listing.json"
 
 
+def _expected_listing_path(app_dir: Path) -> Path:
+    """
+    Where the generator writes the listing — the path an error should name.
+
+    _listing_path falls back to the legacy flat location when neither file
+    exists, so using it in a "missing file" message pointed the reader at a
+    directory nothing has written to since assets.generate_all() moved.
+    """
+    return app_dir / "listing" / "play_listing.json"
+
+
 def _data_safety_path(app_dir: Path) -> Path:
     nested = app_dir / "listing" / "data_safety.json"
     return nested if nested.is_file() else app_dir / "data_safety.json"
@@ -193,7 +205,8 @@ def preflight(company_number: str) -> Report:
 
     listing = _load_listing(app_dir)
     if listing is None:
-        return rep.fail(f"Missing or unreadable {_listing_path(app_dir)}")
+        return rep.fail(f"Missing or unreadable {_expected_listing_path(app_dir)} "
+                        f"— run the app stage to generate it")
 
     identity = listing.get("app_identity", {}) or {}
     store = listing.get("store_listing", {}) or {}
@@ -330,13 +343,27 @@ def publish(
     With dry_run=True (the default) the edit is validated and then deleted, so
     nothing reaches Google Play. Pass dry_run=False to commit.
     """
-    from googleapiclient.errors import HttpError
-    from googleapiclient.http import MediaFileUpload
-
+    # Preflight first. Importing the Google client up here meant a machine
+    # without it reported "No module named googleapiclient" and nothing else,
+    # hiding the listing and artifact problems preflight had already found —
+    # which are the ones worth fixing before anyone installs anything.
     rep = preflight(company_number)
     rep.dry_run = dry_run
     rep.track = track
     if not rep.ok:
+        write_receipt(company_number, rep)
+        return rep
+
+    try:
+        from googleapiclient.errors import HttpError
+        from googleapiclient.http import MediaFileUpload
+    except ImportError as exc:
+        rep.fail(
+            "google-api-python-client is not installed, so nothing can be sent to "
+            f"Play from this machine ({exc}). Install it with: "
+            "pip install -r requirements.txt"
+        )
+        write_receipt(company_number, rep)
         return rep
 
     if track not in VALID_TRACKS:
@@ -448,7 +475,60 @@ def publish(
         rep.fail(f"{type(exc).__name__}: {exc}")
         _discard(edits, edit_id, pkg, cn)
 
+    write_receipt(cn, rep)
     return rep
+
+
+# ── Receipt ─────────────────────────────────────────────────────────────────
+# publish() used to leave nothing behind, so afterwards there was no way to
+# answer "has this app been published, and as what?" — not from the filesystem
+# and not from the row. The receipt is that answer, and it is also the
+# evidence: which edit, which version code, which track, committed or not.
+
+RECEIPT_NAME = "publish_receipt.json"
+
+
+def receipt_path(company_number: str) -> Path | None:
+    app_dir = _app_dir(company_number)
+    return (app_dir / RECEIPT_NAME) if app_dir else None
+
+
+def write_receipt(company_number: str, rep: "Report") -> Path | None:
+    path = receipt_path(company_number)
+    if path is None:
+        return None
+    payload = rep.as_dict()
+    payload["at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as e:
+        logger.warning("[%s] could not write %s: %s", company_number, RECEIPT_NAME, e)
+        return None
+    return path
+
+
+def read_receipt(company_number: str) -> dict | None:
+    """The last publish attempt, or None. A dry run leaves one too."""
+    path = receipt_path(company_number)
+    if path is None or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def is_published(company_number: str) -> bool:
+    """
+    True only for a committed release.
+
+    A dry run writes a receipt too — that is the point, it records that the
+    edit validated — so the committed flag is what separates "this would
+    work" from "this is live".
+    """
+    rec = read_receipt(company_number)
+    return bool(rec and rec.get("committed"))
 
 
 # ── Data Safety ─────────────────────────────────────────────────────────────
@@ -550,7 +630,8 @@ def upload_data_safety(
 
     listing = _load_listing(app_dir)
     if listing is None:
-        return rep.fail(f"Missing or unreadable {_listing_path(app_dir)}")
+        return rep.fail(f"Missing or unreadable {_expected_listing_path(app_dir)} "
+                        f"— run the app stage to generate it")
     rep.package_name = (listing.get("app_identity", {}) or {}).get("package_name", "")
     if not rep.package_name:
         return rep.fail("play_listing.json has no app_identity.package_name")

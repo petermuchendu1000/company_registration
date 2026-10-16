@@ -48,7 +48,7 @@ def reclaim_interrupted_jobs() -> int:
         return 0
 
 
-STAGE_ORDER = ["details", "duns", "certificate", "domain", "email", "director_id", "app"]
+STAGE_ORDER = ["details", "duns", "certificate", "domain", "email", "director_id", "app", "publish"]
 
 # UI field key -> spreadsheet/DB header label. Whitelist of manually-editable fields.
 # Editing any of these overrides the value the pipeline would otherwise produce;
@@ -351,6 +351,36 @@ def _add_company_row(cn: str, name: str, date_of_creation: str = "") -> None:
 
 # ── Stage status ───────────────────────────────────────────────────────────
 
+def _is_published(cn: str) -> bool:
+    """Whether this company has a committed Play release. Never raises."""
+    try:
+        import play_publisher
+        return play_publisher.is_published(cn)
+    except Exception as e:  # noqa: BLE001 - a missing receipt must not break the list
+        print(f"  [publish] receipt check failed for {cn}: {e}")
+        return False
+
+
+def _publish_summary(cn: str) -> dict | None:
+    """The last publish attempt, trimmed to what the dashboard renders."""
+    try:
+        import play_publisher
+        rec = play_publisher.read_receipt(cn)
+    except Exception:  # noqa: BLE001 - the panel is not worth an error page
+        return None
+    if not rec:
+        return None
+    return {
+        "committed": bool(rec.get("committed")),
+        "ok": bool(rec.get("ok")),
+        "track": rec.get("track") or "",
+        "version_code": rec.get("version_code"),
+        "package_name": rec.get("package_name") or "",
+        "at": rec.get("at") or "",
+        "errors": (rec.get("errors") or [])[:3],
+    }
+
+
 def _compute_stages(cn: str, row: dict) -> dict:
     name  = str(row.get("Company Name") or "")
     cdir  = _co_dir(cn, name)
@@ -371,6 +401,9 @@ def _compute_stages(cn: str, row: dict) -> dict:
         "email":       bool(row.get("Assigned Email")),
         "director_id": (cdir / "director_id" / "ID Front.jpeg").exists(),
         "app":         has_app,
+        # Committed only. A dry run leaves a receipt too — that is the point,
+        # it records that the edit validated — but it is not a release.
+        "publish":     _is_published(cn),
     }
 
 
@@ -710,6 +743,21 @@ def _exec_stage(cn: str, stage: str, row: dict):
         _pl.stage_build(company_numbers=[cn])
         return {"status": "done"}
 
+    elif stage == "publish":
+        # Dry run from the dashboard, always. The edit is validated by Play
+        # and discarded, which surfaces a bad listing, AAB or Data Safety
+        # answer without spending a version code. Releasing is deliberate:
+        #   python pipeline.py --stage publish --company <cn> --commit
+        import play_publisher
+        rep = play_publisher.publish(cn, track="internal", dry_run=True)
+        for w in rep.warnings:
+            print(f"  warn   {w}")
+        if not rep.ok:
+            raise RuntimeError("; ".join(rep.errors) or "publish preflight failed")
+        print(f"  validated {rep.package_name} v{rep.version_code} — "
+              f"nothing reached Play. Use pipeline.py --stage publish --commit to release.")
+        return rep.as_dict()
+
     raise ValueError(f"Unknown stage: {stage}")
 
 
@@ -784,6 +832,7 @@ def v2_company(cn):
     return jsonify({
         "cn":               cn,
         "name":             name,
+        "publish":          _publish_summary(cn),
         "status":           str(row.get("Status") or ""),
         "type":             str(row.get("Type") or ""),
         "sic":              str(row.get("SIC Codes") or ""),

@@ -85,7 +85,7 @@ if [ "$HOST" != "127.0.0.1" ] && [ "${FLASK_DEBUG:-0}" = "1" ]; then
     exit 1
 fi
 
-printf '\n  Listening on http://%s:%s/control\n  Ctrl-C to stop.\n\n' "$HOST" "$PORT"
+printf "\n  Dashboard: http://%s:%s/app\n  Ctrl-C to stop.\n\n" "$HOST" "$PORT"
 
 # exec: the Python process replaces this shell, so signals from the
 # supervisor reach the server directly instead of being swallowed here.
