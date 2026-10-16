@@ -32,20 +32,9 @@ def _load_or_create_master() -> bytes:
 
 
 def _find_keytool() -> str:
-    # Prefer the one on PATH (JAVA_HOME/bin) over bundled JBR; both work.
-    exe = shutil.which("keytool") or shutil.which("keytool.exe")
-    if exe:
-        return exe
-    java_home = os.environ.get("JAVA_HOME", "")
-    if java_home:
-        cand = os.path.join(java_home, "bin", "keytool.exe")
-        if os.path.exists(cand):
-            return cand
-    # Fallback to Eclipse Adoptium (detected on this machine).
-    fallback = r"C:\Program Files\Eclipse Adoptium\jdk-25.0.1.8-hotspot\bin\keytool.exe"
-    if os.path.exists(fallback):
-        return fallback
-    raise FileNotFoundError("keytool not found — install a JDK or set JAVA_HOME")
+    """keytool from PATH or JAVA_HOME. See apps/generator/toolchain.py."""
+    from .toolchain import find_keytool
+    return find_keytool()
 
 
 @dataclass(frozen=True)

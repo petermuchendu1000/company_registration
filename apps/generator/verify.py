@@ -11,23 +11,16 @@ import shutil
 import subprocess
 import sys
 
-SDK_DIR = os.environ.get("ANDROID_HOME", os.path.expanduser("~/Android/Sdk"))
+from .toolchain import latest_build_tools as _latest_build_tools, sdk_dir, sdk_tool
+
+SDK_DIR = sdk_dir()
 BUILD_TOOLS_DIR = os.path.join(SDK_DIR, "build-tools")
-
-
-def _latest_build_tools() -> str:
-    if not os.path.isdir(BUILD_TOOLS_DIR):
-        raise FileNotFoundError(f"missing {BUILD_TOOLS_DIR}")
-    versions = sorted(os.listdir(BUILD_TOOLS_DIR))
-    if not versions:
-        raise FileNotFoundError("no build-tools installed")
-    return os.path.join(BUILD_TOOLS_DIR, versions[-1])
 
 
 def verify_apk(apk: str) -> dict[str, str]:
     bt = _latest_build_tools()
-    aapt2 = os.path.join(bt, "aapt2.exe")
-    apksigner = os.path.join(bt, "apksigner.bat")
+    aapt2 = sdk_tool("aapt2", bt)
+    apksigner = sdk_tool("apksigner", bt)
 
     out: dict[str, str] = {"apk": apk, "size_kb": str(os.path.getsize(apk) // 1024)}
 

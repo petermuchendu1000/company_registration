@@ -516,14 +516,20 @@ def stage_build(
 ) -> None:
     _banner("STAGE 5 — App build")
 
-    sdk = os.environ.get(
-        "ANDROID_HOME",
-        r"C:\Users\LENOVO\AppData\Local\Android\Sdk",
-    )
-    java_home = os.environ.get("JAVA_HOME", r"C:\Program Files\Android\Android Studio\jbr")
-    os.environ["JAVA_HOME"] = java_home
-
     sys.path.insert(0, str(BASE_DIR))
+    from apps.generator import toolchain
+
+    sdk = toolchain.sdk_dir()
+    # Only export JAVA_HOME when one was actually found. The old code wrote a
+    # hardcoded Windows path into the environment unconditionally, which on
+    # any other machine pointed Gradle at a directory that does not exist.
+    java_home = toolchain.java_home()
+    if java_home:
+        os.environ["JAVA_HOME"] = java_home
+    else:
+        print("  WARN: no JDK found (JAVA_HOME unset and no java on PATH) — "
+              "Gradle will likely fail")
+
     from apps.generator.catalog import load_companies
     from apps.generator.generate import (
         build_flavors, run_gradle, collect_artifacts,

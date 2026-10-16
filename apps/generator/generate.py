@@ -28,6 +28,7 @@ from .catalog import Company, load_companies, summarize
 from .flavor_writer import BuiltFlavor, clean_stale_flavors, write_flavor_resources, write_flavors_gradle, _sic_role_vocab
 from .keystore_mint import mint as mint_keystore
 from . import assets
+from . import toolchain
 
 
 def _get_vocab(company: Company) -> dict[str, str]:
@@ -40,10 +41,7 @@ APP_DIR = os.path.join(TEMPLATE_ROOT, "app")
 KEYSTORES_DIR = os.path.join(APP_DIR, "keystores")
 COMPANIES_DIR = os.path.join(ROOT, "pipeline_output", "companies")
 
-SDK_DIR_DEFAULT = os.environ.get(
-    "ANDROID_HOME",
-    os.path.expanduser("~/Android/Sdk"),
-)
+SDK_DIR_DEFAULT = toolchain.sdk_dir()
 DEFAULT_ARTIFACT = "aab"
 
 
@@ -69,9 +67,10 @@ def build_flavors(companies: Iterable[Company]) -> list[BuiltFlavor]:
 
 def run_gradle(built: list[BuiltFlavor], variant: str = "Release", artifact: str = DEFAULT_ARTIFACT) -> int:
     """Invoke the Gradle wrapper to assemble or bundle all flavors in one go."""
-    gradlew = os.path.join(TEMPLATE_ROOT, "gradlew.bat")
-    if not os.path.exists(gradlew):
-        print(f"  ERROR: {gradlew} not found")
+    try:
+        launcher = toolchain.gradle_command(TEMPLATE_ROOT)
+    except FileNotFoundError as e:
+        print(f"  ERROR: {e}")
         return 1
 
     tasks: list[str] = []
@@ -86,7 +85,7 @@ def run_gradle(built: list[BuiltFlavor], variant: str = "Release", artifact: str
         print("  ERROR: no build artifact selected")
         return 1
 
-    cmd = [gradlew, "--no-daemon", "--console=plain", "--stacktrace", *tasks]
+    cmd = [*launcher, "--no-daemon", "--console=plain", "--stacktrace", *tasks]
     print(f"\n  Gradle: {' '.join(tasks)}")
     t0 = time.time()
     res = subprocess.run(cmd, cwd=TEMPLATE_ROOT)
