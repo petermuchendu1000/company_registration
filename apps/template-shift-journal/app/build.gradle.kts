@@ -126,6 +126,9 @@ abstract class VerifyNoPermissions : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val mergedManifest: RegularFileProperty
 
+    @get:Input
+    abstract val applicationId: Property<String>
+
     @TaskAction
     fun verify() {
         val text = mergedManifest.get().asFile.readText()
@@ -133,19 +136,40 @@ abstract class VerifyNoPermissions : DefaultTask() {
             .findAll(text)
             .map { it.groupValues[1] }
             .toList()
-        if (declared.isNotEmpty()) {
+
+        // androidx.core injects a signature-protected permission named after
+        // the app's own applicationId (DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION)
+        // whenever ContextCompat.registerReceiver is reachable. The app both
+        // declares and holds it, protectionLevel is "signature", and it grants
+        // nothing outside this app — so it is not a permission in the sense
+        // that matters to a user or to the Data Safety form. Anything NOT
+        // scoped to our own id is a real request and fails the build.
+        val appId = applicationId.get()
+        val selfScoped = declared.filter { it.startsWith("$appId.") }
+        val external = declared.filter { !it.startsWith("$appId.") }
+
+        if (external.isNotEmpty()) {
             throw GradleException(buildString {
-                append("Zero-permission invariant violated. The merged manifest declares ")
-                append(declared.size)
-                append(" permission(s):\n")
-                declared.forEach { append("  - ").append(it).append("\n") }
+                append("Zero-permission invariant violated. The merged manifest requests ")
+                append(external.size)
+                append(" permission(s) outside this app's own namespace:\n")
+                external.forEach { append("  - ").append(it).append("\n") }
                 append("A dependency most likely contributed these. Either drop that ")
                 append("dependency, or strip the entry with tools:node=\"remove\" AND ")
                 append("update listing/data_safety.json before shipping — the Data ")
                 append("Safety declaration must match what the app actually requests.")
             })
         }
-        logger.lifecycle("Zero-permission check passed: merged manifest declares none.")
+
+        if (selfScoped.isEmpty()) {
+            logger.lifecycle("Zero-permission check passed: merged manifest declares none.")
+        } else {
+            logger.lifecycle(
+                "Zero-permission check passed: no external permissions. " +
+                "Self-scoped only (declared and held by this app): " +
+                selfScoped.joinToString(", ")
+            )
+        }
     }
 }
 
@@ -156,6 +180,7 @@ androidComponents {
             group = "verification"
             description = "Fail the build if the merged manifest declares any Android permission."
             mergedManifest.set(variant.artifacts.get(SingleArtifact.MERGED_MANIFEST))
+            applicationId.set(variant.applicationId)
         }
         // Both packaging paths must run it; neither assemble nor bundle alone is enough.
         tasks.matching { it.name == "assemble$suffix" || it.name == "bundle$suffix" }
