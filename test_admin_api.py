@@ -372,6 +372,37 @@ def test_importing_addresses_fills_a_pool() -> None:
     print("  OK  importing addresses fills the pool and is idempotent")
 
 
+def test_import_accepts_the_pasted_text_the_dialog_sends() -> None:
+    """
+    The console posts a textarea, not a list: newline separated, often with
+    a comma or a trailing blank line in it.
+    """
+    pasted = (f"{BROKEN}-p1@gmail.com\n"
+              f"{BROKEN}-p2@gmail.com,  {BROKEN}-p3@gmail.com\n"
+              f"\n   \n")
+    r = ADMIN.post(f"/api/v2/admin/tenants/{BROKEN}/emails", json={"emails": pasted})
+    assert r.status_code == 200, (r.status_code, r.get_json())
+    assert r.get_json()["added"] == 3, r.get_json()
+    print("  OK  a pasted block of addresses imports, blank lines and commas included")
+
+
+def test_importing_clears_the_alert_it_was_offered_for() -> None:
+    """Otherwise the console keeps telling you to do what you just did."""
+    tid, slug = _tenant("adm-bad")
+    db.add_company(tid, "50000009", "EMPTY POOL LTD", "2021-01-01")
+    before = {a["kind"] for a in ADMIN.get("/api/v2/admin/overview").get_json()["alerts"]
+              if slug in (a.get("tenants") or []) or a.get("tenant") == slug}
+    assert "pool_missing" in before, before
+
+    ADMIN.post(f"/api/v2/admin/tenants/{slug}/emails",
+               json={"emails": "\n".join(f"{slug}-{i}@gmail.com" for i in range(30))})
+
+    after = {a["kind"] for a in ADMIN.get("/api/v2/admin/overview").get_json()["alerts"]
+             if slug in (a.get("tenants") or []) or a.get("tenant") == slug}
+    assert "pool_missing" not in after, f"the alert survived the import: {after}"
+    print("  OK  importing addresses clears the alert that asked for them")
+
+
 def test_import_refuses_junk_and_unknown_tenants() -> None:
     bad = ADMIN.post(f"/api/v2/admin/tenants/{HEALTHY}/emails",
                      json={"emails": ["not-an-address"]})
@@ -617,6 +648,8 @@ def main() -> int:
         test_alerts_are_grouped_not_one_per_tenant,
         test_overview_says_whether_the_artifact_scan_finished,
         test_importing_addresses_fills_a_pool,
+        test_import_accepts_the_pasted_text_the_dialog_sends,
+        test_importing_clears_the_alert_it_was_offered_for,
         test_import_refuses_junk_and_unknown_tenants,
         test_changing_a_role_works_and_validates,
         test_the_last_admin_cannot_demote_themselves,

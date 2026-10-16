@@ -69,6 +69,41 @@
   .days span { flex:1; text-align:center; font-size:11.5px; color:var(--fg-faint); }
   .caveat { margin:10px 0 0; font-size:12px; color:var(--fg-faint); line-height:1.5; }
   .muted { color:var(--fg-dim); }
+
+  .link-btn {
+    font:inherit; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+    background:none; border:0; padding:4px 2px; cursor:pointer; color:var(--accent);
+    text-decoration:underline; white-space:nowrap;
+  }
+  .link-btn:hover { color:#85e3d6; }
+  .cell-btn {
+    font:inherit; font-size:12.5px; background:none; border:0; padding:0; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px; text-decoration:underline;
+  }
+
+  dialog {
+    border:1px solid var(--line); border-radius:12px; background:var(--panel);
+    color:var(--fg); padding:0; max-width:560px; width:calc(100% - 32px);
+  }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  dialog form { padding:22px 24px 20px; display:flex; flex-direction:column; gap:14px; }
+  dialog h3 { margin:0; font-size:17px; font-weight:600; letter-spacing:-.015em; }
+  dialog label { display:block; font-size:12px; color:var(--fg-dim); margin-bottom:6px; }
+  dialog select, dialog textarea {
+    width:100%; font:inherit; font-size:13.5px; background:var(--panel-2); color:var(--fg);
+    border:1px solid var(--line); border-radius:7px; padding:9px 11px; box-sizing:border-box;
+  }
+  dialog textarea { min-height:140px; resize:vertical; font-family:"IBM Plex Mono", ui-monospace, monospace; }
+  .btn {
+    font:inherit; font-size:13.5px; font-weight:600; min-height:44px; padding:0 18px;
+    border-radius:8px; cursor:pointer; border:1px solid var(--line);
+    background:var(--panel-2); color:var(--fg);
+  }
+  .btn.primary { border-color:var(--accent-line); background:var(--accent-bg); color:var(--accent); }
+  .btn:disabled { opacity:.55; cursor:default; }
+  .dlg-result { font-size:13px; margin:0; min-height:1.3em; }
+  .dlg-result.bad { color:var(--crit); }
+  .dlg-result.good { color:var(--accent); }
 </style>
 </head>
 <body>
@@ -101,6 +136,31 @@
   </section>
 </main></div>
 
+<dialog id="import-dlg" aria-labelledby="import-title">
+  <form method="dialog" id="import-form">
+    <h3 id="import-title">Import mailbox addresses</h3>
+    <p class="muted" style="margin:0;font-size:13.5px;line-height:1.55">
+      The email stage assigns one address per company and fails outright when the
+      pool is empty. Addresses already in the pool are ignored, so re-importing a
+      list is safe.
+    </p>
+    <div>
+      <label for="import-tenant">Tenant</label>
+      <select id="import-tenant" name="tenant" required></select>
+    </div>
+    <div>
+      <label for="import-emails">Addresses — one per line, or comma separated</label>
+      <textarea id="import-emails" name="emails" required spellcheck="false"
+        placeholder="ada@gmail.com&#10;grace@gmail.com"></textarea>
+    </div>
+    <p class="dlg-result" id="import-result" role="status" aria-live="polite"></p>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button type="button" class="btn" id="import-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="import-go">Import</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
@@ -127,10 +187,22 @@ function renderAlerts(alerts) {
   }
   el.className = "alerts";
   el.innerHTML = `<h2 class="sec" style="color:var(--crit)">Needs attention</h2><ul>` +
-    alerts.map((a) => `<li>${ICON[a.severity] || ICON.warning}
-      <span>${esc(a.message)}</span>
-      <span class="sev ${a.severity === "critical" ? "crit" : "warn"}">${esc(a.action || "")}</span></li>`).join("") +
-    `</ul>`;
+    alerts.map((a) => {
+      // A pool alert is the one thing on this page that can be fixed from
+      // it, so its action is a real button. The rest stay as labels rather
+      // than pretending to be clickable.
+      const fixable = a.kind.startsWith("pool_") && (a.tenants || []).length;
+      const action = fixable
+        ? `<button type="button" class="link-btn" data-import="${esc(a.tenants[0])}"
+             data-all="${esc((a.tenants || []).join(","))}">${esc(a.action)}</button>`
+        : `<span class="sev ${a.severity === "critical" ? "crit" : "warn"}">${esc(a.action || "")}</span>`;
+      return `<li>${ICON[a.severity] || ICON.warning}
+        <span>${esc(a.message)}</span>${action}</li>`;
+    }).join("") + `</ul>`;
+
+  el.querySelectorAll("[data-import]").forEach((b) => {
+    b.onclick = () => openImport(b.dataset.import);
+  });
 }
 
 function renderTiles(t, scanComplete) {
@@ -152,9 +224,14 @@ function renderTiles(t, scanComplete) {
 }
 
 function poolCell(t) {
-  if (!t.pool_total) return `<span class="state crit">${ICON.critical} none</span>`;
-  if (!t.pool_available) return `<span class="state crit">${ICON.critical} 0 left</span>`;
-  if (t.pool_available <= 10) return `<span class="state warn">${ICON.warning} ${t.pool_available} left</span>`;
+  // A pool that needs filling is a button; a healthy one is text. The cell
+  // is where an admin is already looking when they notice the number.
+  const fix = (cls, label) =>
+    `<button type="button" class="cell-btn ${cls}" data-import="${esc(t.slug)}"
+       title="Import addresses for ${esc(t.slug)}">${label}</button>`;
+  if (!t.pool_total) return fix("crit", `${ICON.critical} none`);
+  if (!t.pool_available) return fix("crit", `${ICON.critical} 0 left`);
+  if (t.pool_available <= 10) return fix("warn", `${ICON.warning} ${t.pool_available} left`);
   return `<span class="muted">${t.pool_available} left</span>`;
 }
 
@@ -185,6 +262,10 @@ function renderTenants(rows, stages, total, shown) {
     <p class="caveat" style="padding:0 16px 14px">${shown} of ${total} tenants, those needing attention first.
     Recorded progress counts the ${stages.length} stages the database knows
     (${stages.join(", ")}). The other four are judged from files on disk and are summarised in Built.</p>`;
+
+  document.querySelectorAll("#tenants [data-import]").forEach((b) => {
+    b.onclick = () => openImport(b.dataset.import);
+  });
 }
 
 function renderQueue(q) {
@@ -225,6 +306,69 @@ function renderChart(payload) {
       </div>`).join("") + `</div>
     <div class="days">${days.map((d) => `<span>${esc(label(d.day))}</span>`).join("")}</div>
     <p class="caveat">${esc(payload.caveat || "")}</p>`;
+}
+
+// ── Importing mailbox addresses ──────────────────────────────────────────────
+
+let tenantSlugs = [];
+
+function openImport(slug) {
+  const dlg = document.getElementById("import-dlg");
+  const select = document.getElementById("import-tenant");
+  select.innerHTML = tenantSlugs.map((s) =>
+    `<option value="${esc(s)}"${s === slug ? " selected" : ""}>${esc(s)}</option>`).join("");
+  document.getElementById("import-result").textContent = "";
+  document.getElementById("import-result").className = "dlg-result";
+  document.getElementById("import-emails").value = "";
+  dlg.showModal();
+  document.getElementById("import-emails").focus();
+}
+
+function wireImport() {
+  const dlg = document.getElementById("import-dlg");
+  const form = document.getElementById("import-form");
+  const result = document.getElementById("import-result");
+  const go = document.getElementById("import-go");
+
+  document.getElementById("import-cancel").onclick = () => dlg.close();
+
+  form.addEventListener("submit", async (e) => {
+    // method="dialog" would close the dialog before the request finishes,
+    // so the submit is handled here and the dialog closed on success.
+    e.preventDefault();
+    const slug = document.getElementById("import-tenant").value;
+    const raw = document.getElementById("import-emails").value.trim();
+    if (!slug || !raw) return;
+
+    go.disabled = true;
+    result.className = "dlg-result";
+    result.textContent = "Importing…";
+    try {
+      const r = await fetch(`/api/v2/admin/tenants/${encodeURIComponent(slug)}/emails`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ emails: raw }),
+      });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const extra = (out.rejected || []).length
+          ? ` — ${out.rejected.slice(0, 3).join(", ")}` : "";
+        throw new Error((out.error || `HTTP ${r.status}`) + extra);
+      }
+      result.className = "dlg-result good";
+      result.textContent =
+        `Added ${out.added}${out.duplicates ? `, ${out.duplicates} already in the pool` : ""}. ` +
+        `${slug} now has ${out.pool.available} available.`;
+      // Reload so the alert this fixed disappears rather than lingering.
+      await reload();
+      setTimeout(() => dlg.close(), 1200);
+    } catch (err) {
+      result.className = "dlg-result bad";
+      result.textContent = err.message;
+    } finally {
+      go.disabled = false;
+    }
+  });
 }
 
 // ── Logins ───────────────────────────────────────────────────────────────────
@@ -309,22 +453,31 @@ async function loadUsers() {
   }
 }
 
+async function reload() {
+  const [overview, tenants, queue, chart] = await Promise.all([
+    api("/api/v2/admin/overview"),
+    api("/api/v2/admin/tenants?limit=500"),
+    api("/api/v2/admin/jobs"),
+    api("/api/v2/admin/throughput?days=7"),
+  ]);
+  // Every tenant, so the import dialog can offer one that is not on the
+  // visible page of the table.
+  tenantSlugs = tenants.tenants.map((t) => t.slug);
+  renderAlerts(overview.alerts);
+  renderTiles(overview.totals, overview.artifact_scan_complete);
+  renderTenants(tenants.tenants.slice(0, 50), tenants.db_derived_stages,
+                tenants.total, Math.min(50, tenants.tenants.length));
+  renderQueue(queue);
+  renderChart(chart);
+  document.getElementById("took").textContent = overview.took_ms + " ms";
+  await loadUsers();
+}
+
 (async function () {
+  wireImport();
   try {
     me = await api("/api/v2/me").catch(() => ({ email: "" }));
-    const [overview, tenants, queue, chart] = await Promise.all([
-      api("/api/v2/admin/overview"),
-      api("/api/v2/admin/tenants"),
-      api("/api/v2/admin/jobs"),
-      api("/api/v2/admin/throughput?days=7"),
-    ]);
-    renderAlerts(overview.alerts);
-    renderTiles(overview.totals, overview.artifact_scan_complete);
-    renderTenants(tenants.tenants, tenants.db_derived_stages, tenants.total, tenants.tenants.length);
-    renderQueue(queue);
-    renderChart(chart);
-    document.getElementById("took").textContent = overview.took_ms + " ms";
-    await loadUsers();
+    await reload();
   } catch (e) {
     document.getElementById("alerts").innerHTML =
       `<p class="muted" style="margin:0">Could not load: ${esc(e.message)}</p>`;
