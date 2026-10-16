@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import uk.company.utility.arch.activeArchetype
 import uk.company.utility.core.FeatureTab
+import uk.company.utility.core.SharedScreen
 import uk.company.utility.screens.CalculatorScreen
 import uk.company.utility.screens.ContactScreen
 import uk.company.utility.screens.ReferenceScreen
@@ -68,26 +69,32 @@ private fun AppNav() {
     var selectedKey by rememberSaveable { mutableStateOf("") }
     val featureTabs = archetype.rememberTabs { key -> selectedKey = key }
 
-    val sharedTabs = listOf(
-        FeatureTab(
-            key = "calculator",
-            label = "Calc",
-            filledIcon = Icons.Filled.Calculate,
-            outlinedIcon = Icons.Outlined.Calculate,
-        ) { pad -> CalculatorScreen(pad) },
-        FeatureTab(
-            key = "reference",
-            label = "Reference",
-            filledIcon = Icons.Filled.Info,
-            outlinedIcon = Icons.Outlined.Info,
-        ) { pad -> ReferenceScreen(pad) },
-        FeatureTab(
-            key = "contact",
-            label = "Contact",
-            filledIcon = Icons.Filled.Person,
-            outlinedIcon = Icons.Outlined.Person,
-        ) { pad -> ContactScreen(pad) },
-    )
+    val sharedTabs = archetype.sharedScreens.map { screen ->
+        when (screen) {
+            SharedScreen.CALCULATOR -> FeatureTab(
+                key = "calculator",
+                label = "Calc",
+                filledIcon = Icons.Filled.Calculate,
+                outlinedIcon = Icons.Outlined.Calculate,
+            ) { pad -> CalculatorScreen(pad) }
+
+            SharedScreen.REFERENCE -> FeatureTab(
+                key = "reference",
+                // Five tabs share the bar; "Reference" is ellipsised at phone
+                // width and reads "Referenc".
+                label = "Info",
+                filledIcon = Icons.Filled.Info,
+                outlinedIcon = Icons.Outlined.Info,
+            ) { pad -> ReferenceScreen(pad) }
+
+            SharedScreen.CONTACT -> FeatureTab(
+                key = "contact",
+                label = "Contact",
+                filledIcon = Icons.Filled.Person,
+                outlinedIcon = Icons.Outlined.Person,
+            ) { pad -> ContactScreen(pad) }
+        }
+    }
 
     val tabs = featureTabs + sharedTabs
     // An unset key on first launch, or a key saved by a previous version whose

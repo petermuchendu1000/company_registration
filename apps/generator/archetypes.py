@@ -77,7 +77,25 @@ MILEAGE = Archetype(
     ),
 )
 
-ALL: tuple[Archetype, ...] = (SHIFT, MILEAGE)
+QUOTE = Archetype(
+    id="quote",
+    src_dir="src/archetype-quote",
+    label="Quote builder",
+    summary=(
+        "A priced estimate builder for trades: add labour and materials as "
+        "line items, see net, VAT and total update as you go, save the quote "
+        "against a client and send it as text."
+    ),
+    modules=("quote_builder", "line_items", "saved_quotes"),
+    screenshot_screens=(
+        "Quote — line items with net, VAT and total",
+        "Quote — adding a labour line",
+        "Saved — quotes by client with totals",
+        "Reference — trade figures",
+    ),
+)
+
+ALL: tuple[Archetype, ...] = (SHIFT, MILEAGE, QUOTE)
 BY_ID: dict[str, Archetype] = {a.id: a for a in ALL}
 DEFAULT_ID = SHIFT.id
 
@@ -102,9 +120,24 @@ SIC_ARCHETYPE: dict[str, str] = {
     "87100": SHIFT.id,     # Residential nursing care
     "88100": SHIFT.id,     # Social work without accommodation
     "98000": SHIFT.id,     # Residents property management
+    # Job-priced: construction and the building trades, where the daily
+    # document is an estimate rather than a record of time or distance.
+    "41100": QUOTE.id,     # Development of building projects
+    "41201": QUOTE.id,     # Construction of commercial buildings
+    "41202": QUOTE.id,     # Construction of domestic buildings
+    "43210": QUOTE.id,     # Electrical installation
+    "43220": QUOTE.id,     # Plumbing, heat and air-conditioning
+    "43320": QUOTE.id,     # Joinery installation
+    "43341": QUOTE.id,     # Painting
+    "43910": QUOTE.id,     # Roofing
+    "43999": QUOTE.id,     # Other specialised construction
+    "81210": QUOTE.id,     # General cleaning of buildings
+    "81300": QUOTE.id,     # Landscape service activities
 }
 
 _PREFIX_ARCHETYPE: dict[str, str] = {
+    "41": QUOTE.id,
+    "43": QUOTE.id,
     "49": MILEAGE.id,
     "53": MILEAGE.id,
 }
@@ -184,14 +217,40 @@ _MILEAGE_DEFAULT_VOCAB = {
     "EXPORT_TITLE": "Mileage Log",
 }
 
+_QUOTE_VOCAB: list[tuple[frozenset[str], dict[str, str]]] = [
+    (frozenset({"41100", "41201", "41202"}), {
+        "ROLE_NOUN": "tender",
+        "ROLE_VERB_START": "New Tender",
+        "ROLE_VERB_END": "Save Tender",
+        "EXPORT_TITLE": "Tenders",
+    }),
+    (frozenset({"81210", "81300"}), {
+        "ROLE_NOUN": "quotation",
+        "ROLE_VERB_START": "New Quotation",
+        "ROLE_VERB_END": "Save Quotation",
+        "EXPORT_TITLE": "Quotations",
+    }),
+]
+
+_QUOTE_DEFAULT_VOCAB = {
+    "ROLE_NOUN": "estimate",
+    "ROLE_VERB_START": "New Estimate",
+    "ROLE_VERB_END": "Save Estimate",
+    "EXPORT_TITLE": "Estimates",
+}
+
+_VOCAB_BY_ARCHETYPE: dict[str, tuple[list, dict]] = {
+    SHIFT.id: (_SHIFT_VOCAB, _SHIFT_DEFAULT_VOCAB),
+    MILEAGE.id: (_MILEAGE_VOCAB, _MILEAGE_DEFAULT_VOCAB),
+    QUOTE.id: (_QUOTE_VOCAB, _QUOTE_DEFAULT_VOCAB),
+}
+
 
 def vocab_for(archetype: Archetype, sic_codes: str) -> dict[str, str]:
     """Role wording for a company, within its archetype."""
     primary = (sic_codes.split(",")[0].strip() if sic_codes else "")
-    table, default = (
-        (_MILEAGE_VOCAB, _MILEAGE_DEFAULT_VOCAB)
-        if archetype.id == MILEAGE.id
-        else (_SHIFT_VOCAB, _SHIFT_DEFAULT_VOCAB)
+    table, default = _VOCAB_BY_ARCHETYPE.get(
+        archetype.id, (_SHIFT_VOCAB, _SHIFT_DEFAULT_VOCAB),
     )
     for codes, words in table:
         if primary in codes:
@@ -214,14 +273,33 @@ AMAP_AFTER_10K_PENCE = 25
 AMAP_BAND_MILES = 10_000
 
 
+#: Standard UK VAT. Used by the quote archetype's totals.
+VAT_PERCENT = 20
+
+
 def build_config_fields(archetype: Archetype, sic_codes: str) -> list[tuple[str, str, object]]:
+    primary = (sic_codes.split(",")[0].strip() if sic_codes else "")
     if archetype.id == MILEAGE.id:
-        primary = (sic_codes.split(",")[0].strip() if sic_codes else "")
         vehicle = "Van" if primary in {"49410", "49420"} else "Vehicle"
         return [
             ("int", "AMAP_FIRST_RATE_PENCE", AMAP_FIRST_10K_PENCE),
             ("int", "AMAP_AFTER_RATE_PENCE", AMAP_AFTER_10K_PENCE),
             ("int", "AMAP_BAND_MILES", AMAP_BAND_MILES),
             ("String", "VEHICLE_LABEL", vehicle),
+        ]
+    if archetype.id == QUOTE.id:
+        # What the first line of a new quote is usually for, by trade.
+        unit = {
+            "43210": "Circuit",
+            "43220": "Fitting",
+            "43320": "Unit",
+            "43341": "Room",
+            "43910": "m²",
+            "81210": "Visit",
+            "81300": "Visit",
+        }.get(primary, "Item")
+        return [
+            ("int", "VAT_PERCENT", VAT_PERCENT),
+            ("String", "LINE_UNIT_LABEL", unit),
         ]
     return []

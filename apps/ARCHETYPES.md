@@ -33,7 +33,15 @@ main/java/uk/company/utility/
     screens/                 Calculator, Reference, Contact — every app has these
 archetype-shift/java/uk/company/utility/arch/ShiftArchetype.kt
 archetype-mileage/java/uk/company/utility/arch/MileageArchetype.kt
+archetype-quote/java/uk/company/utility/arch/QuoteArchetype.kt
 ```
+
+An archetype also chooses which of the shared screens it carries, through
+`sharedScreens`. That matters more than it looks: when every app shipped
+Calculator, Reference and Contact, three of five screens were identical
+across the whole catalog no matter which archetype was selected. A quote
+builder that already totals labour, materials and VAT does not get a generic
+rate calculator bolted on beside it.
 
 Each archetype directory defines exactly one
 
@@ -82,16 +90,17 @@ Nothing else needs editing. `policy_gate.evaluate_template()` picks the new
 archetype up automatically and fails the build if the directory is missing,
 defines no `activeArchetype()`, or has no interactive screen.
 
-## The two archetypes today
+## The three archetypes today
 
-| | `shift` | `mileage` |
-|---|---|---|
-| Records | a span of time | a distance |
-| Input | start/end tap, free-text note | opening and closing odometer, purpose |
-| Derived | elapsed duration, per-day counts | miles, HMRC approved mileage relief |
-| Arithmetic | none | 45p for the first 10,000 miles of the UK tax year, 25p after, consumed in journey order |
-| Tabs | Home (timer), Log | Home (entry + tax-year summary), Journeys (grouped by month) |
-| Trades | staffing, care, property, storage | couriers, hauliers, taxis, removals, postal |
+| | `shift` | `mileage` | `quote` |
+|---|---|---|---|
+| Records | a span of time | a distance | work not yet done |
+| Input | start/end tap, free-text note | opening and closing odometer, purpose | line items: description, quantity, unit price |
+| Derived | elapsed duration, per-day counts | miles, HMRC approved mileage relief | net, VAT, total, saved pipeline value |
+| Arithmetic | none | 45p for the first 10,000 miles of the UK tax year, 25p after, consumed in journey order | line extension and VAT at the standard rate |
+| Own tabs | Home (timer), Log | Home (entry + tax-year summary), Journeys by month | Quote builder, Saved quotes |
+| Shared tabs | Calc, Info, Contact | Info, Contact | Info, Contact |
+| Trades | staffing, care, property, storage | couriers, hauliers, taxis, removals, postal | construction, building trades, cleaning, landscaping |
 
 Both ship zero Android permissions, no network and no account. The
 `verify*NoPermissions` Gradle task checks the **merged** manifest of every
@@ -104,9 +113,18 @@ move, change them there and rebuild.
 
 ## What this does not fix
 
-- **Two apps in the same archetype are still near-identical.** That is the
-  honest position and the gate reports it as `archetype_spread` on every run.
-  The `repetitive_app_factory` blocker past two apps is unchanged.
+- **Two apps in the same archetype with the same trade content are still the
+  same app.** The gate now blocks on this (`identical_product`) rather than
+  only warning: if two companies share an archetype *and* the same calculator
+  formula and reference list, they differ in nothing but colour and name,
+  which is exactly what Play's Spam policy names. `archetype_spread` still
+  reports the distribution on every run, and the `repetitive_app_factory`
+  blocker past two apps is unchanged.
+- **A shared screen an archetype opted out of is still in the binary.**
+  `MainActivity` references every `SharedScreen` branch statically, so R8
+  cannot prove `CalculatorScreen` unreachable in a mileage or quote build.
+  The tab is gone and the user never sees it, but the class ships. Moving the
+  shared screens into opt-in source directories would fix it properly.
 - **Screenshots are still synthetic.** `assets.py` draws a mock of the shift
   home screen for every app. The listing now *names* the right screens via
   `selected_modules` and `screenshot_screens`, but the PNGs do not match a

@@ -28,9 +28,23 @@ class FeatureTab(
  * at compile time. Nothing selects an archetype at runtime and no unused
  * archetype reaches the artifact.
  */
+/**
+ * A screen the core provides that more than one archetype can reuse.
+ *
+ * An archetype opts in rather than inheriting all of them: a quote builder
+ * that already totals labour, materials and VAT has no use for a generic rate
+ * calculator, and carrying one would make it look like the same app as every
+ * other one in the catalog.
+ */
+enum class SharedScreen { CALCULATOR, REFERENCE, CONTACT }
+
 interface Archetype {
     /** Must match the id in apps/generator/archetypes.py. */
     val id: String
+
+    /** Shared screens this product includes, in the order they appear. */
+    val sharedScreens: List<SharedScreen>
+        get() = listOf(SharedScreen.CALCULATOR, SharedScreen.REFERENCE, SharedScreen.CONTACT)
 
     /**
      * The tabs this archetype owns, shown before the shared Reference and

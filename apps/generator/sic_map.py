@@ -314,9 +314,42 @@ _PREFIX: dict[str, dict] = {
             {"k": "MiFID II", "v": "Investment firm obligations"},
         ],
     ),
+    "41": _EXACT["41100"],   # Construction of buildings
+    "43": _entry(
+        "Job Price Calculator", "Day Rate (£)", "Days on Site",
+        "MULTIPLY", "Labour Cost",
+        "Trade Reference",
+        [
+            {"k": "CIS Deduction (registered)", "v": "20% on labour"},
+            {"k": "CIS Deduction (unverified)", "v": "30% on labour"},
+            {"k": "CIS — Materials", "v": "Not deductible"},
+            {"k": "VAT Reverse Charge", "v": "Applies to CIS supplies (Mar 2021)"},
+            {"k": "Part P — Electrical", "v": "Notifiable work in dwellings"},
+            {"k": "Gas Safe Register", "v": "Legally required for gas work"},
+            {"k": "Working at Height", "v": "WAHR 2005 risk assessment"},
+            {"k": "CDM 2015", "v": "Client, principal designer, contractor"},
+        ],
+        "Request a Quote",
+    ),
     "68": _EXACT["68201"],   # Real estate activities
     "69": _EXACT["69201"],   # Legal & accounting
     "78": _EXACT["78200"],   # Employment activities
+    "81": _entry(
+        "Contract Price Calculator", "Price per Visit (£)", "Visits per Month",
+        "MULTIPLY", "Monthly Contract Value",
+        "Facilities Reference",
+        [
+            {"k": "National Living Wage", "v": "£11.44 / hr (Apr 2024)"},
+            {"k": "COSHH Assessment", "v": "Required for cleaning chemicals"},
+            {"k": "TUPE on Contract Change", "v": "Staff transfer with the contract"},
+            {"k": "Waste Carrier Licence", "v": "Required to remove waste"},
+            {"k": "Public Liability Cover", "v": "Commonly £5m for contracts"},
+            {"k": "DBS Check", "v": "Required for schools and care sites"},
+            {"k": "Lone Worker Policy", "v": "Mandatory risk assessment"},
+            {"k": "VAT Registration", "v": "£90,000 turnover threshold"},
+        ],
+        "Request a Quote",
+    ),
     "86": _EXACT["87100"],   # Human health
     "87": _EXACT["87100"],   # Residential care
     "88": _EXACT["88100"],   # Social work

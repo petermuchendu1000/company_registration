@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import archetypes
+from . import sic_map
 from .catalog import Company, load_companies
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -366,6 +367,32 @@ def evaluate_catalog(companies: list[Company], allow_repetitive_factory: bool = 
                                 f"{biggest} app(s) share the '{biggest_id}' feature set; apps "
                                 f"within one archetype differ only in branding and trade "
                                 f"figures.", "catalog"))
+
+    # Two companies on the same archetype whose trade content also matches
+    # ship the same screens showing the same numbers, differing only in
+    # colour and company name. That is the literal case Play's Spam policy
+    # names: "multiple apps with highly similar functionality, content, and
+    # user experience". Catching it needs the content compared, not just the
+    # archetype counted.
+    fingerprints: dict[tuple, list[str]] = {}
+    for company in companies:
+        content = sic_map.lookup(company.sic_codes)
+        key = (
+            archetypes.for_sic(company.sic_codes).id,
+            content["calc_formula"],
+            content["info_title"],
+            tuple(item["k"] for item in content["info_items"]),
+        )
+        fingerprints.setdefault(key, []).append(company.company_number)
+    for key, members in sorted(fingerprints.items()):
+        if len(members) > 1:
+            findings.append(Finding("blocker", "identical_product",
+                                    f"{len(members)} apps are the same product with the same "
+                                    f"content — archetype '{key[0]}', identical calculator and "
+                                    f"reference list: {', '.join(sorted(members))}. They differ "
+                                    f"only in branding, which is Play's repetitive-content "
+                                    f"violation. Give these trades distinct content or an "
+                                    f"archetype of their own.", "catalog"))
 
     if len(companies) > 2 and not allow_repetitive_factory:
         findings.append(Finding("blocker", "repetitive_app_factory",

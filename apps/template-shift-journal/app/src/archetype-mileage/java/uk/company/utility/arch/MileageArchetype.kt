@@ -63,6 +63,7 @@ import uk.company.utility.core.EmptyState
 import uk.company.utility.core.FeatureTab
 import uk.company.utility.core.HeroHeader
 import uk.company.utility.core.ScreenTitle
+import uk.company.utility.core.SharedScreen
 import uk.company.utility.core.SectionHeader
 import uk.company.utility.core.StatPill
 import uk.company.utility.core.Store
@@ -84,6 +85,12 @@ import java.util.Calendar
  */
 object MileageArchetype : Archetype {
     override val id: String = "mileage"
+
+    // No generic rate calculator: the tax-year card already does this trade's
+    // money arithmetic, and carrying the shared one too would make the app
+    // look like every other app in the catalog.
+    override val sharedScreens: List<SharedScreen> =
+        listOf(SharedScreen.REFERENCE, SharedScreen.CONTACT)
 
     @Composable
     override fun rememberTabs(navigate: (String) -> Unit): List<FeatureTab> {
