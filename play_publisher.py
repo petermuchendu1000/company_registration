@@ -258,7 +258,50 @@ def preflight(company_number: str) -> Report:
         if len(present) < need:
             rep.fail(f"{image_type}: {len(present)} present, Play requires at least {need}")
 
+    _run_policy_gate(cn, rep)
     return rep
+
+
+def _run_policy_gate(company_number: str, rep: "Report") -> None:
+    """
+    Fold apps/generator/policy_gate findings into this preflight.
+
+    The gate covers Play policy risk — listing quality, Data Safety
+    consistency, target SDK, permissions, repetitive-content — which is
+    separate from the mechanical "can this upload succeed" checks above. A
+    blocker there stops the publish; a warning is surfaced but does not.
+
+    A gate that cannot run is itself a blocker: silently publishing because
+    the compliance check failed to import is the wrong default.
+    """
+    try:
+        from apps.generator.catalog import Company
+        from apps.generator.policy_gate import evaluate_company, evaluate_template
+    except Exception as exc:  # noqa: BLE001
+        rep.fail(f"Policy gate unavailable ({type(exc).__name__}: {exc})")
+        return
+
+    try:
+        # Template-level checks matter per publish too: a wrong target SDK, a
+        # declared permission or committed signing secrets are not batch-only
+        # problems. The catalog-wide checks need the whole company set and stay
+        # in the CLI.
+        findings = evaluate_template()
+        findings.extend(evaluate_company(
+            Company(company_number=company_number, company_name="", sic_codes="",
+                    domain="", support_email="", archetype=""),
+            require_aab=True,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        rep.fail(f"Policy gate errored ({type(exc).__name__}: {exc})")
+        return
+
+    for finding in findings:
+        text = f"policy gate [{finding.code}] {finding.message}"
+        if finding.severity == "blocker":
+            rep.fail(text)
+        else:
+            rep.warn(text)
 
 
 # ── Publish ─────────────────────────────────────────────────────────────────

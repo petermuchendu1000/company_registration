@@ -1,3 +1,5 @@
+import com.android.build.api.artifact.SingleArtifact
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -110,4 +112,53 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.datastore)
     debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+// ── Zero-permission invariant ───────────────────────────────────────────────
+// These apps ship with no Android permissions, and their Data Safety
+// declaration says so. Checking the SOURCE manifest is not enough: the
+// manifest merger folds in <uses-permission> entries contributed by any
+// dependency, so a library added later could silently make the published
+// declaration false. This reads the MERGED manifest — what actually ships —
+// and fails the build if it declares anything at all.
+abstract class VerifyNoPermissions : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val mergedManifest: RegularFileProperty
+
+    @TaskAction
+    fun verify() {
+        val text = mergedManifest.get().asFile.readText()
+        val declared = Regex("<uses-permission[^>]*android:name=\"([^\"]+)\"")
+            .findAll(text)
+            .map { it.groupValues[1] }
+            .toList()
+        if (declared.isNotEmpty()) {
+            throw GradleException(buildString {
+                append("Zero-permission invariant violated. The merged manifest declares ")
+                append(declared.size)
+                append(" permission(s):\n")
+                declared.forEach { append("  - ").append(it).append("\n") }
+                append("A dependency most likely contributed these. Either drop that ")
+                append("dependency, or strip the entry with tools:node=\"remove\" AND ")
+                append("update listing/data_safety.json before shipping — the Data ")
+                append("Safety declaration must match what the app actually requests.")
+            })
+        }
+        logger.lifecycle("Zero-permission check passed: merged manifest declares none.")
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        val suffix = variant.name.replaceFirstChar { it.uppercase() }
+        val verify = tasks.register<VerifyNoPermissions>("verify${suffix}NoPermissions") {
+            group = "verification"
+            description = "Fail the build if the merged manifest declares any Android permission."
+            mergedManifest.set(variant.artifacts.get(SingleArtifact.MERGED_MANIFEST))
+        }
+        // Both packaging paths must run it; neither assemble nor bundle alone is enough.
+        tasks.matching { it.name == "assemble$suffix" || it.name == "bundle$suffix" }
+            .configureEach { dependsOn(verify) }
+    }
 }
