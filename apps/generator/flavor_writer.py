@@ -118,6 +118,41 @@ _MARKER_START = "// >>> GENERATED FLAVORS START"
 _MARKER_END = "// <<< GENERATED FLAVORS END"
 
 
+#: Read by signingSecret() in build.gradle.kts. Git-ignored: it holds the
+#: keystore passwords that used to be baked into the tracked build file.
+KEYSTORE_PROPERTIES = "keystore.properties"
+
+
+def write_keystore_properties(built: list[BuiltFlavor], app_dir: str) -> str:
+    """
+    Write the per-flavor signing passwords next to the build file.
+
+    Rewritten in full on every run, so a flavor that is no longer built does
+    not leave its password behind. Written 0600: on a shared host the whole
+    point is undone if the file is world-readable.
+    """
+    path = os.path.join(app_dir, KEYSTORE_PROPERTIES)
+    lines = [
+        "# Signing passwords, written by apps/generator/flavor_writer.py.",
+        "# Git-ignored, and regenerated on every build — do not edit by hand,",
+        "# and do not commit. Deriving them again needs apps/generator/.master_secret.",
+        "",
+    ]
+    for b in built:
+        ks = b.keystore
+        lines += [
+            f"{b.company.flavor}.storePassword={ks.store_password}",
+            f"{b.company.flavor}.keyPassword={ks.key_password}",
+        ]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass    # Windows and some mounts refuse; the git-ignore still holds
+    return path
+
+
 def write_flavors_gradle(built: list[BuiltFlavor], app_dir: str) -> str:
     """Splice flavor + signingConfig blocks into build.gradle.kts between markers.
 
@@ -125,6 +160,7 @@ def write_flavors_gradle(built: list[BuiltFlavor], app_dir: str) -> str:
     between them is replaced on every run.
     """
     build_file = os.path.join(app_dir, "build.gradle.kts")
+    write_keystore_properties(built, app_dir)
     with open(build_file, "r", encoding="utf-8") as f:
         src = f.read()
 
@@ -144,12 +180,16 @@ def write_flavors_gradle(built: list[BuiltFlavor], app_dir: str) -> str:
         c = b.company
         ks = b.keystore
         rel_ks = os.path.relpath(ks.path, app_dir).replace("\\", "/")
+        # The passwords are deliberately NOT written here. build.gradle.kts is
+        # tracked, and a password committed once stays in the history even
+        # after it is removed. They go to keystore.properties, which git
+        # ignores, and signingSecret() reads them back at configure time.
         lines += [
             f'        create("{c.flavor}") {{',
             f'            storeFile = file("{rel_ks}")',
-            f'            storePassword = "{_gradle_escape(ks.store_password)}"',
+            f'            storePassword = signingSecret("{c.flavor}", "storePassword")',
             f'            keyAlias = "{_gradle_escape(ks.key_alias)}"',
-            f'            keyPassword = "{_gradle_escape(ks.key_password)}"',
+            f'            keyPassword = signingSecret("{c.flavor}", "keyPassword")',
             '        }',
         ]
     lines += ["    }", "", "    productFlavors {"]

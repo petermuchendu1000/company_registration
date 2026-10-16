@@ -73,10 +73,18 @@ RUN python3 -m playwright install --with-deps chromium \
 COPY . .
 
 # Warm the Gradle wrapper and dependency cache into the image so the first
-# build on a fresh container is not also the first download. Non-fatal: the
-# template may not be present in every checkout.
-RUN if [ -x apps/template-shift-journal/gradlew ]; then \
-      (cd apps/template-shift-journal && ./gradlew --no-daemon help > /dev/null 2>&1) || true ; \
+# build on a fresh container is not also the first download.
+#
+# The repository ships only gradlew.bat, so there is no executable wrapper
+# script to run on Linux. Drive the wrapper JAR directly, which is what
+# apps/generator/toolchain.gradle_command does at build time. Non-fatal: a
+# checkout without the template should still produce a usable image.
+RUN set -eu; \
+    tpl=apps/template-shift-journal; \
+    if [ -f "$tpl/gradle/wrapper/gradle-wrapper.jar" ]; then \
+      (cd "$tpl" && java -classpath gradle/wrapper/gradle-wrapper.jar \
+         org.gradle.wrapper.GradleWrapperMain --no-daemon help > /dev/null 2>&1) \
+      || echo "  gradle warm-up skipped (non-fatal)"; \
     fi
 
 RUN useradd --create-home --uid 10001 factory \

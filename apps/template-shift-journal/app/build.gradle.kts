@@ -1,4 +1,28 @@
 import com.android.build.api.artifact.SingleArtifact
+import java.util.Properties
+
+// Signing passwords are never written into this file. It is tracked, and a
+// password committed once stays in the history even after it is removed. The
+// generator writes them to app/keystore.properties, which git ignores, and
+// the signingConfigs below read them back through signingSecret().
+//
+// The environment wins over the file, so a CI runner can supply them with no
+// properties file present:  SIGNING_<FLAVOR>_STOREPASSWORD / _KEYPASSWORD.
+val signingProperties = Properties().apply {
+    val file = project.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun signingSecret(flavor: String, which: String): String {
+    val envName = "SIGNING_${flavor.uppercase()}_${which.uppercase()}"
+    return System.getenv(envName)
+        ?: signingProperties.getProperty("$flavor.$which")
+        ?: throw GradleException(
+            "No $which for signing config '$flavor'. Run the generator to write " +
+            "app/keystore.properties, or set $envName in the environment. " +
+            "Both are derived from apps/generator/.master_secret."
+        )
+}
 
 plugins {
     alias(libs.plugins.android.application)
@@ -28,9 +52,9 @@ android {
     signingConfigs {
         create("c15046885") {
             storeFile = file("keystores/15046885.jks")
-            storePassword = "474c4992049490b5e1cc76a7430659f4"
+            storePassword = signingSecret("c15046885", "storePassword")
             keyAlias = "upload"
-            keyPassword = "474c4992049490b5e1cc76a7430659f4"
+            keyPassword = signingSecret("c15046885", "keyPassword")
         }
     }
 

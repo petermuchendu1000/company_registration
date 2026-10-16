@@ -2,6 +2,10 @@
 .env
 apps/generator/.master_secret
 apps/template-shift-journal/app/keystores/
+# Keystore passwords, written by apps/generator/flavor_writer.py.
+# They used to be baked into app/build.gradle.kts, which is tracked.
+apps/template-shift-journal/app/keystore.properties
+**/keystore.properties
 pipeline_output/apps/*/signing.json
 pipeline_output/apps/*/*.jks
 

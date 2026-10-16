@@ -140,10 +140,11 @@ def _tracked_signing_secrets() -> list[str]:
     """
     Signing credentials committed to version control.
 
-    write_flavors_gradle bakes storePassword/keyPassword straight into
-    app/build.gradle.kts, which is a tracked file. The .jks files are
-    gitignored, so this is not immediately exploitable, but upload-key
-    passwords do not belong in a repository.
+    write_flavors_gradle used to bake storePassword/keyPassword straight into
+    app/build.gradle.kts, which is tracked. It now writes them to a git-ignored
+    keystore.properties and emits signingSecret() calls instead, so this should
+    find nothing — the check stays because a literal is easy to reintroduce and
+    a password committed once stays in the history even after it is removed.
     """
     gradle_file = APP_TEMPLATE / "build.gradle.kts"
     if not gradle_file.exists():
