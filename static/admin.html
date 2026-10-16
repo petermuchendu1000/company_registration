@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin console</title>
+<style>
+  :root {
+    --bg:#0d1012; --panel:#141a1d; --panel-2:#11161a; --line:#242d31; --line-soft:#1d2427;
+    --fg:#e5ebea; --fg-dim:#8e9b9c; --fg-faint:#7d8a8b;
+    --accent:#4fd0bf; --accent-bg:#11302c; --accent-line:#2f6a62;
+    --warn:#e3a340; --warn-bg:#1f1a11; --warn-line:#5c4420;
+    --crit:#f0776e; --crit-bg:#19100f; --crit-line:#4a1f1c;
+    --admin:#c9a3e8; --admin-bg:#241a2e; --admin-line:#553f6b;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.6 "Public Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing:antialiased; }
+  .mono { font-family:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  a { color:var(--accent); }
+  .wrap { max-width:1400px; margin-inline:auto;
+    padding-inline:max(16px, env(safe-area-inset-left,0px)) max(16px, env(safe-area-inset-right,0px)); }
+
+  header.bar { background:var(--panel-2); border-bottom:1px solid var(--line); padding-block:12px; }
+  header .wrap { display:flex; flex-wrap:wrap; gap:16px; align-items:center; justify-content:space-between; }
+  .pill { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--admin);
+    border:1px solid var(--admin-line); background:var(--admin-bg); border-radius:4px; padding:3px 8px; }
+  .meta { font-size:13px; color:var(--fg-dim); }
+
+  main { padding-block:22px 40px; display:flex; flex-direction:column; gap:22px; }
+  h2.sec { margin:0 0 11px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-faint); }
+
+  .alerts { border:1px solid var(--crit-line); background:var(--crit-bg); border-radius:10px; padding:16px 20px; }
+  .alerts.calm { border-color:var(--accent-line); background:var(--accent-bg); }
+  .alerts ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:9px; }
+  .alerts li { display:grid; grid-template-columns:20px 1fr auto; gap:12px; align-items:center; font-size:14px; }
+  .sev { font-size:11px; letter-spacing:.06em; text-transform:uppercase; white-space:nowrap; }
+
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; }
+  .tile { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:15px 17px; }
+  .tile .k { font-size:12px; color:var(--fg-dim); margin-bottom:7px; }
+  .tile .v { font-size:29px; font-weight:700; letter-spacing:-.03em; line-height:1; font-variant-numeric:tabular-nums; }
+
+  .cols { display:flex; flex-wrap:wrap; gap:18px; align-items:flex-start; }
+  .grow { flex:999 1 620px; min-width:0; }
+  .side { flex:1 1 320px; min-width:0; }
+
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  .scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; min-width:640px; }
+  th { text-align:left; font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+    color:var(--fg-dim); font-weight:600; padding:11px 16px; border-bottom:1px solid var(--line); }
+  td { padding:12px 16px; border-bottom:1px solid var(--line-soft); }
+  tr:last-child td { border-bottom:0; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .track { width:84px; height:6px; border-radius:3px; background:var(--line); overflow:hidden; display:inline-block; vertical-align:middle; }
+  .track > i { display:block; height:100%; background:var(--accent); }
+
+  .state { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; white-space:nowrap; }
+  .ok { color:var(--accent); } .warn { color:var(--warn); } .crit { color:var(--crit); }
+
+  .bars { display:flex; align-items:flex-end; gap:12px; height:104px; }
+  .bars > div { flex:1; display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .bars .b { width:100%; background:#2a6b63; border-radius:4px 4px 0 0; min-height:2px; }
+  .bars .b.top { background:var(--accent); }
+  .days { display:flex; gap:12px; margin-top:9px; border-top:1px solid var(--line); padding-top:9px; }
+  .days span { flex:1; text-align:center; font-size:11.5px; color:var(--fg-faint); }
+  .caveat { margin:10px 0 0; font-size:12px; color:var(--fg-faint); line-height:1.5; }
+  .muted { color:var(--fg-dim); }
+</style>
+</head>
+<body>
+
+<header class="bar"><div class="wrap">
+  <span style="display:flex;align-items:center;gap:13px;flex-wrap:wrap">
+    <strong style="font-size:15px;letter-spacing:-.01em">Company Pipeline</strong>
+    <span class="pill">Admin</span>
+    <span class="meta">all tenants</span>
+  </span>
+  <span style="display:flex;align-items:center;gap:15px" class="meta">
+    <span id="took"></span>
+    <a href="/app" style="font-weight:500">Operator console</a>
+    <a href="/logout" style="font-weight:500">Sign out</a>
+  </span>
+</div></header>
+
+<div class="wrap"><main>
+  <section id="alerts"></section>
+  <section><h2 class="sec">Across every tenant</h2><div class="tiles" id="tiles"></div></section>
+  <div class="cols">
+    <section class="grow"><h2 class="sec">Tenants</h2><div class="panel scroll" id="tenants"></div></section>
+    <section class="side"><h2 class="sec">Job queue, now</h2><div class="panel" id="queue" style="padding:16px 18px"></div></section>
+  </div>
+  <section><h2 class="sec">Stages finished, last 7 days</h2><div class="panel" id="chart" style="padding:18px 20px 14px"></div></section>
+</main></div>
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+const ICON = {
+  critical: `<svg width="17" height="17" viewBox="0 0 18 18" role="img" aria-label="Critical"><circle cx="9" cy="9" r="8.2" fill="#4a1f1c"/><path d="M6.2 6.2l5.6 5.6M11.8 6.2l-5.6 5.6" stroke="#f0776e" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  warning: `<svg width="17" height="17" viewBox="0 0 20 20" role="img" aria-label="Warning"><path d="M10 2.2l8 14.2H2z" fill="none" stroke="#e3a340" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 8v3.6" stroke="#e3a340" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="13.8" r=".95" fill="#e3a340"/></svg>`,
+  ok: `<svg width="15" height="15" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="8.2" fill="#1d4b45"/><path d="M5.4 9.2l2.5 2.4 4.7-5" fill="none" stroke="#4fd0bf" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
+async function api(p) {
+  const r = await fetch(p, { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error(p + " → " + r.status);
+  return r.json();
+}
+
+function renderAlerts(alerts) {
+  const el = document.getElementById("alerts");
+  if (!alerts.length) {
+    el.className = "alerts calm";
+    el.innerHTML = `<h2 class="sec" style="color:var(--accent)">Needs attention</h2>
+      <p style="margin:0;font-size:14px" class="muted">${ICON.ok} Nothing to act on.</p>`;
+    return;
+  }
+  el.className = "alerts";
+  el.innerHTML = `<h2 class="sec" style="color:var(--crit)">Needs attention</h2><ul>` +
+    alerts.map((a) => `<li>${ICON[a.severity] || ICON.warning}
+      <span>${esc(a.message)}</span>
+      <span class="sev ${a.severity === "critical" ? "crit" : "warn"}">${esc(a.action || "")}</span></li>`).join("") +
+    `</ul>`;
+}
+
+function renderTiles(t, scanComplete) {
+  const cells = [
+    ["Tenants", t.tenants, ""],
+    ["Companies", t.companies, ""],
+    ["Apps built", t.apps_built, "ok"],
+    ["Live on Play", t.released, ""],
+    ["Running", t.running, t.running ? "ok" : ""],
+    ["Queued", t.queued, ""],
+    ["Failed jobs", t.failed, t.failed ? "crit" : ""],
+  ];
+  document.getElementById("tiles").innerHTML = cells.map(([k, v, cls]) =>
+    `<div class="tile"><div class="k">${esc(k)}</div>
+      <div class="v ${cls}" style="${cls === "crit" ? "color:var(--crit)" : cls === "ok" ? "color:var(--accent)" : ""}">${Number(v ?? 0)}</div></div>`
+  ).join("") + (scanComplete ? "" :
+    `<div class="tile" style="border-color:var(--warn-line)"><div class="k">Artifact scan</div>
+      <div style="font-size:13px;color:var(--warn);line-height:1.4">capped — build counts are a lower bound</div></div>`);
+}
+
+function poolCell(t) {
+  if (!t.pool_total) return `<span class="state crit">${ICON.critical} none</span>`;
+  if (!t.pool_available) return `<span class="state crit">${ICON.critical} 0 left</span>`;
+  if (t.pool_available <= 10) return `<span class="state warn">${ICON.warning} ${t.pool_available} left</span>`;
+  return `<span class="muted">${t.pool_available} left</span>`;
+}
+
+function stateCell(t) {
+  if (!t.pool_total && t.live_companies) return `<span class="state crit">${ICON.critical} No pool</span>`;
+  if (t.pool_total && !t.pool_available) return `<span class="state crit">${ICON.critical} Pool empty</span>`;
+  if (t.failed) return `<span class="state crit">${ICON.critical} ${t.failed} failed</span>`;
+  if (t.pool_available && t.pool_available <= 10) return `<span class="state warn">${ICON.warning} Pool low</span>`;
+  if (t.live_companies && !t.users) return `<span class="state warn">${ICON.warning} No login</span>`;
+  return `<span class="state ok">${ICON.ok} Healthy</span>`;
+}
+
+function renderTenants(rows, stages, total, shown) {
+  document.getElementById("tenants").innerHTML = `<table>
+    <thead><tr>
+      <th>Tenant</th><th class="num">Companies</th>
+      <th>Recorded progress</th><th>Mailbox pool</th><th class="num">Built</th><th>State</th>
+    </tr></thead><tbody>` +
+    rows.map((t) => `<tr>
+      <td><span class="mono">${esc(t.slug)}</span></td>
+      <td class="num">${t.live_companies}${t.archived ? `<span class="muted"> +${t.archived}</span>` : ""}</td>
+      <td><span class="track"><i style="width:${t.recorded_pct}%"></i></span>
+          <span class="muted" style="margin-left:9px;font-variant-numeric:tabular-nums">${t.recorded_pct}%</span></td>
+      <td>${poolCell(t)}</td>
+      <td class="num">${t.apps_built ?? 0}</td>
+      <td>${stateCell(t)}</td>
+    </tr>`).join("") + `</tbody></table>
+    <p class="caveat" style="padding:0 16px 14px">${shown} of ${total} tenants, those needing attention first.
+    Recorded progress counts the ${stages.length} stages the database knows
+    (${stages.join(", ")}). The other four are judged from files on disk and are summarised in Built.</p>`;
+}
+
+function renderQueue(q) {
+  const jobs = [...q.running, ...q.queued].slice(0, 8);
+  document.getElementById("queue").innerHTML = `
+    <div style="display:flex;gap:22px;margin-bottom:14px">
+      <div><div class="k" style="font-size:12px;color:var(--fg-dim);margin-bottom:5px">Running</div>
+        <div style="font-size:23px;font-weight:700;line-height:1;color:var(--accent);font-variant-numeric:tabular-nums">${q.running.length}</div></div>
+      <div><div style="font-size:12px;color:var(--fg-dim);margin-bottom:5px">Queued</div>
+        <div style="font-size:23px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums">${q.queued.length}</div></div>
+      <div><div style="font-size:12px;color:var(--fg-dim);margin-bottom:5px">Failed</div>
+        <div style="font-size:23px;font-weight:700;line-height:1;color:${q.failed_total ? "var(--crit)" : "inherit"};font-variant-numeric:tabular-nums">${q.failed_total}</div></div>
+    </div>
+    <p style="margin:0 0 13px;font-size:12.5px;line-height:1.5;color:var(--fg-dim)">Builds run one at a time. The queue is shared across tenants, so a long build in one holds up the rest.</p>
+    ${jobs.length ? `<div style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px">` +
+      jobs.map((j) => `<div style="display:flex;justify-content:space-between;gap:12px;font-size:13px">
+        <span class="mono muted">${esc(j.tenant)}/${esc(j.company_number)}</span>
+        <span class="${j.status === "running" ? "ok" : "muted"}">${esc(j.stage)} · ${esc(j.status)}</span></div>`).join("") +
+      `</div>` : `<p style="margin:0;font-size:13px" class="muted">Nothing running or queued.</p>`}
+    ${q.failures.length ? `<div style="border-top:1px solid var(--line);margin-top:13px;padding-top:12px">
+      <div class="sec" style="margin-bottom:8px">Recent failures</div>` +
+      q.failures.slice(0, 5).map((f) => `<div style="font-size:12.5px;margin-bottom:7px">
+        <span class="mono muted">${esc(f.tenant)}/${esc(f.company_number)}</span>
+        <span class="crit"> ${esc(f.stage)}</span><br>
+        <span class="muted">${esc((f.error || "").slice(0, 90))}</span></div>`).join("") + `</div>` : ""}`;
+}
+
+function renderChart(payload) {
+  const days = payload.days;
+  const max = Math.max(1, ...days.map((d) => d.done));
+  const label = (iso) => new Date(iso + "T00:00:00Z")
+    .toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" });
+  document.getElementById("chart").innerHTML = `
+    <div class="bars" role="img" aria-label="${days.map((d) => label(d.day) + " " + d.done).join(", ")}">` +
+    days.map((d) => `<div>
+        <span style="font-size:11.5px;color:var(--fg-dim);font-variant-numeric:tabular-nums">${d.done}</span>
+        <div class="b ${d.done === max && max > 0 ? "top" : ""}" style="height:${Math.round((d.done / max) * 100)}%"></div>
+      </div>`).join("") + `</div>
+    <div class="days">${days.map((d) => `<span>${esc(label(d.day))}</span>`).join("")}</div>
+    <p class="caveat">${esc(payload.caveat || "")}</p>`;
+}
+
+(async function () {
+  try {
+    const [overview, tenants, queue, chart] = await Promise.all([
+      api("/api/v2/admin/overview"),
+      api("/api/v2/admin/tenants"),
+      api("/api/v2/admin/jobs"),
+      api("/api/v2/admin/throughput?days=7"),
+    ]);
+    renderAlerts(overview.alerts);
+    renderTiles(overview.totals, overview.artifact_scan_complete);
+    renderTenants(tenants.tenants, tenants.db_derived_stages, tenants.total, tenants.tenants.length);
+    renderQueue(queue);
+    renderChart(chart);
+    document.getElementById("took").textContent = overview.took_ms + " ms";
+  } catch (e) {
+    document.getElementById("alerts").innerHTML =
+      `<p class="muted" style="margin:0">Could not load: ${esc(e.message)}</p>`;
+  }
+})();
+</script>
+</body>
+</html>

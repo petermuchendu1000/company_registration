@@ -1299,6 +1299,226 @@ def email_pool_status(tenant_id: int) -> dict:
     return {"total": total, "used": used, "available": total - used}
 
 
+# ── Cross-tenant reads, for the admin console ───────────────────────────────
+#
+# Every function here reads across tenants and must only ever be reached from
+# an endpoint in auth.ADMIN_ENDPOINTS. They do not call _tid() and they do not
+# read the bound tenant, which is the point: an operator is scoped to one
+# tenant and these are not for them.
+#
+# Each is one statement. Looping tenants in Python and calling the per-tenant
+# helpers would be a query per tenant per panel, and the console polls.
+
+#: Stages whose state lives in the companies row, so SQL can count them.
+#: The other four (certificate, director_id, app, publish) are known only
+#: from files on disk — see admin_artifact_counts.
+DB_DERIVED_STAGES = ("details", "duns", "domain", "email")
+
+
+def admin_tenant_summary() -> list[dict]:
+    """
+    One row per tenant: company counts, recorded stage progress, mailbox
+    pool, and live job counts. One query.
+
+    "Recorded progress" is the four stages the database knows about. It is
+    not the same as the eight stages the operator console shows, because the
+    other four are judged from files on disk.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            WITH co AS (
+                SELECT tenant_id,
+                       COUNT(*)                                        AS companies,
+                       COUNT(*) FILTER (
+                           WHERE lower(COALESCE(archived, '')) IN ('yes','true','1')
+                       )                                               AS archived,
+                       COUNT(*) FILTER (
+                           WHERE COALESCE(status, '') <> ''
+                              OR COALESCE(address, '') <> ''
+                       )                                               AS details_done,
+                       COUNT(*) FILTER (WHERE COALESCE(duns_number, '')   <> '') AS duns_done,
+                       COUNT(*) FILTER (WHERE COALESCE(domain, '')        <> '') AS domain_done,
+                       COUNT(*) FILTER (WHERE COALESCE(assigned_email,'') <> '') AS email_done
+                  FROM {TABLE}
+                 GROUP BY tenant_id
+            ),
+            pool AS (
+                SELECT tenant_id,
+                       COUNT(*)                                     AS pool_total,
+                       COUNT(*) FILTER (WHERE company_number IS NULL) AS pool_available
+                  FROM {EMAIL_POOL_TABLE}
+                 GROUP BY tenant_id
+            ),
+            jb AS (
+                SELECT tenant_id,
+                       COUNT(*) FILTER (WHERE status = 'running') AS running,
+                       COUNT(*) FILTER (WHERE status = 'queued')  AS queued,
+                       COUNT(*) FILTER (WHERE status = 'failed')  AS failed
+                  FROM {JOBS_TABLE}
+                 GROUP BY tenant_id
+            ),
+            us AS (
+                SELECT tenant_id, COUNT(*) AS users FROM {USERS_TABLE} GROUP BY tenant_id
+            )
+            SELECT t.id, t.slug, t.name, t.created_at,
+                   COALESCE(co.companies, 0)      AS companies,
+                   COALESCE(co.archived, 0)       AS archived,
+                   COALESCE(co.details_done, 0)   AS details_done,
+                   COALESCE(co.duns_done, 0)      AS duns_done,
+                   COALESCE(co.domain_done, 0)    AS domain_done,
+                   COALESCE(co.email_done, 0)     AS email_done,
+                   COALESCE(pool.pool_total, 0)     AS pool_total,
+                   COALESCE(pool.pool_available, 0) AS pool_available,
+                   COALESCE(jb.running, 0)        AS running,
+                   COALESCE(jb.queued, 0)         AS queued,
+                   COALESCE(jb.failed, 0)         AS failed,
+                   COALESCE(us.users, 0)          AS users
+              FROM {TENANTS_TABLE} t
+              LEFT JOIN co   ON co.tenant_id   = t.id
+              LEFT JOIN pool ON pool.tenant_id = t.id
+              LEFT JOIN jb   ON jb.tenant_id   = t.id
+              LEFT JOIN us   ON us.tenant_id   = t.id
+             -- Trouble first, then size, then name. A console that opens on
+             -- an alphabetical list buries the tenant that needs reading.
+             ORDER BY COALESCE(jb.failed, 0) > 0 DESC,
+                      (COALESCE(pool.pool_available, 0) = 0
+                       AND COALESCE(co.companies, 0) > 0) DESC,
+                      COALESCE(jb.running, 0) + COALESCE(jb.queued, 0) DESC,
+                      COALESCE(co.companies, 0) DESC,
+                      t.slug
+            """
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    for row in rows:
+        live = max(0, int(row["companies"]) - int(row["archived"]))
+        possible = live * len(DB_DERIVED_STAGES)
+        done = sum(int(row[f"{s}_done"]) for s in DB_DERIVED_STAGES)
+        # Archived companies are out of the denominator: counting one that
+        # somebody shelved as incomplete makes a healthy tenant look stuck.
+        row["live_companies"] = live
+        row["recorded_done"] = done
+        row["recorded_possible"] = possible
+        row["recorded_pct"] = round(100 * done / possible) if possible else 0
+    return rows
+
+
+def admin_job_queue(failed_limit: int = 20) -> dict:
+    """What is running or waiting right now, and the most recent failures."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT j.tenant_id, t.slug AS tenant, j.company_number, j.stage,
+                   j.status, j.started_at, j.heartbeat_at, j.worker_id
+              FROM {JOBS_TABLE} j
+              JOIN {TENANTS_TABLE} t ON t.id = j.tenant_id
+             WHERE j.status IN %s
+             ORDER BY j.status DESC, j.started_at NULLS LAST
+            """,
+            (ACTIVE_JOB_STATUSES,),
+        )
+        active = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(
+            f"""
+            SELECT j.tenant_id, t.slug AS tenant, j.company_number, j.stage,
+                   j.finished_at, j.error
+              FROM {JOBS_TABLE} j
+              JOIN {TENANTS_TABLE} t ON t.id = j.tenant_id
+             WHERE j.status = 'failed'
+             ORDER BY j.finished_at DESC NULLS LAST
+             LIMIT %s
+            """,
+            (int(failed_limit),),
+        )
+        failures = [dict(r) for r in cur.fetchall()]
+
+        # Counted separately, not taken from len(failures): that list is
+        # capped by failed_limit, so a caller reporting its length would say
+        # "20 failed jobs" however many there really were.
+        cur.execute(
+            f"SELECT COUNT(*) AS n, COUNT(DISTINCT tenant_id) AS tenants "
+            f"FROM {JOBS_TABLE} WHERE status = 'failed'"
+        )
+        counts = cur.fetchone()
+
+    return {
+        "running": [j for j in active if j["status"] == "running"],
+        "queued": [j for j in active if j["status"] == "queued"],
+        "failures": failures,
+        "failed_total": int(counts["n"]),
+        "failed_tenants": int(counts["tenants"]),
+        "failures_truncated": int(counts["n"]) > len(failures),
+    }
+
+
+def admin_throughput(days: int = 7) -> list[dict]:
+    """
+    Stages finished per day, newest last.
+
+    A caveat the caller must pass on rather than hide: the jobs table holds
+    one row per (tenant, company, stage), so a re-run overwrites the previous
+    one. This counts stages whose MOST RECENT run finished on that day, not
+    every run ever made. It understates a day on which something was retried.
+    """
+    days = max(1, min(int(days), 90))
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT d::date AS day,
+                   COALESCE(c.done, 0)   AS done,
+                   COALESCE(c.failed, 0) AS failed
+              FROM generate_series(
+                       (now() AT TIME ZONE 'UTC')::date - (%s::int - 1),
+                       (now() AT TIME ZONE 'UTC')::date,
+                       interval '1 day'
+                   ) AS d
+              LEFT JOIN (
+                   SELECT (finished_at AT TIME ZONE 'UTC')::date AS day,
+                          COUNT(*) FILTER (WHERE status = 'done')   AS done,
+                          COUNT(*) FILTER (WHERE status = 'failed') AS failed
+                     FROM {JOBS_TABLE}
+                    WHERE finished_at IS NOT NULL
+                    GROUP BY 1
+              ) c ON c.day = d::date
+             ORDER BY day
+            """,
+            (days,),
+        )
+        return [
+            {"day": r["day"].isoformat(), "done": int(r["done"]), "failed": int(r["failed"])}
+            for r in cur.fetchall()
+        ]
+
+
+def admin_user_list() -> list[dict]:
+    """Every login, with its tenant. Password hashes are never selected."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT u.id, u.email, u.role, u.created_at,
+                   u.tenant_id, t.slug AS tenant
+              FROM {USERS_TABLE} u
+              JOIN {TENANTS_TABLE} t ON t.id = u.tenant_id
+             ORDER BY t.slug, u.email
+            """
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def set_user_role(user_id: int, role: str) -> bool:
+    """Change a login's role. Returns False when there is no such user."""
+    if role not in VALID_ROLES:
+        raise ValueError(f"role must be one of {VALID_ROLES}, got {role!r}")
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {USERS_TABLE} SET role = %s WHERE id = %s RETURNING id",
+            (role, int(user_id)),
+        )
+        return cur.fetchone() is not None
+
+
 if __name__ == "__main__":
     import argparse
 

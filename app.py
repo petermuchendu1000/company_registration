@@ -20,6 +20,12 @@ register_wizard_routes(app)
 from api_v2 import api_v2
 app.register_blueprint(api_v2)
 
+# --- Cross-tenant admin console. init_admin_api registers the blueprint and
+# puts every endpoint it adds into auth.ADMIN_ENDPOINTS, so the gate closes
+# behind it without a second hand-maintained list. ---
+from admin_api import init_admin_api
+_admin_endpoints = init_admin_api(app)
+
 # --- Authentication (must come after every blueprint is registered, so the
 # deny-by-default guard covers their routes too) ---
 from auth import init_auth
