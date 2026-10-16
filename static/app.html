@@ -1109,6 +1109,11 @@ const COSTLY_STAGES = {
   domain:      "Domain Registration — buys a domain. Costs money, not reversible.",
   certificate: "Certificate Download — drives a browser session against Companies House.",
   duns:        "DUNS Lookup — submits a request to Dun & Bradstreet.",
+  director_id: "Director ID — submits a named director's details to XBINDER and "
+             + "saves the identity-document images it returns as this company's "
+             + "Play Console representative ID. Any detail missing from the record "
+             + "(ID number, serial, card number, date of issue, and the day within a "
+             + "date of birth) is generated, not looked up.",
   publish:     "Play Release (validation) — uploads the signed bundle, listing and "
              + "graphics to a draft edit on Google Play, has Play validate it, then "
              + "discards the edit. Nothing is released, but the upload is real and the "
