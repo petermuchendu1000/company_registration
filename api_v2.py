@@ -76,23 +76,39 @@ def _co_lock(cn: str) -> threading.Lock:
         return _CO_LOCKS[cn]
 
 
-def _jk(cn: str, stage: str) -> str:
-    return f"{cn}:{stage}"
+def _tenant() -> int:
+    """The tenant bound to the current request."""
+    return db.current_tenant_id()
 
 
-def _job_get(cn: str, stage: str) -> dict:
+def _jk(cn: str, stage: str, tenant_id: int | None = None) -> str:
+    """
+    Job key.
+
+    Keyed by tenant as well as company: the primary key is
+    (tenant_id, company_number), so two clients can hold the same company, and
+    a key of just the number would have them sharing job state — and each
+    other's captured stdout, which carries directors, emails and DUNS numbers.
+    """
+    tid = _tenant() if tenant_id is None else tenant_id
+    return f"{tid}:{cn}:{stage}"
+
+
+def _job_get(cn: str, stage: str, tenant_id: int | None = None) -> dict:
+    key = _jk(cn, stage, tenant_id)
     with _LOCK:
-        j = dict(_JOBS.get(_jk(cn, stage), {}))
+        j = dict(_JOBS.get(key, {}))
     if j.get("status") == "running":
-        live = _TEE.get_log(_jk(cn, stage))
+        live = _TEE.get_log(key)
         if live:
             j["log"] = live
     return j
 
 
-def _job_set(cn: str, stage: str, **kw) -> None:
+def _job_set(cn: str, stage: str, tenant_id: int | None = None, **kw) -> None:
+    key = _jk(cn, stage, tenant_id)
     with _LOCK:
-        _JOBS.setdefault(_jk(cn, stage), {}).update(kw)
+        _JOBS.setdefault(key, {}).update(kw)
 
 
 # ── Stdout capture ─────────────────────────────────────────────────────────
@@ -149,26 +165,65 @@ _TEE = _Tee()
 sys.stdout = _TEE
 
 
+# The Android build is the one stage that can exhaust a shared box: Gradle
+# already uses every core, so running several at once makes all of them slower
+# and risks the OOM killer. Other stages are network-bound and can overlap.
+_BUILD_SLOTS = threading.Semaphore(max(1, int(os.getenv("MAX_CONCURRENT_BUILDS", "1"))))
+_HEAVY_STAGES = {"app"}
+
+#: A job holding a build slot has not started yet but must not be restarted.
+_ACTIVE_STATUSES = {"running", "queued"}
+
+
+def _run_tracked(tenant_id: int, cn: str, stage: str, fn) -> None:
+    """
+    Run one stage, in this thread, recording its state and output.
+
+    The tenant has to be rebound here. Flask binds it per request in a
+    ContextVar, and a new thread starts with an empty context — so without
+    this the job either raises, or silently falls back to SINGLE_TENANT_SLUG
+    and writes another client's row.
+    """
+    key = _jk(cn, stage, tenant_id)
+    heavy = stage in _HEAVY_STAGES
+
+    if heavy and not _BUILD_SLOTS.acquire(blocking=False):
+        _job_set(cn, stage, tenant_id=tenant_id, status="queued",
+                 started_at=None, finished_at=None, error=None, log=None)
+        _BUILD_SLOTS.acquire()
+
+    _job_set(cn, stage, tenant_id=tenant_id, status="running",
+             started_at=datetime.now().isoformat(),
+             finished_at=None, error=None, log=None)
+    _TEE.bind(key)
+    try:
+        with db.tenant_scope(tenant_id):
+            result = fn()
+        log = _TEE.unbind()
+        _job_set(cn, stage, tenant_id=tenant_id, status="done",
+                 finished_at=datetime.now().isoformat(),
+                 log=log, result=str(result)[:500])
+    except Exception as e:
+        log = _TEE.unbind()
+        _job_set(cn, stage, tenant_id=tenant_id, status="failed",
+                 finished_at=datetime.now().isoformat(),
+                 error=str(e),
+                 log=log + "\n" + traceback.format_exc())
+        raise
+    finally:
+        if heavy:
+            _BUILD_SLOTS.release()
+
+
 def _spawn(cn: str, stage: str, fn) -> None:
     """Run fn() in a daemon thread, tracking job state and capturing stdout."""
-    key = _jk(cn, stage)
-    _job_set(cn, stage, status="running", started_at=datetime.now().isoformat(),
-             finished_at=None, error=None, log=None)
+    tenant_id = _tenant()   # read here: the worker thread will not inherit it
 
     def _worker():
-        _TEE.bind(key)
         try:
-            result = fn()
-            log = _TEE.unbind()
-            _job_set(cn, stage, status="done",
-                     finished_at=datetime.now().isoformat(),
-                     log=log, result=str(result)[:500])
-        except Exception as e:
-            log = _TEE.unbind()
-            _job_set(cn, stage, status="failed",
-                     finished_at=datetime.now().isoformat(),
-                     error=str(e),
-                     log=log + "\n" + traceback.format_exc())
+            _run_tracked(tenant_id, cn, stage, fn)
+        except Exception:
+            pass  # already recorded on the job
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -613,7 +668,7 @@ def v2_companies():
             continue
         
         stages = _compute_stages(cn, row)
-        running = [s for s in STAGE_ORDER if _job_get(cn, s).get("status") == "running"]
+        running = [s for s in STAGE_ORDER if _job_get(cn, s).get("status") in _ACTIVE_STATUSES]
         company_status = str(row.get("Company Status") or "").strip() or "Active"
         
         out.append({
@@ -739,7 +794,7 @@ def v2_run_stage(cn, stage):
     if not row:
         return jsonify({"error": "Company not found"}), 404
 
-    if _job_get(cn, stage).get("status") == "running":
+    if _job_get(cn, stage).get("status") in _ACTIVE_STATUSES:
         return jsonify({"error": "Already running"}), 409
 
     _spawn(cn, stage, lambda: _exec_stage(cn, stage, _find_row(cn) or row))
@@ -753,34 +808,27 @@ def v2_run_all(cn):
     if not row:
         return jsonify({"error": "Company not found"}), 404
 
-    running = [s for s in STAGE_ORDER if _job_get(cn, s).get("status") == "running"]
+    running = [s for s in STAGE_ORDER if _job_get(cn, s).get("status") in _ACTIVE_STATUSES]
     if running:
         return jsonify({"error": f"'{running[0]}' is already running"}), 409
+
+    tenant_id = _tenant()   # read here: the worker thread will not inherit it
 
     def _seq():
         with _co_lock(cn):
             for stage in STAGE_ORDER:
-                fresh = _find_row(cn) or {}
-                if _compute_stages(cn, fresh).get(stage):
-                    continue  # already done
-                key = _jk(cn, stage)
-                _job_set(cn, stage, status="running",
-                         started_at=datetime.now().isoformat(),
-                         finished_at=None, error=None, log=None)
-                _TEE.bind(key)
+                with db.tenant_scope(tenant_id):
+                    fresh = _find_row(cn) or {}
+                    already_done = _compute_stages(cn, fresh).get(stage)
+                if already_done:
+                    continue
                 try:
-                    _exec_stage(cn, stage, _find_row(cn) or fresh)
-                    log = _TEE.unbind()
-                    _job_set(cn, stage, status="done",
-                             finished_at=datetime.now().isoformat(),
-                             log=log)
-                except Exception as e:
-                    log = _TEE.unbind()
-                    _job_set(cn, stage, status="failed",
-                             finished_at=datetime.now().isoformat(),
-                             error=str(e),
-                             log=log + "\n" + traceback.format_exc())
-                    break  # stop on first failure
+                    _run_tracked(
+                        tenant_id, cn, stage,
+                        lambda s=stage, f=fresh: _exec_stage(cn, s, _find_row(cn) or f),
+                    )
+                except Exception:
+                    break  # stop on first failure; it is recorded on the job
 
     threading.Thread(target=_seq, daemon=True).start()
     return jsonify({"status": "started"})
@@ -788,6 +836,12 @@ def v2_run_all(cn):
 
 @api_v2.route("/api/v2/company/<cn>/job/<stage>")
 def v2_job(cn, stage):
+    # Ownership check: the job carries the stage's captured stdout, which
+    # includes directors, assigned emails, domains and DUNS numbers. Without
+    # this, any signed-in user could read any company's log by guessing a
+    # number — every other route on this blueprint resolves the row first.
+    if not _find_row(cn):
+        return jsonify({"error": "Company not found"}), 404
     j = _job_get(cn, stage)
     return jsonify(j if j else {"status": "idle"})
 
@@ -954,7 +1008,7 @@ def v2_rerun_id(cn):
     row = _find_row(cn)
     if not row:
         return jsonify({"error": "Company not found"}), 404
-    if _job_get(cn, "director_id").get("status") == "running":
+    if _job_get(cn, "director_id").get("status") in _ACTIVE_STATUSES:
         return jsonify({"error": "Already running"}), 409
     _spawn(cn, "director_id", lambda: _exec_stage(cn, "director_id", _find_row(cn) or row))
     return jsonify({"status": "started", "cn": cn, "stage": "director_id"})
