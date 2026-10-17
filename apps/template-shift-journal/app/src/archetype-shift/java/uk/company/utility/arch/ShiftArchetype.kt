@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import uk.company.utility.BuildConfig
+import uk.company.utility.core.LocalSiblingPaneVisible
 import uk.company.utility.core.pluralNoun
 import uk.company.utility.core.AccentCard
 import uk.company.utility.core.Archetype
@@ -267,14 +268,20 @@ private fun HomeScreen(
 
             SessionCard(active, startTime, note, onNoteChange, onStart, onEnd)
 
-            if (log.isNotEmpty()) {
+            // The preview exists because the full log is a tab away. Side by
+            // side it is the same three rows twice on one screen, so the
+            // pane that owns the log keeps it and this one gives the space
+            // back to the timer.
+            val previewLog = log.isNotEmpty() && !LocalSiblingPaneVisible.current
+            if (previewLog) {
+                val linkToLog = log.size > 3
                 SectionHeader(
                     "Recent Activity",
-                    actionLabel = if (log.size > 3) "See all →" else null,
-                    onAction = if (log.size > 3) onViewLog else null,
+                    actionLabel = if (linkToLog) "See all →" else null,
+                    onAction = if (linkToLog) onViewLog else null,
                 )
                 log.reversed().take(3).forEach { SessionRow(it) }
-            } else {
+            } else if (log.isEmpty()) {
                 EmptyState(
                     icon = Icons.Outlined.Schedule,
                     title = "Nothing logged yet",

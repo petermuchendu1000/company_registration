@@ -56,6 +56,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import org.json.JSONObject
 import uk.company.utility.BuildConfig
+import uk.company.utility.core.LocalSiblingPaneVisible
 import uk.company.utility.core.pluralNoun
 import uk.company.utility.core.AccentCard
 import uk.company.utility.core.Archetype
@@ -437,16 +438,21 @@ private fun HomeScreen(
                 }
             }
 
-            if (journeys.isNotEmpty()) {
+            // Dropped when the history pane is beside this one: the same
+            // rows twice on one screen, and the space is better spent on the
+            // entry form and the relief summary above it.
+            val previewJourneys = journeys.isNotEmpty() && !LocalSiblingPaneVisible.current
+            if (previewJourneys) {
+                val linkToAll = journeys.size > 3
                 SectionHeader(
                     "Recent journeys",
-                    actionLabel = if (journeys.size > 3) "See all →" else null,
-                    onAction = if (journeys.size > 3) onViewAll else null,
+                    actionLabel = if (linkToAll) "See all →" else null,
+                    onAction = if (linkToAll) onViewAll else null,
                 )
                 journeys.sortedByDescending { it.atMs }.take(3).forEach {
                     JourneyRow(it, relief[it.id] ?: 0L)
                 }
-            } else {
+            } else if (journeys.isEmpty()) {
                 EmptyState(
                     icon = Icons.Outlined.AddRoad,
                     title = "No journeys yet",

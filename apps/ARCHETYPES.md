@@ -130,8 +130,8 @@ move, change them there and rebuild.
   cannot prove `CalculatorScreen` unreachable in a mileage or quote build.
   The tab is gone and the user never sees it, but the class ships. Moving the
   shared screens into opt-in source directories would fix it properly.
-- **Tablet layouts are the phone layout, stretched.** The 10-inch
-  screenshots are honest — they show what a tablet user sees — and what they
-  show is a single narrow column with a lot of empty space below it. Nothing
-  is broken and nothing is misrepresented, but the listing would be stronger
-  with a layout that uses the width.
+- **The panes do not rearrange within a screen.** A tablet gets a rail, and
+  the two feature screens side by side, but each pane is still the phone's
+  single column. A screen whose content is short — the shift timer with no
+  shift running — leaves the lower half of its pane empty. Laying those
+  cards out in a grid at width would fill it.

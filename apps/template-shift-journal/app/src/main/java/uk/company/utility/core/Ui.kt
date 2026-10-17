@@ -227,6 +227,12 @@ fun EmptyState(
 /** A label/value row inside a breakdown card. [emphasis] marks the total line. */
 @Composable
 fun BreakdownRow(label: String, value: String, emphasis: Boolean = false) {
+    // Both halves are weighted, with a gap that cannot be eaten. Unweighted
+    // — as this was — SpaceBetween puts them at opposite ends and nothing
+    // stops them meeting in the middle: in a tablet pane, "First 10,000
+    // miles @ 45p" ran straight into "1,027 mi · £462.15" with no space at
+    // all. ReferenceRow and StatPill had the same fault; whenever a row
+    // holds a label and a value, measure one of them before the other.
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(
             label,
@@ -234,13 +240,17 @@ fun BreakdownRow(label: String, value: String, emphasis: Boolean = false) {
             fontWeight = if (emphasis) FontWeight.SemiBold else FontWeight.Normal,
             color = if (emphasis) MaterialTheme.colorScheme.onSurface
             else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
         )
+        Spacer(Modifier.width(12.dp))
         Text(
             value,
             style = MaterialTheme.typography.bodySmall,
             fontWeight = if (emphasis) FontWeight.Bold else FontWeight.Medium,
             color = if (emphasis) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f, fill = false),
         )
     }
 }

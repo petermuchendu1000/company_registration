@@ -8,6 +8,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -56,6 +57,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import org.json.JSONArray
@@ -388,46 +390,76 @@ private fun BuilderScreen(
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(
-                    onClick = {
-                        onSave(client.trim().ifBlank { "Unnamed" }, lines.toList())
-                        lines.clear()
-                        client = ""
-                    },
-                    enabled = lines.isNotEmpty(),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Icon(Icons.Default.Save, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(BuildConfig.ROLE_VERB_END, fontWeight = FontWeight.SemiBold)
-                }
-                OutlinedButton(
-                    onClick = {
-                        val text = quoteAsText(client.trim().ifBlank { "Unnamed" }, lines)
-                        ctx.startActivity(
-                            Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, text)
-                                putExtra(
-                                    Intent.EXTRA_SUBJECT,
-                                    "${BuildConfig.COMPANY_NAME} — ${BuildConfig.ROLE_NOUN}",
-                                )
-                            },
+            // Side by side on a phone, stacked in a narrow tablet pane.
+            // "Save Estimate" and "Send" do not both fit across 288dp: an
+            // even split clipped the long label, and giving the long one
+            // more room clipped "Send" into "Se / nd" instead. Nothing fits
+            // two buttons there, so below 340dp they take a row each.
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val stacked = maxWidth < 340.dp
+
+                val save: @Composable (Modifier) -> Unit = { mod ->
+                    Button(
+                        onClick = {
+                            onSave(client.trim().ifBlank { "Unnamed" }, lines.toList())
+                            lines.clear()
+                            client = ""
+                        },
+                        enabled = lines.isNotEmpty(),
+                        modifier = mod.height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Icon(Icons.Default.Save, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            BuildConfig.ROLE_VERB_END,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                    },
-                    enabled = lines.isNotEmpty(),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Icon(Icons.Default.Share, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Send", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+
+                val send: @Composable (Modifier) -> Unit = { mod ->
+                    OutlinedButton(
+                        onClick = {
+                            val text = quoteAsText(client.trim().ifBlank { "Unnamed" }, lines)
+                            ctx.startActivity(
+                                Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, text)
+                                    putExtra(
+                                        Intent.EXTRA_SUBJECT,
+                                        "${BuildConfig.COMPANY_NAME} — ${BuildConfig.ROLE_NOUN}",
+                                    )
+                                },
+                            )
+                        },
+                        enabled = lines.isNotEmpty(),
+                        modifier = mod.height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Icon(Icons.Default.Share, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Send",
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                if (stacked) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        save(Modifier.fillMaxWidth())
+                        send(Modifier.fillMaxWidth())
+                    }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        save(Modifier.weight(1f))
+                        send(Modifier.weight(1f))
+                    }
                 }
             }
 

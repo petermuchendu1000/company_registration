@@ -275,6 +275,11 @@ class ListingScreenshotTest {
      */
     private fun sessions() = JSONArray().apply {
         listOf(
+            arrayOf(4, "07:55", "12:10", "4h 15m", "Long-haul leg, M62"),
+            arrayOf(4, "13:20", "16:04", "2h 44m", "Yard turnaround"),
+            arrayOf(3, "08:30", "11:48", "3h 18m", "Trunk run north"),
+            arrayOf(2, "09:05", "12:22", "3h 17m", "Parts collection"),
+            arrayOf(2, "13:40", "16:51", "3h 11m", "Multi-drop, east"),
             arrayOf(1, "08:12", "11:20", "3h 08m", "Morning round"),
             arrayOf(1, "13:00", "15:57", "2h 57m", "Afternoon round"),
             arrayOf(0, "09:41", "11:55", "2h 14m", "Depot run — van 3"),
@@ -296,7 +301,11 @@ class ListingScreenshotTest {
             intArrayOf(0, 48210, 48297) to "Client delivery — Leeds",
             intArrayOf(1, 48068, 48210) to "Depot collection",
             intArrayOf(2, 47951, 48068) to "Site visit — Hull",
+            intArrayOf(5, 47840, 47951) to "Return load — Doncaster",
+            intArrayOf(8, 47766, 47840) to "Depot to depot",
             intArrayOf(30, 47702, 47951) to "Regional round",
+            intArrayOf(33, 47610, 47702) to "Client delivery — York",
+            intArrayOf(38, 47455, 47610) to "Port collection — Immingham",
         ).forEachIndexed { i, (odo, purpose) ->
             put(
                 JSONObject().apply {
@@ -311,8 +320,17 @@ class ListingScreenshotTest {
     private fun quotes() = JSONArray().apply {
         listOf(
             Triple(0, "M. Okafor", listOf(Triple("Labour — first fix", 8, 4800L))),
-            Triple(2, "Brightwell Lettings", listOf(Triple("Labour — second fix", 6, 4800L))),
+            Triple(2, "Brightwell Lettings", listOf(
+                Triple("Labour — second fix", 6, 4800L),
+                Triple("Consumer unit", 1, 22200L))),
             Triple(5, "J. Hargreaves", listOf(Triple("Consumer unit", 1, 22200L))),
+            Triple(8, "Fairfield Court", listOf(
+                Triple("Rewire — ground floor", 24, 4800L),
+                Triple("Materials — cable, 100 m", 3, 8600L))),
+            Triple(12, "D. Whelan", listOf(Triple("Fault find and repair", 3, 5200L))),
+            Triple(19, "Kestrel Properties", listOf(
+                Triple("EICR — 3 bed", 1, 18000L),
+                Triple("Remedial works", 4, 4800L))),
         ).forEachIndexed { i, (ago, client, lines) ->
             put(
                 JSONObject().apply {
