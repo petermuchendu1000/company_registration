@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import uk.company.utility.BuildConfig
+import uk.company.utility.core.pluralNoun
 import uk.company.utility.core.AccentCard
 import uk.company.utility.core.Archetype
 import uk.company.utility.core.EmptyState
@@ -435,8 +436,8 @@ private fun LogScreen(pad: PaddingValues, log: List<Session>) {
                     .padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                StatPill(Modifier.weight(1f), log.size.toString(), "entries")
-                StatPill(Modifier.weight(1f), uniqueDays.toString(), "days")
+                StatPill(Modifier.weight(1f), log.size.toString(), pluralNoun(log.size, "entry", "entries"))
+                StatPill(Modifier.weight(1f), uniqueDays.toString(), pluralNoun(uniqueDays, "day"))
             }
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(8.dp),

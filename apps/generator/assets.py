@@ -13,6 +13,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from . import screenshots
+
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 
@@ -247,261 +249,12 @@ def make_feature_graphic(dest: Path, color: str, name: str,
     img.save(dest, format="PNG")
 
 
-def make_phone_screenshot(
-    dest: Path,
-    color: str,
-    name: str,
-    screen: str = "dashboard",
-    size: tuple[int, int] = (1080, 1920),
-    role_noun: str = "shift",
-    role_verb_start: str = "Start Shift",
-    role_verb_end: str = "End Shift",
-) -> None:
-    """Generate a phone/tablet screenshot mockup (24-bit PNG, no alpha).
-
-    size: (W, H) in pixels. Defaults to 1080x1920 (phone).
-           Pass (1200, 1920) for 7-inch tablet, (1600, 2560) for 10-inch tablet.
-    """
-    W, H = size
-    rgb = tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-    dark_rgb = _darken(rgb, 0.35)
-    light_rgb = _lighten(rgb, 0.55)
-
-    bg = Image.new("RGB", (W, H), (248, 248, 252))
-    draw = ImageDraw.Draw(bg)
-
-    status_bar_h = 80
-    draw.rectangle([(0, 0), (W, status_bar_h)], fill=dark_rgb)
-
-    nav_bar_h = 180
-    nav_y = H - nav_bar_h
-    draw.rectangle([(0, nav_y), (W, H)], fill=(255, 255, 255))
-    draw.line([(0, nav_y), (W, nav_y)], fill=(220, 220, 228), width=2)
-
-    font_title = _load_font(56)
-    font_body = _load_font(38)
-    font_small = _load_font(30)
-    font_label = _load_font(26)
-
-    content_top = status_bar_h + 60
-    pad = 60
-
-    _NAV_TABS = ["Home", "Log", "Calc", "Info", "Contact"]
-
-    def _nav(active_idx: int) -> None:
-        tab_w = W // len(_NAV_TABS)
-        for i, label in enumerate(_NAV_TABS):
-            x = tab_w // 2 + i * tab_w
-            is_active = i == active_idx
-            dot_color = rgb if is_active else (180, 180, 190)
-            lbl_color = rgb if is_active else (150, 150, 160)
-            # Active tab: filled pill indicator
-            if is_active:
-                pill_w, pill_h = 80, 8
-                draw.rounded_rectangle(
-                    [(x - pill_w // 2, nav_y + 14), (x + pill_w // 2, nav_y + 14 + pill_h)],
-                    radius=4, fill=rgb,
-                )
-            # Icon dot
-            draw.ellipse([(x - 14, nav_y + 38), (x + 14, nav_y + 66)], fill=dot_color)
-            # Label
-            lbl_x = x - len(label) * 7
-            draw.text((lbl_x, nav_y + 80 + (nav_bar_h - 120) // 2), label, fill=lbl_color, font=font_label)
-
-    if screen == "dashboard":
-        # Hero gradient banner
-        hero_h = 300
-        for row in range(hero_h):
-            t = row / hero_h
-            r2 = int(dark_rgb[0] * (1 - t) + rgb[0] * t)
-            g2 = int(dark_rgb[1] * (1 - t) + rgb[1] * t)
-            b2 = int(dark_rgb[2] * (1 - t) + rgb[2] * t)
-            draw.line([(0, content_top + row), (W, content_top + row)], fill=(r2, g2, b2))
-        # Company name + subtitle in hero
-        draw.text((pad, content_top + 50), name[:28], fill=(255, 255, 255), font=font_title)
-        role_cap = role_noun[0].upper() + role_noun[1:] if role_noun else "Shift"
-        draw.text((pad, content_top + 130), f"{role_cap} Journal", fill=(220, 230, 255), font=font_small)
-        # Stat chips in hero
-        chip_w = (W - pad * 3) // 2
-        chip_y = content_top + 195
-        for i, (label, val) in enumerate([("Today", "3"), ("Total", "12")]):
-            x = pad + i * (chip_w + pad)
-            draw.rounded_rectangle([(x, chip_y), (x + chip_w, chip_y + 80)], radius=20,
-                                   fill=(255, 255, 255, 60) if i == 0 else (0, 0, 0, 40))
-            draw.text((x + 20, chip_y + 8), val, fill=(255, 255, 255), font=font_body)
-            draw.text((x + 20 + len(val) * 18 + 8, chip_y + 18), label, fill=(200, 215, 255), font=font_label)
-        content_top += hero_h + 40
-
-        # "No active session" card
-        card_h = 220
-        draw.rounded_rectangle([(pad, content_top), (W - pad, content_top + card_h)], radius=28, fill=(255, 255, 255))
-        draw.text((pad + 40, content_top + 28), f"No active {role_noun}", fill=(100, 100, 110), font=font_body)
-        btn_y = content_top + 110
-        draw.rounded_rectangle([(pad + 40, btn_y), (W - pad - 40, btn_y + 80)], radius=20, fill=rgb)
-        btn_lbl = role_verb_start
-        draw.text((W // 2 - len(btn_lbl) * 10, btn_y + 20), btn_lbl, fill=(255, 255, 255), font=font_body)
-        content_top += card_h + 48
-
-        draw.text((pad, content_top), "Recent Activity", fill=(40, 40, 50), font=font_body)
-        content_top += 64
-        for i in range(3):
-            ey = content_top + i * 124
-            if ey + 110 > nav_y - 20:
-                break
-            draw.rounded_rectangle([(pad, ey), (W - pad, ey + 108)], radius=20, fill=(255, 255, 255))
-            # Left accent bar
-            draw.rounded_rectangle([(pad, ey), (pad + 6, ey + 108)], radius=3, fill=rgb)
-            draw.text((pad + 24, ey + 16), f"#{i + 1}  09:0{i} – 17:0{i}", fill=(30, 30, 40), font=font_small)
-            draw.text((pad + 24, ey + 60), "Today", fill=(160, 160, 170), font=font_label)
-            draw.text((W - pad - 130, ey + 30), f"8h 0{i}m", fill=rgb, font=font_small)
-        _nav(0)
-
-    elif screen == "dashboard_active":
-        # Hero with gradient
-        hero_h = 300
-        for row in range(hero_h):
-            t = row / hero_h
-            r2 = int(dark_rgb[0] * (1 - t) + rgb[0] * t)
-            g2 = int(dark_rgb[1] * (1 - t) + rgb[1] * t)
-            b2 = int(dark_rgb[2] * (1 - t) + rgb[2] * t)
-            draw.line([(0, content_top + row), (W, content_top + row)], fill=(r2, g2, b2))
-        draw.text((pad, content_top + 50), name[:28], fill=(255, 255, 255), font=font_title)
-        role_cap = role_noun[0].upper() + role_noun[1:] if role_noun else "Shift"
-        draw.text((pad, content_top + 130), f"{role_cap} Journal", fill=(220, 230, 255), font=font_small)
-        chip_w = (W - pad * 3) // 2
-        chip_y = content_top + 195
-        for i, (label, val) in enumerate([("Today", "4"), ("Total", "15")]):
-            x = pad + i * (chip_w + pad)
-            draw.rounded_rectangle([(x, chip_y), (x + chip_w, chip_y + 80)], radius=20,
-                                   fill=(255, 255, 255, 60) if i == 0 else (0, 0, 0, 40))
-            draw.text((x + 20, chip_y + 8), val, fill=(255, 255, 255), font=font_body)
-            draw.text((x + 20 + len(val) * 18 + 8, chip_y + 18), label, fill=(200, 215, 255), font=font_label)
-        content_top += hero_h + 40
-
-        # Active session card (highlighted)
-        card_h = 360
-        draw.rounded_rectangle([(pad, content_top), (W - pad, content_top + card_h)], radius=28, fill=light_rgb)
-        # Pulsing dot + "in progress" label
-        dot_x, dot_y = pad + 40, content_top + 42
-        draw.ellipse([(dot_x - 4, dot_y - 4), (dot_x + 20, dot_y + 20)], fill=(200, 255, 200))
-        draw.ellipse([(dot_x, dot_y), (dot_x + 16, dot_y + 16)], fill=(0, 210, 100))
-        role_ip = role_noun[0].upper() + role_noun[1:]
-        draw.text((dot_x + 28, content_top + 32), f"{role_ip} in progress · 02:34:17", fill=(30, 30, 40), font=font_small)
-        # Note field outline
-        note_y = content_top + 100
-        draw.rounded_rectangle([(pad + 24, note_y), (W - pad - 24, note_y + 140)], radius=14, fill=(255, 255, 255))
-        draw.text((pad + 44, note_y + 14), "Note (optional)", fill=(140, 140, 150), font=font_label)
-        draw.text((pad + 44, note_y + 56), "Completed safety walkthrough.", fill=(40, 40, 50), font=font_small)
-        # End button (danger red)
-        btn_y = content_top + 268
-        draw.rounded_rectangle([(pad + 40, btn_y), (W - pad - 40, btn_y + 78)], radius=20, fill=(220, 50, 50))
-        btn_lbl = role_verb_end
-        draw.text((W // 2 - len(btn_lbl) * 10, btn_y + 18), btn_lbl, fill=(255, 255, 255), font=font_body)
-        content_top += card_h + 48
-
-        draw.text((pad, content_top), "Recent Activity", fill=(40, 40, 50), font=font_body)
-        content_top += 64
-        for i in range(2):
-            ey = content_top + i * 124
-            if ey + 110 > nav_y - 20:
-                break
-            draw.rounded_rectangle([(pad, ey), (W - pad, ey + 108)], radius=20, fill=(255, 255, 255))
-            draw.rounded_rectangle([(pad, ey), (pad + 6, ey + 108)], radius=3, fill=rgb)
-            draw.text((pad + 24, ey + 16), f"#{i + 1}  08:0{i} – 16:0{i}", fill=(30, 30, 40), font=font_small)
-            draw.text((pad + 24, ey + 60), "Today", fill=(160, 160, 170), font=font_label)
-            draw.text((W - pad - 130, ey + 30), "8h 00m", fill=rgb, font=font_small)
-        _nav(0)
-
-    elif screen == "log":
-        draw.text((pad, content_top), "Activity Log", fill=(30, 30, 40), font=font_title)
-        content_top += 20
-        # Stat pills row
-        for i, (lbl, val) in enumerate([("Entries", "27"), ("Days", "14")]):
-            pill_x = pad + i * 240
-            draw.rounded_rectangle([(pill_x, content_top + 10), (pill_x + 210, content_top + 60)],
-                                   radius=14, fill=light_rgb)
-            draw.text((pill_x + 20, content_top + 16), val, fill=rgb, font=font_body)
-            draw.text((pill_x + 20 + len(val) * 18 + 8, content_top + 26), lbl, fill=(100, 100, 120), font=font_label)
-        content_top += 80
-        for i in range(8):
-            ey = content_top + i * 124
-            if ey + 108 > nav_y - 20:
-                break
-            draw.rounded_rectangle([(pad, ey), (W - pad, ey + 108)], radius=20, fill=(255, 255, 255))
-            draw.rounded_rectangle([(pad, ey), (pad + 6, ey + 108)], radius=3, fill=rgb)
-            draw.text((pad + 24, ey + 16), f"#{27 - i}  09:00 – 17:30", fill=(30, 30, 40), font=font_small)
-            draw.text((pad + 24, ey + 60), "Today" if i == 0 else "Yesterday", fill=(160, 160, 170), font=font_label)
-            # Duration chip
-            chip_x = W - pad - 160
-            draw.rounded_rectangle([(chip_x, ey + 30), (chip_x + 130, ey + 74)], radius=10, fill=light_rgb)
-            draw.text((chip_x + 12, ey + 38), "8h 30m", fill=rgb, font=font_label)
-        _nav(1)
-
-    elif screen == "calculator":
-        draw.text((pad, content_top), "Calculator", fill=(30, 30, 40), font=font_title)
-        content_top += 90
-
-        # Input card
-        card_h = 520
-        draw.rounded_rectangle([(pad, content_top), (W - pad, content_top + card_h)], radius=28, fill=(255, 255, 255))
-        iy = content_top + 40
-        for field_lbl, field_val in [("Hours worked", "8.5"), ("Hourly rate (£)", "15.50")]:
-            draw.text((pad + 36, iy), field_lbl, fill=(120, 120, 130), font=font_label)
-            iy += 40
-            draw.rounded_rectangle([(pad + 30, iy), (W - pad - 30, iy + 90)], radius=14, fill=(248, 248, 252))
-            draw.text((pad + 50, iy + 22), field_val, fill=(30, 30, 40), font=font_body)
-            iy += 110
-        # Divider
-        draw.line([(pad + 30, iy), (W - pad - 30, iy)], fill=(220, 220, 230), width=2)
-        iy += 24
-        # Result row
-        draw.text((pad + 36, iy), "Earnings", fill=(120, 120, 130), font=font_label)
-        draw.text((W - pad - 160, iy), "£131.75", fill=rgb, font=font_title)
-        iy += 64
-        # VAT breakdown
-        draw.rounded_rectangle([(pad + 30, iy), (W - pad - 30, iy + 80)], radius=14, fill=light_rgb)
-        draw.text((pad + 50, iy + 12), "Net: £109.79   VAT 20%: £21.96", fill=(60, 60, 70), font=font_label)
-        draw.text((pad + 50, iy + 48), "Gross: £131.75", fill=rgb, font=font_small)
-        content_top += card_h + 48
-
-        # Export row
-        draw.rounded_rectangle([(pad, content_top), (W - pad, content_top + 90)], radius=24, fill=rgb)
-        draw.text((W // 2 - 100, content_top + 22), "Export CSV", fill=(255, 255, 255), font=font_body)
-        _nav(2)
-
-    elif screen == "settings":
-        draw.text((pad, content_top), "Contact", fill=(30, 30, 40), font=font_title)
-        content_top += 100
-
-        def _section(title: str, items: list[tuple[str, str]]) -> None:
-            nonlocal content_top
-            draw.text((pad, content_top), title, fill=rgb, font=font_small)
-            content_top += 50
-            card_inner_h = len(items) * 100 + 20
-            draw.rounded_rectangle([(pad, content_top), (W - pad, content_top + card_inner_h)], radius=20, fill=(255, 255, 255))
-            for j, (lbl, val) in enumerate(items):
-                iy = content_top + 20 + j * 100
-                draw.text((pad + 30, iy), lbl, fill=(140, 140, 150), font=font_label)
-                display_val = val if len(val) <= 34 else val[:31] + "…"
-                draw.text((pad + 30, iy + 34), display_val, fill=(30, 30, 40), font=font_small)
-            content_top += card_inner_h + 50
-
-        _section("Organisation", [
-            ("Company", name),
-            ("Company No.", "00000000"),
-        ])
-        _section("Support", [
-            ("Email", "support@company.co.uk"),
-        ])
-        _section("App", [
-            ("Version", "1.0"),
-            ("Storage", "Local only"),
-        ])
-        _nav(4)
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    bg.save(dest, format="PNG")
-
+# The store screenshots are not drawn here any more. This module used to
+# render one hardcoded set of shift-journal screens for every company — a
+# timer, a "Log" tab, a calculator — so a mileage or quote app shipped
+# pictures of a product it is not. They are now captured from the built app
+# by ListingScreenshotTest; apps/generator/screenshots.py runs it and copies
+# the results in.
 
 
 def sha256_file(path: Path) -> str:
@@ -650,6 +403,7 @@ def listing_payload(company: dict[str, str]) -> dict:
 
     from . import archetypes as _archetypes
     archetype = _archetypes.get(company.get("archetype") or _archetypes.DEFAULT_ID)
+    shots: dict = company.get("screenshots") or {}
 
     app_title = _truncate_title(display_name)
     short_desc = _validate_short_desc(short_description(role_noun, archetype.id))
@@ -676,10 +430,15 @@ def listing_payload(company: dict[str, str]) -> dict:
         "graphics": {
             "app_icon": "graphics/icon-512.png",
             "feature_graphic": "graphics/feature-graphic.png",
-            "phone_screenshots": [f"graphics/phone-screenshot-{i}.png" for i in range(1, 5)],
-            "tablet_7inch_screenshots": [f"graphics/tablet7-screenshot-{i}.png" for i in range(1, 5)],
-            "tablet_10inch_screenshots": [f"graphics/tablet10-screenshot-{i}.png" for i in range(1, 5)],
+            # What was actually rendered and copied in, not a fixed count of
+            # filenames. The old list claimed four of each size whether or
+            # not they existed, so a failed render still produced a listing
+            # that looked complete.
+            "phone_screenshots": shots.get("phone", []),
+            "tablet_7inch_screenshots": shots.get("tablet7", []),
+            "tablet_10inch_screenshots": shots.get("tablet10", []),
             "screenshot_screens": list(archetype.screenshot_screens),
+            "screenshot_provenance": company.get("screenshot_provenance") or {},
             "specs": {
                 "icon": "512x512 px, 32-bit PNG with alpha, max 1024 KB",
                 "feature_graphic": "1024x500 px, JPEG or 24-bit PNG (no alpha)",
@@ -792,7 +551,9 @@ def backup_keystore(dest_dir: Path, keystore_path: Path, keystore_password: str,
     (signing_dir / "signing.json").write_text(json.dumps(signing, indent=2), encoding="utf-8")
 
 
-def generate_all(company: dict, apk_path: Path | None, aab_path: Path | None, out_dir: Path, primary_color: str) -> None:
+def generate_all(company: dict, apk_path: Path | None, aab_path: Path | None,
+                 out_dir: Path, primary_color: str,
+                 app_dir: str | Path | None = None, flavor: str = "") -> None:
     """Generate all pipeline output assets into a structured tree:
 
     {out_dir}/
@@ -872,9 +633,25 @@ def generate_all(company: dict, apk_path: Path | None, aab_path: Path | None, ou
         except Exception as e:
             print(f"  [{cn}] Privacy policy generation failed: {e}")
 
+    # Screenshots before the listing, not after: the listing manifest names
+    # the files, and it used to name four of each size unconditionally while
+    # a separate step drew them. Collect first, then write a manifest that
+    # describes what is actually on disk.
+    screenshot_groups, screenshot_provenance = ({}, {})
+    if app_dir and flavor:
+        screenshot_groups, screenshot_provenance = screenshots.collect(
+            app_dir, flavor, graphics_dir)
+
     metadata = {
         "display_name": display_name,
         "package": company.get("application_id"),
+        # Carried through because listing_payload needs them and silently
+        # fell back to the default archetype without them: every listing,
+        # mileage and quote included, described a shift journal.
+        "archetype": company.get("archetype"),
+        "sic_codes": company.get("sic_codes"),
+        "screenshots": screenshot_groups,
+        "screenshot_provenance": screenshot_provenance,
         "application_id": company.get("application_id"),
         "domain": company.get("domain"),
         "support_email": company.get("support_email"),
@@ -899,27 +676,6 @@ def generate_all(company: dict, apk_path: Path | None, aab_path: Path | None, ou
                   company_number=cn)
     make_feature_graphic(graphics_dir / "feature-graphic.png", primary_color, display_name,
                          company_number=cn)
-
-    _screens = ["dashboard", "dashboard_active", "log", "calculator"]
-    _role_noun = company.get("role_noun") or "shift"
-    _role_verb_start = company.get("role_verb_start") or "Start Shift"
-    _role_verb_end = company.get("role_verb_end") or "End Shift"
-    _scr_kwargs = dict(role_noun=_role_noun, role_verb_start=_role_verb_start, role_verb_end=_role_verb_end)
-
-    # Phone screenshots: 1080x1920 (min 2, max 8 — we produce 4)
-    for i, scr in enumerate(_screens, 1):
-        make_phone_screenshot(graphics_dir / f"phone-screenshot-{i}.png", primary_color, display_name,
-                              screen=scr, size=(1080, 1920), **_scr_kwargs)
-
-    # 7-inch tablet screenshots: 1200x1920 portrait (min 4 — mandatory)
-    for i, scr in enumerate(_screens, 1):
-        make_phone_screenshot(graphics_dir / f"tablet7-screenshot-{i}.png", primary_color, display_name,
-                              screen=scr, size=(1200, 1920), **_scr_kwargs)
-
-    # 10-inch tablet screenshots: 1600x2560 portrait (min 4 — mandatory)
-    for i, scr in enumerate(_screens, 1):
-        make_phone_screenshot(graphics_dir / f"tablet10-screenshot-{i}.png", primary_color, display_name,
-                              screen=scr, size=(1600, 2560), **_scr_kwargs)
 
     # --- Web pages ---
     make_install_page(web_dir / "install.html", apk_name, aab_name, metadata)

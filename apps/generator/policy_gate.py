@@ -162,6 +162,71 @@ def _tracked_signing_secrets() -> list[str]:
 
 
 # ── per-company checks ──────────────────────────────────────────────────────
+#: Play's minimum per size. Phone takes 2; both tablet sizes take 4 and are
+#: mandatory once a listing offers tablet support, which these do.
+_MIN_SHOTS = {
+    "phone_screenshots": 2,
+    "tablet_7inch_screenshots": 4,
+    "tablet_10inch_screenshots": 4,
+}
+
+
+def _check_screenshots(app, listing: dict, company: Company, src: str) -> list[Finding]:
+    """
+    The pictures, and whether they are pictures of this app.
+
+    Screenshots are rendered from the built app by ListingScreenshotTest,
+    which records the archetype, application id and company number it
+    photographed. Nothing else connects the images to the listing they end up
+    in, so without this a company could publish another app's screenshots —
+    and before the renderer existed, every company published the same drawn
+    shift-journal screens whatever it had actually built.
+    """
+    findings: list[Finding] = []
+    graphics = (listing.get("graphics") or {})
+    provenance = graphics.get("screenshot_provenance") or {}
+
+    for key, minimum in _MIN_SHOTS.items():
+        listed = graphics.get(key) or []
+        present = [p for p in listed if (app / p).exists()]
+        if len(present) < minimum:
+            findings.append(Finding(
+                "blocker", f"missing_{key}",
+                f"Play requires {minimum} {key.replace('_', ' ')}; the listing has "
+                f"{len(present)}. Run the ListingScreenshotTest render before "
+                f"publishing.", src))
+
+    if not provenance:
+        findings.append(Finding(
+            "blocker", "unattributed_screenshots",
+            "The screenshots carry no record of which build they came from, so "
+            "there is no way to tell they are of this app. Re-render them.", src))
+        return findings
+
+    expected = archetypes.for_sic(company.sic_codes)
+    if provenance.get("archetype") != expected.id:
+        findings.append(Finding(
+            "blocker", "screenshot_archetype_mismatch",
+            f"The screenshots were rendered from a '{provenance.get('archetype')}' "
+            f"app, but this company builds '{expected.id}'. Publishing them would "
+            f"show a product this app is not.", src))
+    if provenance.get("company_number") not in ("", None, company.company_number):
+        findings.append(Finding(
+            "blocker", "screenshot_company_mismatch",
+            f"The screenshots belong to company {provenance.get('company_number')}, "
+            f"not {company.company_number}.", src))
+
+    captions = graphics.get("screenshot_screens") or []
+    shots = provenance.get("shots") or []
+    if captions and shots and len(captions) != len(shots):
+        findings.append(Finding(
+            "warning", "screenshot_caption_drift",
+            f"The listing describes {len(captions)} screens but {len(shots)} were "
+            f"rendered. One of archetypes.py or ListingScreenshotTest has moved "
+            f"without the other.", src))
+    return findings
+
+
 def evaluate_company(company: Company, require_aab: bool = True) -> list[Finding]:
     findings: list[Finding] = []
     src = company.company_number
@@ -245,11 +310,11 @@ def evaluate_company(company: Company, require_aab: bool = True) -> list[Finding
                                 "No APK for on-device testing before submission.", src))
 
     graphics = app / "graphics"
-    for asset in ("icon-512.png", "feature-graphic.png",
-                  "phone-screenshot-1.png", "phone-screenshot-2.png"):
+    for asset in ("icon-512.png", "feature-graphic.png"):
         if not (graphics / asset).exists():
             findings.append(Finding("blocker", f"missing_{asset}",
                                     f"Required listing asset missing: graphics/{asset}", src))
+    findings += _check_screenshots(app, listing, company, src)
 
     if safety and not safety.get("_invalid_json"):
         if safety.get("collects_user_data") is not False or safety.get("shares_user_data") is not False:

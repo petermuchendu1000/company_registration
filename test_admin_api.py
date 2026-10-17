@@ -388,18 +388,32 @@ def test_import_accepts_the_pasted_text_the_dialog_sends() -> None:
 
 def test_importing_clears_the_alert_it_was_offered_for() -> None:
     """Otherwise the console keeps telling you to do what you just did."""
+    def pool_missing() -> int:
+        """
+        How many tenants the alert is speaking for.
+
+        Not whether this slug appears in it: a grouped alert names three
+        tenants and counts the rest, so once a fourth tenant has the same
+        problem — which a shared scratch database arranges quickly — the
+        tenant under test is invisible and the assertion fails for a reason
+        that has nothing to do with the import.
+        """
+        for a in ADMIN.get("/api/v2/admin/overview").get_json()["alerts"]:
+            if a["kind"] == "pool_missing":
+                return a.get("count") or 1
+        return 0
+
     tid, slug = _tenant("adm-bad")
     db.add_company(tid, "50000009", "EMPTY POOL LTD", "2021-01-01")
-    before = {a["kind"] for a in ADMIN.get("/api/v2/admin/overview").get_json()["alerts"]
-              if slug in (a.get("tenants") or []) or a.get("tenant") == slug}
-    assert "pool_missing" in before, before
+    before = pool_missing()
+    assert before, "adding a company to a tenant with no pool raised no alert"
 
     ADMIN.post(f"/api/v2/admin/tenants/{slug}/emails",
                json={"emails": "\n".join(f"{slug}-{i}@gmail.com" for i in range(30))})
 
-    after = {a["kind"] for a in ADMIN.get("/api/v2/admin/overview").get_json()["alerts"]
-             if slug in (a.get("tenants") or []) or a.get("tenant") == slug}
-    assert "pool_missing" not in after, f"the alert survived the import: {after}"
+    after = pool_missing()
+    assert after == before - 1, \
+        f"the alert still speaks for {after} tenants, was {before}"
     print("  OK  importing addresses clears the alert that asked for them")
 
 

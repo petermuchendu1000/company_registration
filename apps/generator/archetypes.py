@@ -32,6 +32,13 @@ class Archetype:
                appends `{src_dir}/java` to the flavor's Kotlin source set.
     modules  — the screens this archetype contributes, named for the listing.
                The policy gate reads these to tell archetypes apart.
+
+    screenshot_screens is the listing's caption for each store screenshot,
+    in order. The pictures themselves are rendered from the built app by
+    ListingScreenshotTest, not from anything here; the policy gate checks
+    that this list and what the test produced are the same length and for
+    the same archetype, so a caption cannot describe a screen that is not
+    in the set.
     """
 
     id: str
@@ -52,10 +59,10 @@ SHIFT = Archetype(
     ),
     modules=("timer_home", "session_log"),
     screenshot_screens=(
-        "Home — idle, no active session",
-        "Home — session running with elapsed timer and note field",
+        "Home — timer and recent activity",
         "Log — session history with per-day totals",
         "Reference — trade figures",
+        "Contact — address, email and website",
     ),
 )
 
@@ -70,10 +77,10 @@ MILEAGE = Archetype(
     ),
     modules=("journey_entry", "journey_list", "tax_year_summary"),
     screenshot_screens=(
-        "Home — new journey with odometer readings",
-        "Home — tax-year summary with the 10,000-mile band split",
+        "Home — journey entry and tax-year relief",
         "Journeys — journey history grouped by month",
         "Reference — trade figures",
+        "Contact — address, email and website",
     ),
 )
 
@@ -88,10 +95,10 @@ QUOTE = Archetype(
     ),
     modules=("quote_builder", "line_items", "saved_quotes"),
     screenshot_screens=(
-        "Quote — line items with net, VAT and total",
-        "Quote — adding a labour line",
-        "Saved — quotes by client with totals",
+        "Estimate — lines, VAT and total",
+        "Saved — estimates by client with totals",
         "Reference — trade figures",
+        "Contact — address, email and website",
     ),
 )
 

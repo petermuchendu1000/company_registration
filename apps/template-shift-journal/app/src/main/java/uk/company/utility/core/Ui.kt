@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import uk.company.utility.BuildConfig
 
@@ -123,16 +124,31 @@ fun StatPill(mod: Modifier, value: String, label: String) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // The value is the weighted one. A Row measures its unweighted
+            // children first, so this is what lets the one-word label claim
+            // its intrinsic width before the value takes the rest. The other
+            // way round, a long value left the label nothing and Compose
+            // broke it inside the word: "£1,072.80" next to "to / ta / l".
             Text(
                 value,
-                style = MaterialTheme.typography.titleLarge,
+                // Two of these sit side by side, so half a phone's width has
+                // to hold a value and its label. A count fits at titleLarge;
+                // a formatted money total does not, and "£1,072.80" was
+                // ellipsised down to "£1,072…". One step smaller fits.
+                style = if (value.length > 7) MaterialTheme.typography.titleMedium
+                        else MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
             Text(
                 label,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }

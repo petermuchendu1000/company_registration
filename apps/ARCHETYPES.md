@@ -82,7 +82,12 @@ mileage APK the reverse. The separation survives R8 in the release bundle.
    so an unused constant cannot drift away from the code that reads it.
 3. Create `app/src/<src_dir>/java/uk/company/utility/arch/` with an object
    implementing `Archetype` and a top-level `activeArchetype()`.
-4. If the store copy needs to change, extend `short_description` and
+4. Add a branch to `plan()` in `ListingScreenshotTest` naming which tabs to
+   photograph for the store listing, and seed records for them in `seed()`.
+   The screenshots are captured from the running app, so an archetype with
+   no branch there publishes another archetype's default set — the policy
+   gate blocks that, but only after the build.
+5. If the store copy needs to change, extend `short_description` and
    `full_description` in `apps/generator/assets.py`. Describing a mileage log
    as a one-tap timer is a metadata violation as well as a lie.
 
@@ -125,11 +130,8 @@ move, change them there and rebuild.
   cannot prove `CalculatorScreen` unreachable in a mileage or quote build.
   The tab is gone and the user never sees it, but the class ships. Moving the
   shared screens into opt-in source directories would fix it properly.
-- **Screenshots are still synthetic.** `assets.py` draws a mock of the shift
-  home screen for every app. The listing now *names* the right screens via
-  `selected_modules` and `screenshot_screens`, but the PNGs do not match a
-  mileage app yet. Submitting those would be a metadata problem. They need to
-  come from a real device or emulator.
-- **Signing passwords are still written into `build.gradle.kts`**, which is
-  tracked. The gate blocks on `signing_secrets_in_vcs` until that moves to a
-  git-ignored properties file or the environment.
+- **Tablet layouts are the phone layout, stretched.** The 10-inch
+  screenshots are honest — they show what a tablet user sees — and what they
+  show is a single narrow column with a lot of empty space below it. Nothing
+  is broken and nothing is misrepresented, but the listing would be stronger
+  with a layout that uses the width.

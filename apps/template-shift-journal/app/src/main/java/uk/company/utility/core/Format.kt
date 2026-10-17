@@ -47,3 +47,15 @@ fun initials(name: String): String {
         else -> name.take(2)
     }.uppercase()
 }
+
+/** The right noun for [n]: "line" or "lines", "entry" or "entries". */
+fun pluralNoun(n: Int, singular: String, pluralForm: String = singular + "s"): String =
+    if (n == 1) singular else pluralForm
+
+/**
+ * "1 line", "3 lines". Every count the UI shows sits next to a noun, and
+ * every one of them read "1 lines" until a store screenshot of a one-line
+ * estimate made it obvious.
+ */
+fun plural(n: Int, singular: String, pluralForm: String = singular + "s"): String =
+    "$n " + pluralNoun(n, singular, pluralForm)

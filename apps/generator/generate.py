@@ -35,6 +35,7 @@ from .flavor_writer import (
 )
 from .keystore_mint import mint as mint_keystore
 from . import assets
+from . import screenshots
 from . import toolchain
 
 
@@ -147,8 +148,40 @@ def collect_artifacts(built: list[BuiltFlavor], variant: str = "release", artifa
     return out
 
 
+def render_listing_screenshots(built: list[BuiltFlavor]) -> int:
+    """
+    Photograph each built app for its store listing.
+
+    One Gradle invocation renders every flavor: the unit test drives the real
+    MainActivity under Robolectric and writes PNGs under
+    app/build/listing-shots/<flavor>/, which generate_all then copies into
+    each company's listing. Debug variant deliberately — the UI is the same
+    and a release unit test would run against minified code for no gain.
+
+    A non-zero return is not fatal here. The listing records only the
+    screenshots that reached disk, and the policy gate refuses to publish a
+    listing that is short of them, so a failure surfaces as a blocked publish
+    with a reason rather than as a silent set of missing files.
+    """
+    if not built:
+        return 0
+    try:
+        launcher = toolchain.gradle_command(TEMPLATE_ROOT)
+    except FileNotFoundError as e:
+        print(f"  ERROR: {e}")
+        return 1
+    return screenshots.render(
+        launcher, TEMPLATE_ROOT, [b.company.flavor for b in built])
+
+
 def backup_and_make_assets(built: list[BuiltFlavor], collected: dict[str, dict[str, str]]) -> None:
     """For each built flavor, copy keystore, generate assets, and write manifest."""
+    # Once for the whole set, before the per-company loop: one Gradle start-up
+    # covers every flavor, and generate_all below only copies what this put on
+    # disk. It runs even when the caller skipped the assemble/bundle step —
+    # that skips packaging, and a listing still needs its screenshots.
+    render_listing_screenshots(built)
+
     for b in built:
         c = b.company
         out_dir = _co_dir(c)
@@ -170,11 +203,13 @@ def backup_and_make_assets(built: list[BuiltFlavor], collected: dict[str, dict[s
             "application_id": c.application_id,
             "domain": c.domain,
             "archetype": archetype_for(c).id,
+            "sic_codes": c.sic_codes,
             "role_noun": vocab["ROLE_NOUN"],
             "role_verb_start": vocab["ROLE_VERB_START"],
             "role_verb_end": vocab["ROLE_VERB_END"],
             "export_title": vocab["EXPORT_TITLE"],
-        }, Path(apk_path) if apk_path else None, Path(aab_path) if aab_path else None, Path(out_dir), palette.primary)
+        }, Path(apk_path) if apk_path else None, Path(aab_path) if aab_path else None,
+            Path(out_dir), palette.primary, app_dir=APP_DIR, flavor=c.flavor)
 
 
 def generate_from_pipeline_results(

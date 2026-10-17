@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import org.json.JSONArray
 import org.json.JSONObject
 import uk.company.utility.BuildConfig
+import uk.company.utility.core.plural
 import uk.company.utility.core.AccentCard
 import uk.company.utility.core.Archetype
 import uk.company.utility.core.BreakdownRow
@@ -246,7 +247,8 @@ private fun BuilderScreen(
                 color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.20f),
             ) {
                 Text(
-                    if (lines.isEmpty()) "No lines yet" else "${lines.size} lines · ${fmtPence(net + vat)}",
+                    if (lines.isEmpty()) "No lines yet"
+                    else "${plural(lines.size, "line")} · ${fmtPence(net + vat)}",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = androidx.compose.ui.graphics.Color.White,
@@ -529,7 +531,7 @@ private fun QuoteRow(quote: Quote) {
                         fontWeight = FontWeight.Medium,
                     )
                     Text(
-                        "${fmtDate(quote.atMs)} · ${quote.lines.size} lines",
+                        "${fmtDate(quote.atMs)} · ${plural(quote.lines.size, "line")}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

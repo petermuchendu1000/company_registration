@@ -56,6 +56,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import org.json.JSONObject
 import uk.company.utility.BuildConfig
+import uk.company.utility.core.pluralNoun
 import uk.company.utility.core.AccentCard
 import uk.company.utility.core.Archetype
 import uk.company.utility.core.BreakdownRow
@@ -554,7 +555,7 @@ private fun JourneysScreen(pad: PaddingValues, journeys: List<Journey>) {
                 .padding(bottom = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            StatPill(Modifier.weight(1f), ordered.size.toString(), "journeys")
+            StatPill(Modifier.weight(1f), ordered.size.toString(), pluralNoun(ordered.size, "journey"))
             StatPill(Modifier.weight(1f), fmtMiles(totalMiles), "miles")
         }
 

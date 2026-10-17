@@ -130,6 +130,34 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // The store screenshots are rendered by a JVM unit test that drives the
+    // real Compose UI (src/test/.../shots/ListingScreenshotTest.kt), so what
+    // Play receives is the app rather than a drawing of it. Robolectric needs
+    // the compiled resources to inflate the theme, and NATIVE graphics mode
+    // needs a real Canvas to capture from.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all { test ->
+                test.systemProperty("robolectric.graphicsMode", "NATIVE")
+                // Where the rendered PNGs land: build/listing-shots/<flavor>.
+                // Keyed by flavor rather than by a -P property so that one
+                // Gradle invocation can render every flavor at once — a
+                // property is global to the build and all of them would
+                // write over each other. apps/generator/generate.py reads
+                // back from this path.
+                val flavor = test.name
+                    .removePrefix("test").removeSuffix("UnitTest")
+                    .removeSuffix("Debug").removeSuffix("Release")
+                    .replaceFirstChar { it.lowercase() }
+                test.systemProperty(
+                    "shots.dir",
+                    layout.buildDirectory.dir("listing-shots/$flavor").get().asFile.path,
+                )
+            }
+        }
+    }
 }
 
 dependencies {
@@ -143,6 +171,12 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.datastore)
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
 
 // ── Zero-permission invariant ───────────────────────────────────────────────

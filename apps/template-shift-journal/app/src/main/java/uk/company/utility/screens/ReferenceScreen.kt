@@ -83,6 +83,13 @@ private fun ReferenceRow(k: String, v: String) {
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.End,
+                // Weighted, or a long value takes the width it wants and
+                // leaves the key a sliver to break inside a word in:
+                // "Companies House Filing" rendered as "Companie / s House /
+                // Filing" next to "Annual confirmation statement". fill=false
+                // so a short value ("20%") still sits against the right edge
+                // instead of padding out to half the row.
+                modifier = Modifier.weight(1f, fill = false),
             )
         }
     }

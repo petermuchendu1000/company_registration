@@ -1543,6 +1543,12 @@ def admin_user_count() -> int:
 TEST_TENANT_PREFIXES = (
     "acl", "adm-ok", "adm-bad", "adm-solo", "alpha", "beta",
     "e2e", "e2efail", "e2eother", "cpaths",
+    # Left behind by the mailbox-pool, job-tenancy and admin suites. Their
+    # debris skews the admin console's own numbers, which is how it was
+    # noticed: a grouped alert counted 8 tenants with no mailbox pool, all
+    # of them dead test fixtures.
+    "mailpool-a", "mailpool-b", "mailpool-c",
+    "jobsafe-a", "jobsafe-b", "realco",
 )
 
 _TEST_SLUG_SUFFIX = r"-[0-9a-f]{8}$"
