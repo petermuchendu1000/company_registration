@@ -9,6 +9,7 @@ pipeline_output/apps/*/*.jks
 # password in plaintext (duns_automation.py stores it under temp_email), so
 # it must never reach the repository.
 duns_requests.json
+duns_requests.json.lock
 
 # Generated pipeline output (data, not code)
 pipeline_output/companies/

@@ -7,6 +7,7 @@ Automates D-U-N-S number lookup and request for UK companies using:
 """
 
 import requests
+import contextlib
 import json
 import time
 import random
@@ -40,9 +41,75 @@ DUNS_DB_FILE = os.path.join(os.path.dirname(__file__), "duns_requests.json")
 # records, and one run left the file unparseable.
 _DUNS_DB_LOCK = threading.Lock()
 
+# Cross-process serialisation. _DUNS_DB_LOCK above covers only threads in
+# ONE process, and app.py can genuinely run twice: its __main__ loops over
+# ten ports (app.py:802-817), so `python app.py` while the systemd service
+# is up binds a different port instead of refusing to start, and both
+# processes then write this file holding independent threading locks. The
+# same applies to a restart overlap, and to workers > 1 if the constraint in
+# gunicorn.conf.py were ever ignored.
+#
+# The lock lives on a SIDECAR file, never on DUNS_DB_FILE itself. Measured:
+# an flock taken on the data file stops protecting it the moment
+# _save_duns_db_locked publishes with os.replace, because the rename swaps
+# the inode and another process opening the path gets a different one. A
+# child process acquired the lock immediately after such a replace, while
+# the same test against a sidecar that is never replaced blocked correctly.
+#
+# fcntl is a Unix-only module and this is run locally on Windows, so a
+# missing module degrades to threading-only rather than making
+# duns_automation unimportable there.
+try:
+    import fcntl as _fcntl
+except ImportError:                     # not POSIX
+    _fcntl = None
+
+_DUNS_LOCK_FILE = DUNS_DB_FILE + ".lock"
+
+# A holder keeps this lock only across a load and a save of a small JSON
+# file - milliseconds - so ten seconds is several orders of magnitude of
+# headroom rather than a tuned figure. flock is released by the kernel when
+# a process exits, so the wait cannot be held up by a crashed holder; only
+# by a live one, which is a real conflict and better failed than raced past.
+_DUNS_LOCK_TIMEOUT = 10.0
+
+
+@contextlib.contextmanager
+def _duns_file_lock():
+    """Hold an exclusive cross-process lock covering the DUNS store.
+
+    Always taken INSIDE _DUNS_DB_LOCK, in that order on every path, so there
+    is no lock-order inversion to deadlock on.
+    """
+    if _fcntl is None:
+        yield
+        return
+    fd = os.open(_DUNS_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        deadline = time.monotonic() + _DUNS_LOCK_TIMEOUT
+        while True:
+            try:
+                _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"could not lock {_DUNS_LOCK_FILE} within "
+                        f"{_DUNS_LOCK_TIMEOUT:.0f}s: another process holds "
+                        f"it. Look for a second app.py - its __main__ tries "
+                        f"ten ports, so it can start alongside the service."
+                    ) from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
 
 def _load_duns_db():
-    with _DUNS_DB_LOCK:
+    with _DUNS_DB_LOCK, _duns_file_lock():
         return _load_duns_db_locked()
 
 
@@ -75,7 +142,7 @@ def _save_duns_db(db):
 
     Prefer _put_duns_record for a single company - see why there.
     """
-    with _DUNS_DB_LOCK:
+    with _DUNS_DB_LOCK, _duns_file_lock():
         _save_duns_db_locked(db)
 
 
@@ -111,8 +178,12 @@ def _put_duns_record(company_number, record):
 
     Re-reading under the lock and replacing only this company's key means a
     stale snapshot can no longer clobber a company it never touched.
+
+    Both locks are held across the read AND the write. Holding them only for
+    the write would leave the cross-process read-modify-write racing, which
+    is the whole reason this function exists.
     """
-    with _DUNS_DB_LOCK:
+    with _DUNS_DB_LOCK, _duns_file_lock():
         current = _load_duns_db_locked()
         current[company_number] = record
         _save_duns_db_locked(current)

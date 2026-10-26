@@ -189,6 +189,20 @@ systemctl status companyreg --no-pager
 `workers = 1` in `gunicorn.conf.py` is a correctness constraint, not tuning:
 the job table lives in process memory. Do not raise it.
 
+**Do not run `python app.py` while the service is up.** Its `__main__`
+loops over ten ports, so it will not refuse to start — it binds a different
+one and you end up with two app processes. `duns_requests.json` is now
+guarded by an `fcntl.flock` on a `duns_requests.json.lock` sidecar, so the
+two cannot corrupt the store or lose each other's records, but the second
+process still has its own in-memory job table and the dashboard will
+disagree with itself about what is running. Use `systemctl stop companyreg`
+first.
+
+If a DUNS operation ever fails with "could not lock
+duns_requests.json.lock", that is this situation: something else holds the
+lock. Find the second process. The lock is released by the kernel when a
+process exits, so a crash cannot leave it stuck.
+
 ## 7. Access — do not expose this publicly
 
 `gunicorn.conf.py` binds `127.0.0.1:8000` on purpose. Reach it over
