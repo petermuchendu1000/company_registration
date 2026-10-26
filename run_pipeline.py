@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import logging
 import re
 import json
 import os
@@ -34,6 +35,11 @@ except ModuleNotFoundError:
 load_dotenv()
 
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
+
+# Audit channel for anything that can spend money. Every billed
+# namecheap.domains.create order and its outcome is recorded here, so there
+# is a record of the charge outside the company row itself.
+_money_log = logging.getLogger("money")
 try:
     db.ensure_schema()
 except Exception as _e:
@@ -603,6 +609,10 @@ def register_company_domain(company_name, details):
                      f"blind risks a second charge.",
         }
 
+    # Logged BEFORE the call, not after: if the process dies mid-order this
+    # line is the only evidence that money may have moved.
+    _money_log.info("issuing namecheap.domains.create cn=%s domain=%s years=1",
+                    cn, domain)
     reg_result = register_domain(domain, years=1, registrant_info=registrant_info)
 
     if "error" in reg_result:
@@ -614,6 +624,9 @@ def register_company_domain(company_name, details):
         # stage runner both treat a present "domain" as proof of purchase,
         # so returning it on a failure records a domain that was never
         # bought and marks the stage complete for good.
+        _money_log.warning(
+            "domain order REJECTED cn=%s domain=%s; nothing charged, claim "
+            "released: %s", cn, domain, reg_result["error"])
         db.update_row(cn, {"Domain Status": "error"})
         return {
             "status": "error",
@@ -640,6 +653,12 @@ def register_company_domain(company_name, details):
     # account can resolve it.
     if not reg_result.get("registered"):
         charged = reg_result.get("charged", "")
+        _money_log.error(
+            "domain order UNRESOLVED cn=%s domain=%s charged=%s order=%s; "
+            "Namecheap reported Registered=false, claim KEPT to prevent a "
+            "second charge - reconcile by hand",
+            cn, domain, charged or "unknown",
+            reg_result.get("order_id") or "unknown")
         if charged:
             # Record the amount WITHOUT touching domain_status, so the claim
             # survives while the operator has the figure to reconcile with.
@@ -662,6 +681,9 @@ def register_company_domain(company_name, details):
     # Registered. Record the outcome, which also releases the claim.
     # db.update_row raises if the write fails; that exception must propagate,
     # because the surviving claim is what stops a second purchase.
+    _money_log.info("domain REGISTERED cn=%s domain=%s charged=%s order=%s",
+                    cn, domain, reg_result.get("charged") or "unknown",
+                    reg_result.get("order_id") or "unknown")
     db.update_row(cn, {
         "Domain": domain,
         "Domain Status": "registered",
@@ -1477,6 +1499,13 @@ def generate_play_console_dossier_only():
 
 
 if __name__ == "__main__":
+    # This file is also run as a subprocess by the dashboard
+    # (wizard_routes._resolve_pipeline_script), which is a separate process
+    # from app.py, so it has to configure its own logging or the money audit
+    # trail and browser_stealth's diagnostics would be discarded here.
+    from logging_setup import configure_logging
+    configure_logging()
+
     parser = argparse.ArgumentParser(description="Companies Pipeline")
     parser.add_argument("--count", type=int, default=1, help="Number of companies to process")
     parser.add_argument("--nationality", default="kenyan", help="Officer nationality filter")

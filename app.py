@@ -1,4 +1,6 @@
-from flask import Flask, request, jsonify, send_from_directory, Response
+from flask import Flask, request, jsonify, send_from_directory, Response, g
+import logging
+import uuid
 import requests as http_requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -12,6 +14,42 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__, static_folder="static")
+
+# --- Observability ---
+# Configured here, before the auth gate below, so that rejected requests are
+# logged too: a 401 is exactly the event worth seeing on a system that can
+# spend money. Nothing configured logging before this, so the ~30
+# logger.info calls already present in browser_stealth.py were being
+# discarded - see logging_setup for why that matters.
+from logging_setup import configure_logging
+configure_logging()
+log = logging.getLogger("app")
+
+
+@app.before_request
+def _assign_request_id():
+    """Give every request a short id so its log lines can be correlated."""
+    g.request_id = uuid.uuid4().hex[:8]
+    g.request_started = time.perf_counter()
+
+
+@app.after_request
+def _log_request(response):
+    try:
+        started = getattr(g, "request_started", None)
+        if started is not None:
+            log.info("%s %s -> %s in %.0fms", request.method, request.path,
+                     response.status_code,
+                     (time.perf_counter() - started) * 1000)
+        else:
+            log.info("%s %s -> %s", request.method, request.path,
+                     response.status_code)
+    except Exception:
+        # Logging must never be the reason a response fails to return.
+        pass
+    response.headers["X-Request-Id"] = getattr(g, "request_id", "")
+    return response
+
 
 # --- Single-operator authentication gate ---
 # Every route in this app was previously reachable with no credentials,

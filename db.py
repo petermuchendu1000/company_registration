@@ -22,6 +22,7 @@ Public API:
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 import time
@@ -361,6 +362,11 @@ def update_row(cn: str, updates: dict) -> None:
 # "never bought" and the next run buys a second domain.
 DOMAIN_CLAIM = "purchasing"
 
+# Audit channel for anything that can spend money. Deliberately a named
+# logger rather than module-level, so it can be routed or kept when the rest
+# of the application logging is turned down.
+_money_log = logging.getLogger("money")
+
 
 def claim_domain_purchase(cn: str) -> bool:
     """Atomically claim the exclusive right to buy a domain for `cn`.
@@ -400,6 +406,13 @@ def claim_domain_purchase(cn: str) -> bool:
         )
         claimed = cur.rowcount == 1
     _invalidate()
+    if claimed:
+        _money_log.info("domain purchase claim TAKEN cn=%s", cn)
+    else:
+        _money_log.warning(
+            "domain purchase claim REFUSED cn=%s: an earlier attempt is "
+            "unresolved (domain_status=%s); a domain may already have been "
+            "bought and charged", cn, DOMAIN_CLAIM)
     return claimed
 
 
