@@ -561,15 +561,40 @@ def import_from_excel(path: str) -> int:
             for header, col in COLUMNS:
                 if col == "company_number":
                     continue
-                if header in rec:
-                    set_cols[col] = _norm(rec.get(header))
+                if header not in rec:
+                    continue
+                value = _norm(rec.get(header))
+                if value is None:
+                    # An import must never reduce information. A blank cell
+                    # means "the spreadsheet does not know this", not "clear
+                    # it". _norm maps "" to None, so without this skip the
+                    # EXCLUDED assignments below wrote NULL over live values.
+                    #
+                    # That was not merely lossy, it was a money hazard:
+                    # domain_status carries the purchase claim (DOMAIN_CLAIM)
+                    # that stops a second billed namecheap.domains.create,
+                    # and the Domain column is what api_v2._compute_stages
+                    # reads to decide the domain stage is finished. Nulling
+                    # either one lets run-all buy a second domain. Measured
+                    # against a stale sheet with blank domain cells: the
+                    # claim became None and a fresh claim then succeeded.
+                    #
+                    # save_results already filters empties this way; this
+                    # function did not.
+                    continue
+                set_cols[col] = value
             cols = list(set_cols.keys())
             vals = list(set_cols.values())
             placeholders = ", ".join(["%s"] * len(cols))
-            updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "company_number")
+            updates = ", ".join(f"{c} = EXCLUDED.{c}"
+                                for c in cols if c != "company_number")
+            # A row carrying nothing but a company number still creates the
+            # company, but must not generate "DO UPDATE SET " with an empty
+            # assignment list, which is a syntax error.
+            conflict = f"DO UPDATE SET {updates}" if updates else "DO NOTHING"
             cur.execute(
                 f"INSERT INTO {TABLE} ({', '.join(cols)}) VALUES ({placeholders}) "
-                f"ON CONFLICT (company_number) DO UPDATE SET {updates}",
+                f"ON CONFLICT (company_number) {conflict}",
                 vals,
             )
             imported += 1

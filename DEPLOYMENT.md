@@ -212,15 +212,60 @@ First start runs `ensure_schema`, which now reconciles columns with
 your live Supabase table.** Additive, nullable, metadata-only in Postgres —
 no table rewrite. Rollback is `DROP COLUMN short_name`.
 
-## 9. Still your decision: the spreadsheet
+## 9. The spreadsheet import
 
-Both UIs now read Postgres. **Any company that exists only in your Excel
-file will not appear.** `db.import_from_excel(path)` exists for this. It
-mutates production rows, so it has not been run.
+Both UIs now read Postgres, so **any company that exists only in your Excel
+file will not appear** until it is imported.
+
+`import_from_excel` was **not safe to run** as originally written, and this
+was measured, not suspected. It included a column whenever the HEADER was
+present, whatever the cell held, and `_norm` maps `""` to `None`, so every
+blank cell wrote NULL over a live value. Against a sheet with blank domain
+columns:
+
+```
+domain_status  'purchasing'       -> None    (purchase claim destroyed)
+domain         'alreadybought.uk' -> None    (owned domain erased)
+then: claim_domain_purchase() -> True        (a second billed order allowed)
+      _compute_stages domain   -> False      (run-all would buy again)
+```
+
+It now skips blank cells, so an import can add rows and fill gaps but never
+erase. **A populated cell still overwrites a populated column** — that is
+what an import is for — so the sheet must be right about anything it does
+fill in.
 
 ```bash
-# only when you have decided
+# Dry-run first: see what is only in the sheet before writing anything.
+.venv/bin/python - <<'PY'
+import db, openpyxl
+wb = openpyxl.load_workbook('pipeline_output/companies_pipeline.xlsx',
+                            data_only=True, read_only=True)
+ws = wb.active
+it = ws.iter_rows(values_only=True)
+hdr = [str(v or '').strip() for v in next(it)]
+i = hdr.index('Company Number')
+sheet = {db._cn8(r[i]) for r in it if r and r[i]}
+have = db.company_numbers()
+print('in sheet      :', len(sheet))
+print('in Postgres   :', len(have))
+print('sheet only    :', sorted(sheet - have))
+print('Postgres only :', sorted(have - sheet))
+PY
+
+# Then, once the above looks right:
 .venv/bin/python -c "import db; print(db.import_from_excel('pipeline_output/companies_pipeline.xlsx'))"
+```
+
+Check afterwards that no claim was disturbed:
+
+```bash
+.venv/bin/python -c "
+import db
+rows = db.all_rows()
+print('rows with an outstanding purchase claim:',
+      [r['Company Number'] for r in rows
+       if r.get('Domain Status') == db.DOMAIN_CLAIM])"
 ```
 
 ## 10. Verification — each step can fail
