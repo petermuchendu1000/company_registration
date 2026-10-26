@@ -285,7 +285,26 @@ erase. **A populated cell still overwrites a populated column** — that is
 what an import is for — so the sheet must be right about anything it does
 fill in.
 
-### Always diff before importing
+### First, verify the live schema
+
+```bash
+cd /opt/company_registration
+.venv/bin/python db.py --verify        # read-only; exits non-zero on a mismatch
+```
+
+This is the check that cannot be done anywhere but against the real
+database: whether the live table matches `db.COLUMNS`, how many companies
+there are, and — printed last and loudly — whether any company holds an
+outstanding `'purchasing'` claim. A claim means a domain may already have
+been bought and charged without its outcome being recorded; reconcile it
+against Namecheap before running the domain stage for that company again.
+
+`--verify` and `--diff` deliberately do **not** run `ensure_schema`, so
+neither can alter the database. If the table predates a column this code
+expects, they say so and exit 1 rather than silently repairing it; `python
+db.py` with no arguments is what adds columns.
+
+### Then diff before importing
 
 `python db.py --diff` is read-only and shows the field-level consequences.
 It shares its parse with `import_from_excel`, so it cannot drift from the

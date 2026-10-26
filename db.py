@@ -28,6 +28,7 @@ import threading
 import time
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extras
 import psycopg2.pool
 
@@ -708,14 +709,110 @@ def import_from_excel(path: str) -> int:
 
 if __name__ == "__main__":
     import sys
-    ensure_schema()
-    print(f"Schema ready. Table '{TABLE}' has {len(COLUMNS)} mapped columns.")
+
+    _cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    # --diff and --verify must not touch the schema. ensure_schema() issues
+    # ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so running it first would
+    # mean a command documented as read-only could change the database, and
+    # --verify in particular could not report the state it was asked about
+    # because it would have just repaired it.
+    _READ_ONLY_CMDS = ("--diff", "--verify")
+    if _cmd not in _READ_ONLY_CMDS:
+        ensure_schema()
+        print(f"Schema ready. Table '{TABLE}' has {len(COLUMNS)} mapped columns.")
+
+    if _cmd == "--verify":
+        # Read-only. Answers the questions that cannot be checked anywhere
+        # but against the live database.
+        print(f"\nVerifying '{TABLE}' against db.COLUMNS ({len(COLUMNS)} "
+              f"mapped columns). Nothing is written.\n")
+        with _cursor() as cur:
+            cur.execute(
+                "select column_name, data_type from information_schema.columns "
+                "where table_schema = 'public' and table_name = %s",
+                (TABLE,),
+            )
+            live = {r["column_name"]: r["data_type"] for r in cur.fetchall()}
+
+        if not live:
+            print(f"  TABLE '{TABLE}' DOES NOT EXIST in the public schema.")
+            print("  Run `python db.py` with no arguments to create it.")
+            sys.exit(1)
+
+        expected = [c for _, c in COLUMNS]
+        missing = [c for c in expected if c not in live]
+        extra = [c for c in live if c not in expected and c != "updated_at"]
+
+        print(f"  columns live        : {len(live)}")
+        print(f"  columns expected    : {len(expected)} (+ updated_at)")
+        print(f"  missing from live   : {missing or 'none'}")
+        print(f"  present but unmapped: {extra or 'none'}")
+        if missing:
+            print("\n  Missing columns mean every SELECT naming them fails.")
+            print("  `python db.py` with no arguments adds them "
+                  "(ADD COLUMN IF NOT EXISTS, metadata-only).")
+
+        # Each query is guarded on the column existing. Querying domain_status
+        # unconditionally would crash on exactly the schema this command is
+        # meant to report on.
+        with _cursor() as cur:
+            cur.execute(f"select count(*) as n from {TABLE}")
+            total = cur.fetchone()["n"]
+            claims = None
+            if "domain_status" in live:
+                cur.execute(
+                    f"select company_number from {TABLE} "
+                    f"where domain_status = %s order by company_number",
+                    (DOMAIN_CLAIM,),
+                )
+                claims = [r["company_number"] for r in cur.fetchall()]
+            with_domain = None
+            if "domain" in live:
+                cur.execute(
+                    f"select count(*) as n from {TABLE} "
+                    f"where domain is not null and domain <> ''"
+                )
+                with_domain = cur.fetchone()["n"]
+
+        print(f"\n  companies           : {total}")
+        print(f"  with a domain       : "
+              f"{with_domain if with_domain is not None else 'n/a (column missing)'}")
+        if claims is None:
+            print("  outstanding claims  : n/a (domain_status column missing)")
+        elif claims:
+            # Printed last, and loudly: each one may represent a domain that
+            # was bought and charged without its outcome being recorded.
+            print(f"\n  OUTSTANDING PURCHASE CLAIMS ('{DOMAIN_CLAIM}'): "
+                  f"{len(claims)}")
+            for cn in claims:
+                print(f"    {cn}")
+            print("  Each of these may already have been bought and charged. "
+                  "Reconcile against\n  the Namecheap account before running "
+                  "the domain stage for them again.")
+        else:
+            print("  outstanding claims  : none")
+        print()
+        # Non-zero when the schema does not match, so this is usable as a
+        # gate in a deploy script rather than something a human must read.
+        sys.exit(1 if missing else 0)
     DEFAULT_SHEET = "pipeline_output/companies_pipeline.xlsx"
 
     if len(sys.argv) > 1 and sys.argv[1] == "--diff":
         # Read-only. Run this before --import, every time.
         path = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_SHEET
-        d = diff_from_excel(path)
+        try:
+            d = diff_from_excel(path)
+        except psycopg2.errors.UndefinedColumn as e:
+            # This command deliberately does not run ensure_schema, so a
+            # table older than db.COLUMNS fails here instead of being
+            # silently altered by a "read-only" command. Say so plainly
+            # rather than printing a traceback.
+            print(f"\nThe database is missing a column this code expects: {e}"
+                  .rstrip())
+            print("Run `python db.py --verify` to see which, then "
+                  "`python db.py` with no arguments to add them.")
+            sys.exit(1)
         print(f"\nDiff of {path} against the database (nothing written):")
         print(f"  companies the sheet would create : {len(d['new_companies'])}")
         print(f"  fields it would fill in          : {d['additions']}")
