@@ -13,6 +13,64 @@ load_dotenv()
 
 app = Flask(__name__, static_folder="static")
 
+# --- Single-operator authentication gate ---
+# Every route in this app was previously reachable with no credentials,
+# including the stage runner that issues billed namecheap.domains.create
+# orders (api_v2.py:554 -> run_pipeline.py:582). One app-wide before_request
+# is the smallest fix that closes the root cause: it covers the wizard
+# routes, the api_v2 blueprint, and any route added later, so no endpoint
+# can be left open by omission.
+#
+# Accepts either of:
+#   Authorization: Bearer <APP_AUTH_TOKEN>      - scripts, curl
+#   HTTP Basic, any username, password = token  - browsers, which cannot
+#                                                 set request headers
+#
+# Fails CLOSED: with APP_AUTH_TOKEN unset the app serves nothing but
+# /health. A system that spends money must not default to open.
+import secrets
+
+_AUTH_TOKEN = os.getenv("APP_AUTH_TOKEN", "")
+_AUTH_EXEMPT = {"/health"}  # host health probes must not need credentials
+
+app.secret_key = os.getenv("FLASK_SECRET_KEY") or secrets.token_hex(32)
+
+
+def _token_ok(presented: str) -> bool:
+    """Constant-time comparison; False when either side is empty."""
+    if not _AUTH_TOKEN or not presented:
+        return False
+    return secrets.compare_digest(presented, _AUTH_TOKEN)
+
+
+@app.before_request
+def _require_operator_token():
+    if request.path in _AUTH_EXEMPT:
+        return None
+
+    if not _AUTH_TOKEN:
+        return Response(
+            json.dumps({"error": "APP_AUTH_TOKEN is not set; refusing to serve"}),
+            status=503,
+            mimetype="application/json",
+        )
+
+    auth = request.authorization
+    if auth is not None and auth.password and _token_ok(auth.password):
+        return None
+
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Bearer ") and _token_ok(header[7:].strip()):
+        return None
+
+    return Response(
+        json.dumps({"error": "unauthorized"}),
+        status=401,
+        mimetype="application/json",
+        headers={"WWW-Authenticate": 'Basic realm="company-registration"'},
+    )
+
+
 # --- Wizard onboarding UI ---
 from wizard_routes import register_wizard_routes
 register_wizard_routes(app)
