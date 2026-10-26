@@ -551,12 +551,15 @@ def _exec_stage(cn: str, stage: str, row: dict):
             "sic_codes": str(row.get("SIC Codes") or ""),
             "address": str(row.get("Address") or ""),
         }
-        r = register_company_domain(name, details)
-        if r.get("domain"):
-            _update_excel_row(cn, {"Domain": r["domain"],
-                                   "Domain Status": r.get("status", ""),
-                                   "Domain Cost": r.get("charged", "")})
-        return r
+        # Persistence of Domain / Domain Status / Domain Cost belongs to
+        # register_company_domain (run_pipeline.py), which owns the purchase
+        # claim and must record the outcome in the same place it spends the
+        # money. Writing them here as well gave two owners for one fact, and
+        # this call site used the mere presence of a "domain" key as proof of
+        # purchase - which the failure path also satisfied, so a rejected
+        # order was recorded as a registered domain and the stage was marked
+        # complete for good. Do not reintroduce a write here.
+        return register_company_domain(name, details)
 
     elif stage == "email":
         from email_pool import EmailPool

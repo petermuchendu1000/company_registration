@@ -579,9 +579,56 @@ def register_company_domain(company_name, details):
         }
         contacts_source = f"fallback_companies_house:{registrant_info.get('EmailAddress', '')}"
 
+    # ── MONEY SAFETY ────────────────────────────────────────────────────────
+    # register_domain() below issues a billed namecheap.domains.create order.
+    # Claim the purchase durably FIRST: if the outcome write is later lost,
+    # the claim survives and the next attempt refuses, instead of buying a
+    # second domain. The claim is one atomic statement, so two concurrent
+    # attempts cannot both proceed to a purchase.
+    cn = str(details.get("company_number") or "").strip()
+    if not cn:
+        return {
+            "status": "error",
+            "error": "company_number missing from details; refusing to buy a "
+                     "domain with nowhere to record the purchase",
+        }
+    if not db.claim_domain_purchase(cn):
+        return {
+            "status": "error",
+            "error": f"a domain purchase for {cn} is already outstanding "
+                     f"(domain_status='{db.DOMAIN_CLAIM}'). A domain may "
+                     f"already have been bought and charged without its "
+                     f"outcome being recorded. Reconcile against the "
+                     f"Namecheap account by hand before retrying; retrying "
+                     f"blind risks a second charge.",
+        }
+
     reg_result = register_domain(domain, years=1, registrant_info=registrant_info)
+
     if "error" in reg_result:
-        return {"status": "error", "error": reg_result["error"], "domain": domain}
+        # Namecheap rejected the order, so nothing was charged. Release the
+        # claim so a retry is possible.
+        #
+        # The attempted domain is deliberately NOT returned under the
+        # "domain" key: db._result_to_headers (db.py:277) and the api_v2
+        # stage runner both treat a present "domain" as proof of purchase,
+        # so returning it on a failure records a domain that was never
+        # bought and marks the stage complete for good.
+        db.update_row(cn, {"Domain Status": "error"})
+        return {
+            "status": "error",
+            "error": f"{reg_result['error']} (attempted domain: {domain})",
+            "attempted_domain": domain,
+        }
+
+    # Purchased. Record the outcome, which also releases the claim.
+    # db.update_row raises if the write fails; that exception must propagate,
+    # because the surviving claim is what stops a second purchase.
+    db.update_row(cn, {
+        "Domain": domain,
+        "Domain Status": "registered",
+        "Domain Cost": reg_result.get("charged", ""),
+    })
 
     return {
         "status": "registered",

@@ -247,6 +247,74 @@ def update_row(cn: str, updates: dict) -> None:
     _invalidate()
 
 
+# ── Domain purchase claim (money safety) ────────────────────────────────────
+# Buying a domain is a billed, irreversible side effect. The record of it must
+# exist BEFORE the money moves, otherwise a lost write looks identical to
+# "never bought" and the next run buys a second domain.
+DOMAIN_CLAIM = "purchasing"
+
+
+def claim_domain_purchase(cn: str) -> bool:
+    """Atomically claim the exclusive right to buy a domain for `cn`.
+
+    Sets domain_status = 'purchasing', but ONLY where no claim is already
+    outstanding, in one statement. Doing this as a read-then-write would
+    leave a window in which two attempts both see "no claim" and both go on
+    to a billed purchase; a single conditional UPDATE cannot.
+
+    Returns True when the claim is ours and the caller may spend money.
+
+    False means one of:
+      - another attempt holds the claim, or
+      - an earlier attempt was never resolved, so a domain may already have
+        been bought and charged while its outcome went unrecorded, or
+      - the company has no row, so there is nowhere to record the purchase.
+    In every case the correct response is to refuse to buy, not to retry.
+    """
+    cn = _cn8(cn)
+    if not cn:
+        return False
+    # One statement, so there is no window between checking and claiming.
+    # INSERT covers run_pipeline's batch path, which reaches the domain stage
+    # (run_pipeline.py:1154) before it ever persists the row - its only db
+    # writes are db.save_results at run_pipeline.py:706 and :802, both
+    # outside the per-company loop. row_no is assigned here so a
+    # batch-created company still sorts correctly in all_rows().
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {TABLE} (company_number, row_no, domain_status) "
+            f"VALUES (%s, COALESCE((SELECT MAX(row_no) FROM {TABLE}), 0) + 1, %s) "
+            f"ON CONFLICT (company_number) DO UPDATE "
+            f"   SET domain_status = %s, updated_at = now() "
+            f" WHERE {TABLE}.domain_status IS NULL "
+            f"    OR {TABLE}.domain_status <> %s",
+            (cn, DOMAIN_CLAIM, DOMAIN_CLAIM, DOMAIN_CLAIM),
+        )
+        claimed = cur.rowcount == 1
+        conn.commit()
+    _invalidate()
+    return claimed
+
+
+def domain_claim_held(cn: str) -> bool:
+    """True if an unresolved purchase claim is outstanding for `cn`.
+
+    Reads past the row cache deliberately: the caller is deciding whether
+    money was already spent, which must not be answered from a snapshot that
+    may be up to _TTL seconds old.
+    """
+    cn = _cn8(cn)
+    if not cn:
+        return False
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT domain_status FROM {TABLE} WHERE company_number = %s",
+            (cn,),
+        )
+        row = cur.fetchone()
+    return bool(row) and row.get("domain_status") == DOMAIN_CLAIM
+
+
 # Map a nested pipeline result dict (as produced by run_pipeline) to header labels.
 def _result_to_headers(r: dict) -> dict:
     d   = r.get("details", {}) or {}
