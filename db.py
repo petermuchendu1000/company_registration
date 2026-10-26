@@ -43,6 +43,7 @@ COLUMNS: list[tuple[str, str]] = [
     ("No.",                     "row_no"),
     ("Company Number",          "company_number"),
     ("Company Name",            "company_name"),
+    ("Short Name",              "short_name"),
     ("Status",                  "status"),
     ("Type",                    "type"),
     ("Date of Creation",        "date_of_creation"),
@@ -203,6 +204,19 @@ def ensure_schema() -> None:
     )
     with _cursor() as cur:
         cur.execute(ddl)
+        # CREATE TABLE IF NOT EXISTS does nothing when the table is already
+        # there, so a column added to COLUMNS later would be absent from a
+        # live table and every SELECT naming it would fail. Reconcile the
+        # columns idempotently instead. ADD COLUMN IF NOT EXISTS on a
+        # nullable column with no default is metadata-only in Postgres: no
+        # table rewrite, so this stays cheap as the table grows.
+        for header, col in COLUMNS:
+            if col == "company_number":
+                continue
+            coltype = "INTEGER" if col == "row_no" else "TEXT"
+            cur.execute(
+                f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS {col} {coltype}"
+            )
     _invalidate()
 
 
