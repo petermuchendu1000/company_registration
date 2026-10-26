@@ -21,12 +21,14 @@ Public API:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 try:
     from dotenv import load_dotenv
@@ -90,8 +92,80 @@ def _dsn() -> str:
 
 
 def _connect():
+    """Open a brand-new connection.
+
+    Only for seeding the pool and for the exhaustion fallback in _cursor().
+    Everything else goes through _cursor().
+    """
     return psycopg2.connect(_dsn(), connect_timeout=15,
                             cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+# ── Connection pool ─────────────────────────────────────────────────────────
+# Every database call used to open a fresh connection. Measured on loopback,
+# with no TLS and no network in the way, a connect costs 2.57 ms against
+# 0.134 ms for a query on an already-open connection - 19x. Against a remote
+# Supabase, where a connect also pays TCP, TLS and auth round trips, the
+# connect dominates the request rather than the query does.
+#
+# _POOL_MAX must exceed the number of threads that can touch the database at
+# once. gunicorn runs threads = 8 (gunicorn.conf.py) and each pipeline stage
+# runs in its own daemon thread (api_v2.py:173), which is not a bounded set.
+# Exhaustion therefore must NOT become an error: _cursor() falls back to a
+# direct connection, which is precisely the pre-pool behaviour.
+_POOL_MAX = int(os.getenv("DB_POOL_MAX", "16"))
+_POOL = None
+_POOL_LOCK = threading.Lock()
+
+
+def _pool():
+    """Build the pool on first use, so importing this module never requires
+    DATABASE_URL to be set."""
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                # On failure _POOL stays None, so the next call retries
+                # rather than caching a broken pool.
+                _POOL = psycopg2.pool.ThreadedConnectionPool(
+                    1, _POOL_MAX, dsn=_dsn(), connect_timeout=15,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                )
+    return _POOL
+
+
+@contextlib.contextmanager
+def _cursor():
+    """Yield a cursor on a pooled connection.
+
+    Commits on a clean exit, rolls back on an exception, and ALWAYS hands the
+    connection back - including when the caller returns from inside the
+    with-block, which add_company does.
+
+    Never use `with _connect() as conn` for a pooled connection: psycopg2's
+    connection context manager commits but does not release, so the pool
+    would drain after _POOL_MAX calls and never recover. The commit matters
+    for pooling too - without it a connection returns to the pool
+    idle-in-transaction, holding its snapshot open.
+    """
+    pooled = True
+    try:
+        conn = _pool().getconn()
+    except psycopg2.pool.PoolError:
+        pooled = False          # exhausted: degrade, never fail
+        conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if pooled:
+            _pool().putconn(conn)
+        else:
+            conn.close()
 
 
 # ── Value normalisation ─────────────────────────────────────────────────────
@@ -127,9 +201,8 @@ def ensure_schema() -> None:
         + ",\n  ".join(cols_sql)
         + ",\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);"
     )
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(ddl)
-        conn.commit()
     _invalidate()
 
 
@@ -160,7 +233,7 @@ def all_rows(use_cache: bool = True) -> list[dict]:
         if use_cache and _CACHE["rows"] is not None and (time.time() - _CACHE["ts"]) < _TTL:
             return _CACHE["rows"]
     cols = ", ".join(col for _, col in COLUMNS)
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(
             f"SELECT {cols} FROM {TABLE} "
             f"ORDER BY row_no NULLS LAST, company_number"
@@ -173,7 +246,30 @@ def all_rows(use_cache: bool = True) -> list[dict]:
 
 
 def find_row(cn: str) -> dict | None:
+    """Fetch one company.
+
+    This used to call all_rows() and scan the result in Python, so looking up
+    a single company issued a full-table SELECT of all 34 columns and then
+    compared every row. company_number is the TEXT PRIMARY KEY
+    (ensure_schema), so a direct lookup is an index hit instead.
+
+    The scan is kept as a FALLBACK, not as the primary path: it normalised
+    BOTH sides with _cn8, so it matched a row stored unpadded ('1234567')
+    against a padded query ('01234567'). Legacy rows imported from the
+    spreadsheet can be stored that way, and dropping the fallback would turn
+    those into a silent "company not found".
+    """
     target = _cn8(cn)
+    if not target:
+        return None
+    cols = ", ".join(col for _, col in COLUMNS)
+    with _cursor() as cur:
+        cur.execute(
+            f"SELECT {cols} FROM {TABLE} WHERE company_number = %s", (target,)
+        )
+        row = cur.fetchone()
+    if row:
+        return _row_to_headerdict(row)
     for r in all_rows():
         if _cn8(r.get("Company Number")) == target:
             return r
@@ -195,7 +291,7 @@ def add_company(cn: str, name: str = "", date_of_creation: str = "") -> bool:
     cn = _cn8(cn)
     if not cn or cn == "00000000":
         return False
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(f"SELECT 1 FROM {TABLE} WHERE company_number = %s", (cn,))
         if cur.fetchone():
             return False
@@ -205,7 +301,6 @@ def add_company(cn: str, name: str = "", date_of_creation: str = "") -> bool:
             f"VALUES (%s, %s, %s, %s) ON CONFLICT (company_number) DO NOTHING",
             (cn, _norm(name), _norm(date_of_creation), rn),
         )
-        conn.commit()
     _invalidate()
     return True
 
@@ -223,7 +318,7 @@ def update_row(cn: str, updates: dict) -> None:
         set_cols[col] = _norm(value)
     if not set_cols:
         return
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(f"SELECT 1 FROM {TABLE} WHERE company_number = %s", (cn,))
         exists = cur.fetchone() is not None
         if not exists:
@@ -243,7 +338,6 @@ def update_row(cn: str, updates: dict) -> None:
                 f"WHERE company_number = %s",
                 list(set_cols.values()) + [cn],
             )
-        conn.commit()
     _invalidate()
 
 
@@ -280,7 +374,7 @@ def claim_domain_purchase(cn: str) -> bool:
     # writes are db.save_results at run_pipeline.py:706 and :802, both
     # outside the per-company loop. row_no is assigned here so a
     # batch-created company still sorts correctly in all_rows().
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(
             f"INSERT INTO {TABLE} (company_number, row_no, domain_status) "
             f"VALUES (%s, COALESCE((SELECT MAX(row_no) FROM {TABLE}), 0) + 1, %s) "
@@ -291,7 +385,6 @@ def claim_domain_purchase(cn: str) -> bool:
             (cn, DOMAIN_CLAIM, DOMAIN_CLAIM, DOMAIN_CLAIM),
         )
         claimed = cur.rowcount == 1
-        conn.commit()
     _invalidate()
     return claimed
 
@@ -306,7 +399,7 @@ def domain_claim_held(cn: str) -> bool:
     cn = _cn8(cn)
     if not cn:
         return False
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(
             f"SELECT domain_status FROM {TABLE} WHERE company_number = %s",
             (cn,),
@@ -424,7 +517,7 @@ def import_from_excel(path: str) -> int:
         return 0
     hdr = [str(v or "").strip() for v in hdr_row]
     imported = 0
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         for row in it:
             if not row or not row[1 if len(row) > 1 else 0]:
                 continue
@@ -448,7 +541,6 @@ def import_from_excel(path: str) -> int:
                 vals,
             )
             imported += 1
-        conn.commit()
     wb.close()
     _invalidate()
     return imported
