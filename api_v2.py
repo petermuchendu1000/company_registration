@@ -12,6 +12,7 @@ import openpyxl
 from flask import Blueprint, jsonify, request, send_file, abort
 
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
+from safe_path import resolve_within
 
 api_v2 = Blueprint("api_v2", __name__)
 
@@ -972,8 +973,11 @@ def v2_download():
     path = request.args.get("path", "").strip()
     if not path:
         return abort(400)
-    abs_path = Path(os.path.abspath(path))
-    if not str(abs_path).startswith(str(DL_BASE.resolve())):
+    # A string prefix on abspath() accepted siblings such as
+    # ".../pipeline_output_X" and followed symlinks out of the directory;
+    # see safe_path for both reproductions.
+    abs_path = resolve_within(DL_BASE, path)
+    if abs_path is None:
         return abort(403)
     if not abs_path.is_file():
         return abort(404)

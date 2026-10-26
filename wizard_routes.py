@@ -17,6 +17,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime
 
 import db  # Supabase (PostgreSQL) — the single source of truth for companies
+from safe_path import resolve_within
 
 wizard = Blueprint("wizard", __name__)
 
@@ -573,17 +574,21 @@ def download_file():
     if not file_path:
         return abort(400)
 
-    # Security: only allow files under pipeline_output
+    # Security: only allow files under pipeline_output. A string prefix on
+    # abspath() accepted siblings such as ".../pipeline_output_X" and
+    # followed symlinks out of the directory; see safe_path for both
+    # reproductions. is_file() replaces the old exists() check so a
+    # directory is refused as 404 rather than handed to send_file.
     base_dir = os.path.join(os.path.dirname(__file__), "pipeline_output")
-    abs_path = os.path.abspath(file_path)
-    
-    if not abs_path.startswith(os.path.abspath(base_dir)):
+    abs_path = resolve_within(base_dir, file_path)
+
+    if abs_path is None:
         return abort(403)
 
-    if not os.path.exists(abs_path):
+    if not abs_path.is_file():
         return abort(404)
 
-    return send_file(abs_path, as_attachment=True)
+    return send_file(str(abs_path), as_attachment=True)
 
 
 @wizard.route("/api/pipeline/retry/<company_number>", methods=["POST"])
@@ -754,10 +759,17 @@ def pipeline_run_logs():
             if not log_path:
                 return jsonify({"running": state.get("running", False), "log": "", "line_count": 0})
 
-        logs_base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline_output", "logs"))
-        abs_log_path = os.path.abspath(log_path)
-        if not abs_log_path.startswith(logs_base):
+        # log_path is server-derived here (_PIPELINE_RUN_STATE above, or
+        # _latest_pipeline_log_path), never taken from the request, so this
+        # was not an exploitable bypass like the two download endpoints.
+        # Hardened with the same helper so there is one containment rule in
+        # the codebase rather than three hand-rolled ones.
+        logs_base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "pipeline_output", "logs")
+        safe_log = resolve_within(logs_base, log_path)
+        if safe_log is None:
             return jsonify({"error": "invalid log path"}), 403
+        abs_log_path = str(safe_log)
 
     if not os.path.exists(abs_log_path):
         return jsonify({"running": state.get("running", False), "log": "", "line_count": 0})

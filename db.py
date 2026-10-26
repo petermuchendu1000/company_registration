@@ -333,26 +333,31 @@ def update_row(cn: str, updates: dict) -> None:
         set_cols[col] = _norm(value)
     if not set_cols:
         return
+    # One statement instead of two, and atomic with it. This used to SELECT
+    # to find out whether the row existed and then INSERT or UPDATE: two
+    # round trips for every write, on top of whatever lookup the caller had
+    # already done. The INSERT also had no ON CONFLICT clause, so a
+    # concurrent insert landing between the SELECT and the INSERT raised a
+    # duplicate-key error.
+    cols = ["company_number"] + list(set_cols.keys())
+    exprs = ["%s"] * len(cols)
+    params = [cn] + list(set_cols.values())
+    if "row_no" not in set_cols:
+        # Position is assigned only when the row is created, and row_no is
+        # deliberately absent from the DO UPDATE list below, so an existing
+        # row keeps its place.
+        cols.append("row_no")
+        exprs.append(f"COALESCE((SELECT MAX(row_no) FROM {TABLE}), 0) + 1")
+
+    assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in set_cols)
     with _cursor() as cur:
-        cur.execute(f"SELECT 1 FROM {TABLE} WHERE company_number = %s", (cn,))
-        exists = cur.fetchone() is not None
-        if not exists:
-            rn = _next_row_no(cur)
-            set_cols.setdefault("row_no", rn)
-            cols = ["company_number"] + list(set_cols.keys())
-            vals = [cn] + list(set_cols.values())
-            placeholders = ", ".join(["%s"] * len(cols))
-            cur.execute(
-                f"INSERT INTO {TABLE} ({', '.join(cols)}) VALUES ({placeholders})",
-                vals,
-            )
-        else:
-            assignments = ", ".join(f"{c} = %s" for c in set_cols)
-            cur.execute(
-                f"UPDATE {TABLE} SET {assignments}, updated_at = now() "
-                f"WHERE company_number = %s",
-                list(set_cols.values()) + [cn],
-            )
+        cur.execute(
+            f"INSERT INTO {TABLE} ({', '.join(cols)}) "
+            f"VALUES ({', '.join(exprs)}) "
+            f"ON CONFLICT (company_number) DO UPDATE "
+            f"SET {assignments}, updated_at = now()",
+            params,
+        )
     _invalidate()
 
 
