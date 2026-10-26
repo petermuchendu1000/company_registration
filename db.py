@@ -538,26 +538,48 @@ def save_results(results: list[dict]) -> int:
 
 
 # ── One-time migration from the old Excel file ──────────────────────────────
-def import_from_excel(path: str) -> int:
+# Columns where a wrong value costs money rather than just being untidy.
+# domain_status carries the purchase claim that stops a second billed
+# namecheap.domains.create; Domain is what api_v2._compute_stages reads to
+# decide the domain stage is finished; duns_number gates the DUNS stage.
+MONEY_COLUMNS = ("domain", "domain_status", "domain_cost", "duns_number")
+
+# Presentation only. The sheet's "No." column renumbers rows, so almost
+# every company differs on it, and counting those alongside real changes
+# would bury the handful that involve money under one line each.
+ORDERING_COLUMNS = ("row_no",)
+
+
+def _excel_records(path: str):
+    """Yield (company_number, {column: value}) exactly as import_from_excel
+    would write them.
+
+    Shared by import_from_excel and diff_from_excel deliberately. A diff
+    that reimplemented this parse would drift from the import, and a diff
+    that disagrees with the operation it previews is worse than no diff:
+    it is read immediately before a production write, so it would give
+    false assurance.
+    """
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    ws = wb.active
-    it = ws.iter_rows(values_only=True)
-    hdr_row = next(it, None)
-    if not hdr_row:
-        wb.close()
-        return 0
-    hdr = [str(v or "").strip() for v in hdr_row]
-    imported = 0
-    with _cursor() as cur:
+    try:
+        ws = wb.active
+        it = ws.iter_rows(values_only=True)
+        hdr_row = next(it, None)
+        if not hdr_row:
+            return
+        hdr = [str(v or "").strip() for v in hdr_row]
         for row in it:
+            # Positional pre-filter, kept verbatim: a row whose second cell
+            # is empty is dropped before the header-based lookup below runs.
             if not row or not row[1 if len(row) > 1 else 0]:
                 continue
-            rec = {hdr[i]: (row[i] if i < len(row) else None) for i in range(len(hdr))}
+            rec = {hdr[i]: (row[i] if i < len(row) else None)
+                   for i in range(len(hdr))}
             cn = _cn8(rec.get("Company Number"))
             if not cn or cn == "00000000":
                 continue
-            set_cols = {"company_number": cn}
+            set_cols = {}
             for header, col in COLUMNS:
                 if col == "company_number":
                     continue
@@ -583,8 +605,90 @@ def import_from_excel(path: str) -> int:
                     # function did not.
                     continue
                 set_cols[col] = value
-            cols = list(set_cols.keys())
-            vals = list(set_cols.values())
+            yield cn, set_cols
+    finally:
+        wb.close()
+
+
+def diff_from_excel(path: str) -> dict:
+    """Preview what import_from_excel(path) would change. Writes nothing.
+
+    Skipping blank cells stopped the import erasing live data, but it did
+    not make the import harmless: a POPULATED but stale cell still
+    overwrites a populated column, because that is what an import is for.
+    Only a human can tell stale from authoritative, so this reports the
+    field-level consequences and leaves the judgement where it belongs.
+
+    Both sides are passed through _norm before comparison, so a value that
+    differs only by surrounding whitespace is not reported as a change.
+
+    Returns:
+        new_companies  - company numbers the sheet would create
+        additions      - count of fields filled where Postgres was empty
+        overwrites     - count of populated fields the sheet would replace
+        changes        - {cn: [{column, header, current, incoming, kind}]},
+                         kind being "add" or "overwrite"; unchanged fields
+                         are counted in `unchanged`, not listed
+        unchanged      - count of fields the sheet matches already
+        money_overwrites - the subset of overwrites touching MONEY_COLUMNS
+        claims_at_risk - companies whose outstanding purchase claim
+                         (DOMAIN_CLAIM) the sheet would overwrite. Treat a
+                         non-empty list here as a stop sign: it means a
+                         domain may have been bought and charged, and the
+                         import would discard the record of it.
+    """
+    current = {}
+    for row in all_rows():
+        cn = _cn8(row.get("Company Number"))
+        if cn:
+            current[cn] = row
+
+    out = {"new_companies": [], "additions": 0, "overwrites": 0,
+           "changes": {}, "unchanged": 0, "money_overwrites": [],
+           "claims_at_risk": [], "ordering_changes": 0}
+
+    for cn, set_cols in _excel_records(path):
+        existing = current.get(cn)
+        if existing is None:
+            out["new_companies"].append(cn)
+            out["additions"] += sum(1 for c in set_cols
+                                    if c not in ORDERING_COLUMNS)
+            continue
+        for col, incoming in set_cols.items():
+            was = _norm(existing.get(COL_TO_HEADER[col]))
+            if was == incoming:
+                out["unchanged"] += 1
+                continue
+            entry = {"column": col, "header": COL_TO_HEADER[col],
+                     "current": was, "incoming": incoming,
+                     "kind": "add" if was is None else "overwrite"}
+            # Recorded in `changes` whatever it is, so this stays a faithful
+            # preview of what the import writes - the import does write
+            # row_no. Only the headline counters treat it as noise.
+            out["changes"].setdefault(cn, []).append(entry)
+            if col in ORDERING_COLUMNS:
+                out["ordering_changes"] += 1
+                continue
+            if was is None:
+                out["additions"] += 1
+                continue
+            out["overwrites"] += 1
+            if col in MONEY_COLUMNS:
+                out["money_overwrites"].append({"company_number": cn, **entry})
+            if col == "domain_status" and was == DOMAIN_CLAIM:
+                out["claims_at_risk"].append(cn)
+
+    out["new_companies"].sort()
+    out["claims_at_risk"].sort()
+    return out
+
+
+def import_from_excel(path: str) -> int:
+    imported = 0
+    with _cursor() as cur:
+        for cn, set_cols in _excel_records(path):
+            cols = ["company_number"] + list(set_cols.keys())
+            vals = [cn] + list(set_cols.values())
             placeholders = ", ".join(["%s"] * len(cols))
             updates = ", ".join(f"{c} = EXCLUDED.{c}"
                                 for c in cols if c != "company_number")
@@ -598,7 +702,6 @@ def import_from_excel(path: str) -> int:
                 vals,
             )
             imported += 1
-    wb.close()
     _invalidate()
     return imported
 
@@ -607,8 +710,49 @@ if __name__ == "__main__":
     import sys
     ensure_schema()
     print(f"Schema ready. Table '{TABLE}' has {len(COLUMNS)} mapped columns.")
+    DEFAULT_SHEET = "pipeline_output/companies_pipeline.xlsx"
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--diff":
+        # Read-only. Run this before --import, every time.
+        path = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_SHEET
+        d = diff_from_excel(path)
+        print(f"\nDiff of {path} against the database (nothing written):")
+        print(f"  companies the sheet would create : {len(d['new_companies'])}")
+        print(f"  fields it would fill in          : {d['additions']}")
+        print(f"  populated fields it would REPLACE: {d['overwrites']}")
+        print(f"  fields already matching          : {d['unchanged']}")
+        print(f"  row renumbering ('No.' only)     : "
+              f"{d['ordering_changes']} (cosmetic)")
+        if d["new_companies"]:
+            print(f"\n  new: {', '.join(d['new_companies'][:20])}"
+                  + (" ..." if len(d["new_companies"]) > 20 else ""))
+        if d["overwrites"]:
+            print("\n  Overwrites, by company. Each line replaces a value "
+                  "that is already set:")
+            for cn, entries in sorted(d["changes"].items()):
+                over = [e for e in entries if e["kind"] == "overwrite"
+                        and e["column"] not in ORDERING_COLUMNS]
+                if not over:
+                    continue
+                print(f"    {cn}")
+                for e in over:
+                    flag = "  <-- MONEY" if e["column"] in MONEY_COLUMNS else ""
+                    print(f"      {e['header']}: {e['current']!r} -> "
+                          f"{e['incoming']!r}{flag}")
+        if d["claims_at_risk"]:
+            # Deliberately last, so it is the final thing on screen.
+            print(f"\n  STOP. {len(d['claims_at_risk'])} company(ies) hold an "
+                  f"outstanding purchase claim ('{DOMAIN_CLAIM}') that this "
+                  f"sheet would overwrite:")
+            for cn in d["claims_at_risk"]:
+                print(f"    {cn}")
+            print("  A domain may already have been bought and charged for "
+                  "these. Importing discards the record of it and allows a "
+                  "second purchase. Reconcile against Namecheap first.")
+        print()
+
     if len(sys.argv) > 1 and sys.argv[1] == "--import":
-        path = sys.argv[2] if len(sys.argv) > 2 else "pipeline_output/companies_pipeline.xlsx"
+        path = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_SHEET
         n = import_from_excel(path)
         print(f"Imported {n} rows from {path}.")
     print(f"Total rows in DB: {len(all_rows(use_cache=False))}")

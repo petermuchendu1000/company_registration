@@ -235,36 +235,72 @@ erase. **A populated cell still overwrites a populated column** — that is
 what an import is for — so the sheet must be right about anything it does
 fill in.
 
-```bash
-# Dry-run first: see what is only in the sheet before writing anything.
-.venv/bin/python - <<'PY'
-import db, openpyxl
-wb = openpyxl.load_workbook('pipeline_output/companies_pipeline.xlsx',
-                            data_only=True, read_only=True)
-ws = wb.active
-it = ws.iter_rows(values_only=True)
-hdr = [str(v or '').strip() for v in next(it)]
-i = hdr.index('Company Number')
-sheet = {db._cn8(r[i]) for r in it if r and r[i]}
-have = db.company_numbers()
-print('in sheet      :', len(sheet))
-print('in Postgres   :', len(have))
-print('sheet only    :', sorted(sheet - have))
-print('Postgres only :', sorted(have - sheet))
-PY
+### Always diff before importing
 
-# Then, once the above looks right:
-.venv/bin/python -c "import db; print(db.import_from_excel('pipeline_output/companies_pipeline.xlsx'))"
+`python db.py --diff` is read-only and shows the field-level consequences.
+It shares its parse with `import_from_excel`, so it cannot drift from the
+operation it previews.
+
+```bash
+cd /opt/company_registration
+.venv/bin/python db.py --diff           # defaults to the sheet path below
+.venv/bin/python db.py --diff /path/to/other.xlsx
 ```
 
-Check afterwards that no claim was disturbed:
+Real output against a seeded database:
+
+```
+  companies the sheet would create : 1
+  fields it would fill in          : 2
+  populated fields it would REPLACE: 2
+  fields already matching          : 4
+  row renumbering ('No.' only)     : 0 (cosmetic)
+
+  new: 92000003
+
+  Overwrites, by company. Each line replaces a value that is already set:
+    92000001
+      Domain Status: 'purchasing' -> 'registered'  <-- MONEY
+    92000002
+      Domain: 'old.uk' -> 'new.uk'  <-- MONEY
+
+  STOP. 1 company(ies) hold an outstanding purchase claim ('purchasing')
+  that this sheet would overwrite:
+    92000001
+  A domain may already have been bought and charged for these. Importing
+  discards the record of it and allows a second purchase. Reconcile against
+  Namecheap first.
+```
+
+Read it in this order:
+
+1. **`STOP` block, if present.** A company holding a `'purchasing'` claim
+   means a domain may already have been bought and charged while its
+   outcome went unrecorded. Importing over it discards that record and lets
+   the domain stage buy again. Reconcile against the Namecheap account
+   first; do not import.
+2. **Lines marked `<-- MONEY`.** `Domain`, `Domain Status`, `Domain Cost`
+   and `DUNS Number`. A wrong value here costs money or re-runs a stage.
+3. **Everything else under Overwrites.** The sheet replaces a value that is
+   already set. Only you can tell stale from authoritative.
+4. **`new` and "fields it would fill in".** These are the point of the
+   exercise and are safe — nothing is lost.
+
+Then, once it reads correctly:
+
+```bash
+.venv/bin/python db.py --import
+# or: .venv/bin/python db.py --import /path/to/other.xlsx
+```
+
+And confirm afterwards that no claim was disturbed — expect the same list
+you saw before the import:
 
 ```bash
 .venv/bin/python -c "
 import db
-rows = db.all_rows()
-print('rows with an outstanding purchase claim:',
-      [r['Company Number'] for r in rows
+print('outstanding purchase claims:',
+      [r['Company Number'] for r in db.all_rows(use_cache=False)
        if r.get('Domain Status') == db.DOMAIN_CLAIM])"
 ```
 
