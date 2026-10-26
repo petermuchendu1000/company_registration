@@ -97,7 +97,9 @@ of the source, not guessed:
 APP_AUTH_TOKEN=
 FLASK_SECRET_KEY=
 
-DATABASE_URL=            # Supabase pooler URL; SUPABASE_DB_URL also accepted
+DATABASE_URL=            # Supabase SHARED POOLER url - see below. Not the
+                         # direct db.<ref>.supabase.co host, which will not
+                         # resolve on this server. SUPABASE_DB_URL also read.
 COMPANIES_HOUSE_API_KEY=
 
 NAMECHEAP_API_USER=
@@ -117,6 +119,40 @@ DB_POOL_MAX=16           # must exceed gunicorn threads (8) plus stage threads
 
 `NAMECHEAP_SANDBOX=1` deliberately. Domain registration spends money; turn
 it off only when you intend a real purchase.
+
+### Use the shared pooler DSN, not the direct host
+
+Per Supabase's own documentation, a **direct** connection to
+`db.<project-ref>.supabase.co:5432` is **IPv6-only** unless the project
+carries the paid IPv4 add-on. A Vultr instance gets an IPv4 address, so a
+direct DSN fails there. Confirmed by observation: that hostname returns no
+record from an IPv4-only network, while the project's own
+`<project-ref>.supabase.co` and the pooler hosts both resolve normally — so
+it is not a general DNS problem.
+
+The **shared pooler is IPv4 on every plan**. Two differences from the
+direct string matter, and the second is easy to miss:
+
+```
+postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+             ^^^^^^^^^^^^^^^^^^^^^                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+             username becomes postgres.<ref>,     pooler host, and the region
+             NOT plain postgres                   is not guessable - copy it
+```
+
+Use **port 5432 (session mode)**, which is Supabase's stated guidance for
+IPv4-only networks, not 6543 (transaction mode). Session mode keeps one
+backend per client connection, which is what `db._pool()` expects; stacking
+a transaction pooler under an application pool is the wrong shape and
+transaction mode also drops prepared statements.
+
+Copy the exact string from the Supabase dashboard: Project Settings →
+Database → Connection string → **Session pooler**. The region index in the
+hostname varies by project and cannot be guessed.
+
+Keep an eye on `DB_POOL_MAX` against your plan's connection limit: session
+mode holds one backend per pooled connection, so 16 here means up to 16
+backends held by this app.
 
 ## 5. Namecheap IP allowlist — do this before any domain stage
 
