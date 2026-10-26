@@ -1,6 +1,21 @@
 """Gunicorn configuration for the company_registration pipeline UI.
 
 Run with:  gunicorn -c gunicorn.conf.py app:app
+
+On Linux, prefer:  xvfb-run -a gunicorn -c gunicorn.conf.py app:app
+
+The dashboard's own DUNS stage does not need a display: it goes through
+run_pipeline.get_duns_number, which is a plain HTTP call to D&B's JSON
+endpoint. But the wizard's DUNS button (POST /api/duns/request) and the
+stealth endpoints in app.py drive a real browser, and that path is forced
+headed because D&B blocks headless (browser_stealth.py, the comment in
+_run_duns_lookup_async). A headed Chromium needs an X or Wayland display;
+browser_stealth._require_display refuses with an actionable message when
+there is none, rather than letting Chromium die with a closed-browser error.
+
+Measured cost of that headed path: ~1117 MB peak RSS for Chromium plus
+Xvfb, against ~742 MB headless, so size the host for the headed figure if
+the wizard's DUNS button is going to be used.
 """
 
 # workers MUST remain 1.

@@ -782,14 +782,17 @@ def api_duns_stealth_full(company_number):
 
         # Auto-store if found
         if result.get("duns_number"):
-            from duns_automation import _load_duns_db, _save_duns_db
+            # _put_duns_record, not _save_duns_db: it re-reads under the lock
+            # and replaces only this company's key, so a snapshot taken
+            # before another company's long browser run cannot erase it.
+            from duns_automation import _load_duns_db, _put_duns_record
             db = _load_duns_db()
             if company_number in db:
                 db[company_number]["duns_number"] = result["duns_number"]
                 db[company_number]["status"] = "completed"
                 db[company_number]["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                 db[company_number]["completed_via"] = "stealth_full_pipeline"
-                _save_duns_db(db)
+                _put_duns_record(company_number, db[company_number])
 
         return jsonify(result)
     except Exception as e:

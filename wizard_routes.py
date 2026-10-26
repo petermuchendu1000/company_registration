@@ -294,6 +294,27 @@ def duns_lookup():
         return jsonify({"found": False, "error": str(e)})
 
 
+# DUNS requests run in a background thread, not in the request.
+# stealth_request_duns drives a real browser and then sleeps 10s before
+# checking for mail, so running it inline held a gunicorn worker thread for
+# the whole duration. With threads = 8 (gunicorn.conf.py), eight of these
+# left nothing to serve the dashboard. The state lives in process memory,
+# which is sound only because workers = 1 - the same constraint api_v2._JOBS
+# already imposes.
+_DUNS_JOBS_LOCK = threading.Lock()
+_DUNS_JOBS: dict = {}
+
+
+def _duns_job_get(cn):
+    with _DUNS_JOBS_LOCK:
+        return dict(_DUNS_JOBS.get(cn, {}))
+
+
+def _duns_job_set(cn, **kw):
+    with _DUNS_JOBS_LOCK:
+        _DUNS_JOBS.setdefault(cn, {}).update(kw)
+
+
 @wizard.route("/api/duns/request", methods=["POST"])
 def duns_request():
     data = request.get_json(force=True)
@@ -301,12 +322,45 @@ def duns_request():
     email = data.get("email", "").strip()
     if not cn or not email:
         return jsonify({"error": "company_number and email required"}), 400
-    try:
+
+    if _duns_job_get(cn).get("status") == "running":
+        return jsonify({"status": "running", "company_number": cn,
+                        "message": "A DUNS request for this company is "
+                                   "already running."}), 409
+
+    def _work():
         from duns_automation import stealth_request_duns
-        result = stealth_request_duns(cn, headless=True)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"found": False, "error": str(e)})
+        try:
+            result = stealth_request_duns(cn, headless=True)
+            _duns_job_set(cn, status="done", result=result,
+                          finished_at=datetime.now().isoformat())
+        except Exception as e:
+            # The browser path raises for a missing display among other
+            # things; surface the message rather than losing it in a thread.
+            _duns_job_set(cn, status="failed", error=str(e),
+                          finished_at=datetime.now().isoformat())
+
+    _duns_job_set(cn, status="running", started_at=datetime.now().isoformat(),
+                  result=None, error=None, finished_at=None)
+    threading.Thread(target=_work, daemon=True).start()
+    return jsonify({"status": "started", "company_number": cn}), 202
+
+
+@wizard.route("/api/duns/status/<company_number>")
+def duns_status(company_number):
+    """Poll a background DUNS request. static/wizard.js polls this after the
+    202 from /api/duns/request."""
+    job = _duns_job_get(company_number)
+    if not job:
+        return jsonify({"status": "idle", "company_number": company_number})
+    # Flatten the finished result so the UI can read duns_number directly,
+    # which is the shape it consumed when this route was synchronous.
+    out = {"status": job.get("status"), "company_number": company_number,
+           "error": job.get("error")}
+    if job.get("status") == "done" and isinstance(job.get("result"), dict):
+        out.update(job["result"])
+        out["status"] = "done"
+    return jsonify(out)
 
 
 # ──────────────────────────────────────────────────────────────

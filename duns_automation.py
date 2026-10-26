@@ -13,6 +13,8 @@ import random
 import string
 import re
 import os
+import tempfile
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -31,16 +33,89 @@ DNB_DUNS_LOOKUP = "https://www.dnb.com/apps/dnb/servlets/DnBAPI"
 DUNS_DB_FILE = os.path.join(os.path.dirname(__file__), "duns_requests.json")
 
 
+# Serialises access to DUNS_DB_FILE. The DUNS stage runs in per-company
+# daemon threads (api_v2.py:173) and api_v2._co_lock only serialises within
+# ONE company, so two companies' stages reach this file at the same time.
+# Measured before this lock existed: 24 concurrent writers left 3 of 24
+# records, and one run left the file unparseable.
+_DUNS_DB_LOCK = threading.Lock()
+
+
 def _load_duns_db():
-    if os.path.exists(DUNS_DB_FILE):
-        with open(DUNS_DB_FILE, "r") as f:
+    with _DUNS_DB_LOCK:
+        return _load_duns_db_locked()
+
+
+def _load_duns_db_locked():
+    if not os.path.exists(DUNS_DB_FILE):
+        return {}
+    with open(DUNS_DB_FILE, "r") as f:
+        try:
             return json.load(f)
-    return {}
+        except json.JSONDecodeError as e:
+            # Deliberately not swallowed into an empty dict: that would
+            # silently discard every tracked DUNS request and send completed
+            # companies back through the whole browser flow. Fail loudly with
+            # the path instead.
+            raise RuntimeError(
+                f"{DUNS_DB_FILE} is not valid JSON ({e}). It holds DUNS "
+                f"request state; move it aside only after checking what is "
+                f"in it, because losing it re-runs completed lookups."
+            ) from e
 
 
 def _save_duns_db(db):
-    with open(DUNS_DB_FILE, "w") as f:
-        json.dump(db, f, indent=2)
+    """Replace the whole store atomically.
+
+    Writes to a temp file in the same directory and renames it over the
+    target: os.replace is atomic on POSIX and on Windows, so a reader never
+    observes a half-written file and two writers cannot interleave bytes.
+    Previously this opened the target with "w", truncating it immediately,
+    which is how concurrent writers produced an unparseable file.
+
+    Prefer _put_duns_record for a single company - see why there.
+    """
+    with _DUNS_DB_LOCK:
+        _save_duns_db_locked(db)
+
+
+def _save_duns_db_locked(db):
+    directory = os.path.dirname(DUNS_DB_FILE) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".duns_requests.",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(db, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, DUNS_DB_FILE)
+    except BaseException:
+        # Never leave a temp file behind on failure; the target is untouched
+        # because the rename is what publishes it.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _put_duns_record(company_number, record):
+    """Merge ONE company's record into the store, atomically.
+
+    This exists because a lock around the write alone does not prevent lost
+    updates here. Callers load the whole store, then run the browser
+    automation for minutes (stealth_request_duns loads at the top and saves
+    after stealth_lookup_duns returns), then write their snapshot back. Two
+    overlapping companies therefore each write a view of the file taken
+    before the other started, and the second erases the first.
+
+    Re-reading under the lock and replacing only this company's key means a
+    stale snapshot can no longer clobber a company it never touched.
+    """
+    with _DUNS_DB_LOCK:
+        current = _load_duns_db_locked()
+        current[company_number] = record
+        _save_duns_db_locked(current)
 
 
 def _extract_director_dob(officer: dict) -> tuple[str, str]:
@@ -495,8 +570,7 @@ def stealth_request_duns(company_number, headless=True):
         "duns_number": record.get("duns_number"),
         "emails_received": record.get("emails_received", []),
     })
-    db[company_number] = record
-    _save_duns_db(db)
+    _put_duns_record(company_number, record)
 
     # Step 5: If form was submitted, poll for email (short initial check)
     duns_number = None
@@ -646,8 +720,7 @@ def initiate_duns_request(company_number, phone_number=""):
         "emails_received": [],
     }
 
-    db[company_number] = record
-    _save_duns_db(db)
+    _put_duns_record(company_number, record)
 
     return {
         "status": "initiated",
@@ -699,8 +772,7 @@ def check_duns_emails(company_number):
                 new_token = token_resp.json().get("token", "")
                 if new_token:
                     record["temp_email"]["token"] = new_token
-                    db[company_number] = record
-                    _save_duns_db(db)
+                    _put_duns_record(company_number, record)
                     token = new_token
                     inbox = check_temp_email(token)
         except Exception:
@@ -743,8 +815,7 @@ def check_duns_emails(company_number):
         record["completed_at"] = datetime.utcnow().isoformat()
 
     record["last_checked"] = datetime.utcnow().isoformat()
-    db[company_number] = record
-    _save_duns_db(db)
+    _put_duns_record(company_number, record)
 
     return {
         "status": "completed" if duns_found else "pending",
@@ -818,7 +889,7 @@ def manually_set_duns(company_number, duns_number):
     db[company_number]["duns_number"] = duns_number
     db[company_number]["status"] = "completed"
     db[company_number]["completed_at"] = datetime.utcnow().isoformat()
-    _save_duns_db(db)
+    _put_duns_record(company_number, db[company_number])
 
     return {
         "status": "completed",
