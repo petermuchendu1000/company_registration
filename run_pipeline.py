@@ -621,7 +621,45 @@ def register_company_domain(company_name, details):
             "attempted_domain": domain,
         }
 
-    # Purchased. Record the outcome, which also releases the claim.
+    # Namecheap accepting the call is not the same as registering the domain.
+    # resp["status"] comes from the ApiResponse root's Status attribute
+    # (namecheap_automation.py:78) and reports whether the API CALL
+    # succeeded. Whether the domain was actually registered is the separate
+    # DomainCreateResult/@Registered attribute, parsed at
+    # namecheap_automation.py:231 - and nothing read it, so an order that
+    # came back Registered="false" was recorded as a registered domain.
+    #
+    # ChargedAmount is likewise a separate attribute, and some TLDs are
+    # NonRealTimeDomain: they do not register instantly. Registered being
+    # false therefore does NOT establish that no money moved.
+    #
+    # So this outcome is UNKNOWN, not a clean failure, and the claim is
+    # deliberately left in place. Releasing it here is what previously let a
+    # retry issue a second billed order for a purchase that may already be
+    # pending and charged. Only a human reconciling against the Namecheap
+    # account can resolve it.
+    if not reg_result.get("registered"):
+        charged = reg_result.get("charged", "")
+        if charged:
+            # Record the amount WITHOUT touching domain_status, so the claim
+            # survives while the operator has the figure to reconcile with.
+            db.update_row(cn, {"Domain Cost": charged})
+        return {
+            "status": "unresolved",
+            "error": (
+                f"Namecheap accepted the order for {domain} but reported "
+                f"Registered=false (charged: {charged or 'unknown'}, order: "
+                f"{reg_result.get('order_id') or 'unknown'}). The domain may "
+                f"be pending rather than failed, so the purchase claim is "
+                f"kept to prevent a second charge. Reconcile against the "
+                f"Namecheap account, then clear domain_status by hand."
+            ),
+            "attempted_domain": domain,
+            "charged": charged,
+            "order_id": reg_result.get("order_id", ""),
+        }
+
+    # Registered. Record the outcome, which also releases the claim.
     # db.update_row raises if the write fails; that exception must propagate,
     # because the surviving claim is what stops a second purchase.
     db.update_row(cn, {
