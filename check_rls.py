@@ -123,15 +123,65 @@ def main() -> int:
             print(f"  {gr['table_name']:16s} {gr['grantee']:14s} {gr['privs']}")
 
         print("\n=== event triggers (what might be enabling RLS for us) ===")
-        cur.execute("SELECT evtname, evtevent, evtenabled FROM pg_event_trigger "
-                    "ORDER BY evtname")
+        # evtenabled is a CHARACTER, and in many terminal fonts the letter O
+        # (ascii 79, meaning enabled/origin) is indistinguishable from the
+        # digit 0. Whether ensure_rls is on decides whether app_users ships
+        # with password hashes exposed, so the ascii code is printed and the
+        # value decoded rather than left to be read off a screen.
+        # Established empirically: 'O'=79 enabled, 'D'=68 disabled.
+        MEANING = {"O": "ENABLED (origin)", "D": "disabled",
+                   "R": "enabled (replica only)", "A": "ENABLED (always)"}
+        cur.execute("""SELECT evtname, evtevent, evtenabled::text AS state,
+                              ascii(evtenabled::text) AS code
+                         FROM pg_event_trigger ORDER BY evtname""")
         evts = cur.fetchall()
         if not evts:
             print("  none. If RLS is on but nothing here explains it, it was")
             print("  set by hand or by the dashboard - and a table created")
             print("  later by this application will NOT inherit it.")
+        ensure_rls_on = False
         for e in evts:
-            print(f"  {e['evtname']:40s} on {e['evtevent']} enabled={e['evtenabled']}")
+            label = MEANING.get(e["state"], f"UNKNOWN({e['state']!r})")
+            if e["evtname"] == "ensure_rls":
+                ensure_rls_on = e["state"] in ("O", "A")
+            print(f"  {e['evtname']:28s} {e['evtevent']:18s} "
+                  f"ascii={e['code']:<4d} {label}")
+
+        print("\n=== default privileges (what a NEW table inherits) ===")
+        # This is the other half of the question. If anon/authenticated are
+        # granted privileges on new tables by default, then app_users gets
+        # them the moment it is created, and RLS is the only thing between
+        # a password hash and anyone holding the project's anon key.
+        cur.execute("""
+            SELECT defaclrole::regrole::text AS granter,
+                   defaclobjtype AS objtype,
+                   defaclacl::text AS acl
+              FROM pg_default_acl
+             WHERE defaclnamespace = 'public'::regnamespace
+             ORDER BY granter""")
+        dacl = cur.fetchall()
+        if not dacl:
+            print("  none - new tables are granted to nobody automatically")
+        for d in dacl:
+            kind = {"r": "tables", "S": "sequences", "f": "functions",
+                    "T": "types", "n": "schemas"}.get(d["objtype"], d["objtype"])
+            print(f"  by {d['granter']:16s} on {kind:10s} {d['acl']}")
+        inherits_anon = any("anon" in (d["acl"] or "") and d["objtype"] == "r"
+                            for d in dacl)
+
+        print("\n=== VERDICT for app_users, if it were created now ===")
+        print(f"  ensure_rls trigger enabled : {ensure_rls_on}")
+        print(f"  new tables granted to anon : {inherits_anon}")
+        if ensure_rls_on:
+            print("  -> RLS would be enabled automatically; with no policy the")
+            print("     Data API returns nothing. Closed.")
+        elif inherits_anon:
+            print("  -> *** RLS would be OFF and anon would hold privileges.")
+            print("     Password hashes would be reachable with the anon key.")
+            print("     Do NOT start the service until this is addressed. ***")
+        else:
+            print("  -> RLS off, but anon holds no default privileges, so the")
+            print("     Data API has no route in. Verify the grants section.")
 
     print("\n=== what this means for app_users ===")
     print("  If an event trigger above enables RLS on new tables, app_users")
