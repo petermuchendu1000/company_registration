@@ -147,6 +147,36 @@ def main() -> int:
             print(f"  {e['evtname']:28s} {e['evtevent']:18s} "
                   f"ascii={e['code']:<4d} {label}")
 
+        # A trigger NAMED ensure_rls is not evidence that it enables RLS.
+        # Gate 6 applies to anything whose behaviour we are relying on:
+        # read the live definition, because the name is not the behaviour.
+        # This is the difference between "Supabase probably protects the
+        # accounts table" and knowing that it does.
+        print("\n=== what ensure_rls ACTUALLY does (live definition) ===")
+        try:
+            cur.execute("""
+                SELECT evtfoid::regprocedure::text AS fn,
+                       evtowner::regrole::text     AS owner,
+                       evttags,
+                       pg_get_functiondef(evtfoid) AS body
+                  FROM pg_event_trigger WHERE evtname = 'ensure_rls'""")
+            er = cur.fetchone()
+            if er is None:
+                print("  no trigger named ensure_rls exists here")
+            else:
+                print(f"  function : {er['fn']}")
+                print(f"  owner    : {er['owner']}")
+                print(f"  fires on : {er['evttags'] or 'ALL ddl commands'}")
+                print("  body:")
+                for line in (er["body"] or "").splitlines():
+                    print("    |", line)
+        except Exception as e:
+            # Not fatal: the connection role may not be allowed to read a
+            # function owned by supabase_admin. Say so rather than imply the
+            # trigger was inspected.
+            print(f"  COULD NOT READ: {type(e).__name__}: {e}")
+            print("  -> the behaviour of ensure_rls is therefore UNVERIFIED")
+
         print("\n=== default privileges (what a NEW table inherits) ===")
         # This is the other half of the question. If anon/authenticated are
         # granted privileges on new tables by default, then app_users gets

@@ -76,23 +76,25 @@ _AUTH_TOKEN = os.getenv("APP_AUTH_TOKEN", "")
 install_auth(app)
 
 # --- Accounts, roles and the approval workflow ---
-# The schema and the bootstrap superadmin are created at import, not on
-# first request: an app that starts successfully and then refuses every
-# login because its user table is missing is a worse failure than one that
-# refuses to start. A database that is merely unreachable right now must
-# NOT stop the process, though - the service token still gets an operator
-# in, which is the whole reason it was kept.
+# This module deliberately does NOT create the accounts schema or the
+# bootstrap superadmin at import.
+#
+# It used to. That meant merely starting the process - which gunicorn does
+# on every deploy, every restart and every crash-loop iteration - issued
+# CREATE TABLE and an INSERT against the production database, silently, as
+# a side effect of an import. Schema changes on a live system should be a
+# thing somebody decides to do, with the statements in front of them, not
+# a thing that happens because a service came up.
+#
+# `companies` has always worked this way: db.py creates it only when run as
+# a command. Accounts now match that. To initialise:
+#
+#     .venv/bin/python users.py --init
+#
+# Until then the service token still signs in (auth.py never touches the
+# users table for that path), /health still answers, and the login page
+# reports that the account database is unavailable rather than crashing.
 import users  # noqa: E402
-
-try:
-    users.ensure_schema()
-    users.ensure_superadmin(os.getenv("SUPERADMIN_EMAIL", ""),
-                            os.getenv("SUPERADMIN_PASSWORD", ""))
-except Exception as _e:  # pragma: no cover - depends on a live database
-    logging.getLogger(__name__).error(
-        "user schema/bootstrap failed (%s): sign-in with an account will not "
-        "work until the database is reachable; the service token still will",
-        _e)
 
 from admin_routes import admin as _admin_bp  # noqa: E402
 app.register_blueprint(_admin_bp)

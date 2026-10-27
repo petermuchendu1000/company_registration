@@ -29,6 +29,7 @@ is a suggestion:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -384,3 +385,47 @@ def ensure_superadmin(email: str, password: str) -> dict | None:
     log.warning("bootstrapped superadmin %s - it must change its password "
                 "at first sign-in", email)
     return user
+
+
+if __name__ == "__main__":
+    import sys
+
+    _cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    if _cmd == "--init":
+        # Explicit, operator-run. app.py deliberately does not do this at
+        # import: starting a process should not issue DDL against a
+        # production database as a side effect.
+        print("Creating the accounts schema if it is absent.")
+        ensure_schema()
+        print(f"  '{TABLE}' and '{AUDIT_TABLE}' ready.")
+
+        email = os.getenv("SUPERADMIN_EMAIL", "")
+        password = os.getenv("SUPERADMIN_PASSWORD", "")
+        if not email or not password:
+            print("  SUPERADMIN_EMAIL / SUPERADMIN_PASSWORD not set in .env;"
+                  " no superadmin created.")
+        else:
+            existing = get_by_email(email)
+            if existing:
+                print(f"  {email} already exists (role={existing['role']}, "
+                      f"status={existing['status']}); left untouched.")
+            else:
+                u = ensure_superadmin(email, password)
+                print(f"  created superadmin {u['email']} - it MUST change "
+                      f"its password at first sign-in.")
+        print(f"\n  superadmins now active: {count_active_superadmins()}")
+
+    elif _cmd == "--list":
+        for u in list_users():
+            print(f"  {u['id']:>4}  {u['email']:32s} {u['role']:11s} "
+                  f"{u['status']:10s} must_change={u['must_change_password']}")
+        print(f"  ({len(list_users())} accounts)")
+
+    else:
+        print(__doc__)
+        print("Commands:")
+        print("  --init   create the accounts schema and the bootstrap"
+              " superadmin from .env")
+        print("  --list   list accounts (read-only)")
+        sys.exit(2)
