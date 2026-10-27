@@ -121,6 +121,58 @@ def ensure_schema() -> None:
             )""")
         cur.execute(f"CREATE INDEX IF NOT EXISTS {AUDIT_TABLE}_at_idx "
                     f"ON {AUDIT_TABLE} (at DESC)")
+        _harden(cur)
+
+
+def _harden(cur) -> None:
+    """Close these tables to the Data API explicitly, twice over.
+
+    Supabase has an `ensure_rls` event trigger that enables RLS on new
+    public tables, and it is enabled on the production project. Its body
+    was read rather than trusted to its name, and it ends:
+
+        EXCEPTION WHEN OTHERS THEN
+            RAISE LOG 'rls_auto_enable: failed to enable RLS on %', ...
+
+    So if that ALTER fails for any reason the table is still created, the
+    CREATE TABLE still succeeds, and the only trace is a log line on a
+    server log we cannot read. A table holding password hashes should not
+    depend on a mechanism that fails silently and belongs to someone else.
+
+    Two independent closures, because one of them failing should not open
+    the table:
+
+      RLS      - with no policy, a non-exempt role sees zero rows
+      no grant - anon and authenticated hold no privilege at all, so
+                 PostgREST has nothing to expose in the first place
+
+    Both matter here: pg_default_acl on this project grants anon
+    arwdDxtm on every new table automatically, so a table created with
+    RLS off would be fully readable AND writable with the project's
+    public anon key.
+
+    ENABLE, deliberately NOT FORCE. FORCE subjects the table owner to RLS
+    as well, which would leave rolbypassrls as the single thing keeping
+    this application able to read its own accounts table. With plain
+    ENABLE the owner is exempt on its own merits, so the application
+    survives even if that role attribute is ever changed.
+    """
+    for table in (TABLE, AUDIT_TABLE):
+        cur.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+        # The PostgREST roles do not exist outside Supabase, so a bare
+        # REVOKE would fail on a plain PostgreSQL used for tests. Guarded
+        # per role rather than skipped wholesale, so a project with only
+        # one of them is still hardened.
+        cur.execute(
+            """DO $$
+               DECLARE r text;
+               BEGIN
+                 FOREACH r IN ARRAY ARRAY['anon','authenticated'] LOOP
+                   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+                     EXECUTE format('REVOKE ALL ON TABLE %I FROM %I', %s, r);
+                   END IF;
+                 END LOOP;
+               END $$""".replace("%s", f"'{table}'"))
 
 
 def record(actor: str, action: str, subject: str = "", detail: str = "") -> None:
@@ -399,6 +451,33 @@ if __name__ == "__main__":
         print("Creating the accounts schema if it is absent.")
         ensure_schema()
         print(f"  '{TABLE}' and '{AUDIT_TABLE}' ready.")
+
+        # Report the security posture rather than leaving it implied. The
+        # whole point of hardening explicitly is not to trust a mechanism
+        # that fails silently, so this must not fail silently either.
+        with db._cursor() as _c:
+            _c.execute(
+                """SELECT relname, relrowsecurity AS rls
+                     FROM pg_class
+                    WHERE relname = ANY(%s)
+                      AND relnamespace = 'public'::regnamespace
+                    ORDER BY relname""", ([TABLE, AUDIT_TABLE],))
+            for _r in _c.fetchall():
+                mark = "closed" if _r["rls"] else "*** RLS NOT ENABLED ***"
+                print(f"  {_r['relname']:12s} row level security: {mark}")
+            _c.execute(
+                """SELECT grantee, table_name
+                     FROM information_schema.role_table_grants
+                    WHERE table_schema = 'public'
+                      AND table_name = ANY(%s)
+                      AND grantee IN ('anon','authenticated')""",
+                ([TABLE, AUDIT_TABLE],))
+            _left = _c.fetchall()
+            if _left:
+                print("  *** anon/authenticated STILL hold privileges: "
+                      f"{[(r['grantee'], r['table_name']) for r in _left]}")
+            else:
+                print("  anon/authenticated hold no privileges on either table")
 
         email = os.getenv("SUPERADMIN_EMAIL", "")
         password = os.getenv("SUPERADMIN_PASSWORD", "")
