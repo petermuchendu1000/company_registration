@@ -985,6 +985,10 @@
   </div>
   <div class="topbar-summary" id="topbar-summary"></div>
   <a class="topbar-link" href="/wizard" title="Guided single-company onboarding">Onboarding wizard &rarr;</a>
+  <!-- Shown to everyone; auth.py's gate refuses /admin below admin rank and
+       explains why, which is clearer than a link that silently is not there. -->
+  <a class="topbar-link" href="/admin" title="Approve users and manage access">Users</a>
+  <a class="topbar-link" href="/change-password" title="Change your password">Password</a>
   <a class="topbar-link" href="/logout" title="End this session on this device">Sign out</a>
 </div>
 <div class="progress-strip" id="progress-strip" style="display:none">

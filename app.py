@@ -75,6 +75,28 @@ from auth import install_auth, _AUTH_EXEMPT  # noqa: E402  (after app exists)
 _AUTH_TOKEN = os.getenv("APP_AUTH_TOKEN", "")
 install_auth(app)
 
+# --- Accounts, roles and the approval workflow ---
+# The schema and the bootstrap superadmin are created at import, not on
+# first request: an app that starts successfully and then refuses every
+# login because its user table is missing is a worse failure than one that
+# refuses to start. A database that is merely unreachable right now must
+# NOT stop the process, though - the service token still gets an operator
+# in, which is the whole reason it was kept.
+import users  # noqa: E402
+
+try:
+    users.ensure_schema()
+    users.ensure_superadmin(os.getenv("SUPERADMIN_EMAIL", ""),
+                            os.getenv("SUPERADMIN_PASSWORD", ""))
+except Exception as _e:  # pragma: no cover - depends on a live database
+    logging.getLogger(__name__).error(
+        "user schema/bootstrap failed (%s): sign-in with an account will not "
+        "work until the database is reachable; the service token still will",
+        _e)
+
+from admin_routes import admin as _admin_bp  # noqa: E402
+app.register_blueprint(_admin_bp)
+
 
 # --- Wizard onboarding UI ---
 from wizard_routes import register_wizard_routes
