@@ -1,0 +1,36 @@
+# Locked dependency set for deployment.
+#
+# Generated from the build environment in which the full test suite passed
+# (224 checks across 13 suites). requirements.txt states intent and is
+# deliberately unpinned; this file states what is actually deployed.
+# Install from THIS file on the server.
+#
+# Every version below was verified to have an installable wheel for
+# CPython 3.11 on glibc Linux x86_64 -- the Debian 12 target -- by parsing
+# each wheel's own platform tag from the PyPI API. macOS, Windows,
+# musllinux, aarch64 and ppc64le wheels were explicitly excluded, and the
+# checker was self-tested against 14 cases including ones it must reject.
+#
+# playwright-stealth is the pin that matters most. browser_stealth.py uses
+# the v2 API:
+#     from playwright_stealth import Stealth      (line 21)
+#     _stealth = Stealth()                        (line 26)
+#     await _stealth.apply_stealth_async(page)    (line 156)
+# v1 exported a bare stealth_async() function and had no Stealth class at
+# all, so an unpinned resolve to v1 raises ImportError at import time and
+# takes the entire DUNS stage with it.
+#
+# Pillow 13.0.0 requires Python >=3.11 and Debian 12 ships 3.11.2. There is
+# no margin: an older base image breaks this pin.
+
+flask==3.1.3
+gunicorn==26.2.0
+openpyxl==3.1.5
+Pillow==13.0.0
+playwright==1.64.1
+playwright-stealth==2.0.3
+psycopg2-binary==2.9.13
+python-dotenv==1.2.4
+qrcode==8.2
+requests==2.34.2
+urllib3==2.8.0

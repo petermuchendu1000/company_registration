@@ -227,21 +227,69 @@ apt-get install -y python3 python3-venv python3-pip git curl xvfb
 
 ## 3. Application
 
+### 3a. Clone
+
+If the repository is private, capture the token with `read` so it never
+reaches shell history or the screen. Paste this line **alone** — `read`
+consumes the next line of input, so inside a pasted block it would
+swallow the following command as the token:
+
 ```bash
-install -d -o root -g root /opt/company_registration
-cd /opt
-git clone <your-repo-url> company_registration
-cd company_registration
-git checkout claude/upbeat-newton-6u6jwz
+unset HISTFILE; while :; do read -rsp 'Paste PAT then press Enter: ' GH_PAT; echo; [ -n "$GH_PAT" ] && break; echo "empty, try again"; done; export GH_PAT; echo "captured ${#GH_PAT} chars"
+```
 
+A fine-grained PAT is 93 characters; any other count means a truncated
+paste. The loop re-prompts on an empty read, which happens when the
+paste carries a trailing newline that `read` consumes immediately.
+
+```bash
+git clone -b claude/upbeat-newton-6u6jwz \
+  "https://${GH_PAT}@github.com/petermuchendu1000/gglabs.git" \
+  /opt/company_registration
+cd /opt/company_registration
+
+# git clone writes the credentialed URL into .git/config verbatim, leaving
+# a plaintext token on disk permanently. Overwrite it and PROVE it is gone.
+git remote set-url origin https://github.com/petermuchendu1000/gglabs.git
+grep -c github_pat .git/config || true     # MUST print 0
+unset GH_PAT                               # keep it out of child processes
+```
+
+`-b` makes the clone fail loudly if the branch is missing, rather than
+silently landing on an unhardened default branch. Verify with
+`git log --oneline -1` that HEAD is the commit you expect.
+
+### 3b. Dependencies
+
+```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.lock.txt
+```
 
-# Installs Chromium AND its system libraries. --with-deps is the documented
-# flag for the OS packages; chromium pulls the full browser, which the DUNS
-# path needs because it runs headed.
+**Install from `requirements.lock.txt`, not `requirements.txt`.**
+`requirements.txt` carries no version constraints at all, so it resolves
+to whatever is newest on the day it runs. The lock file pins the set the
+test suite actually passed against. The pin that matters most is
+`playwright-stealth==2.0.3`: `browser_stealth.py` uses the v2 API
+(`Stealth`, `apply_stealth_async`), and v1 had neither, so an unpinned
+resolve to v1 is an ImportError that kills the DUNS stage.
+
+No compiler is required. `psycopg2-binary` and `Pillow` both ship cp311
+manylinux x86_64 wheels; all other pins are pure Python. Verified by
+parsing platform tags from PyPI rather than by assumption.
+
+### 3c. Browser
+
+```bash
 .venv/bin/playwright install --with-deps chromium
 ```
+
+Installs Chromium **and** its system libraries. `--with-deps` is the
+documented flag for the OS packages; `chromium` pulls the full browser,
+which the DUNS path needs because it runs headed. This is the step that
+breaks on Debian 13 (microsoft/playwright#38689) and is the reason the
+base image is Debian 12.
 
 ## 4. Environment file
 
