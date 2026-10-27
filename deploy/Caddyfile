@@ -1,0 +1,72 @@
+# Caddy reverse proxy for the operator console.
+#
+# Install to /etc/caddy/Caddyfile, then: systemctl reload caddy
+#
+# Caddy rather than nginx + certbot because it obtains and renews Let's
+# Encrypt certificates by itself, with no cron job and no manual renewal
+# step. For something that has to keep working unattended, that matters
+# more than nginx being more familiar.
+#
+# Naming the host here is what makes HTTPS possible at all: Let's Encrypt
+# will not issue a certificate for a bare IP address, so without a hostname
+# the only option is plaintext HTTP with the password crossing the internet
+# in the clear.
+
+gglabs.tukaze.com {
+	encode zstd gzip
+
+	# Security headers.
+	header {
+		# HSTS deliberately starts SHORT. Once a browser sees this header
+		# it refuses plain HTTP for that host for max-age seconds, and
+		# there is no way to call it back early. Five minutes is enough to
+		# prove the header is being served while leaving an HTTP fallback
+		# if certificate issuance turns out to be broken. Raise to
+		# 31536000 once the site has been confirmed working over HTTPS.
+		Strict-Transport-Security "max-age=300"
+		# Raise to this after verification:
+		# Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	# The console's upload endpoint caps workbooks at 10 MB and answers 413
+	# itself with an explanatory message. Caddy's limit sits just above it so
+	# that the application's error is what the operator sees, rather than a
+	# bare proxy rejection with no explanation.
+	request_body {
+		max_size 12MB
+	}
+
+	reverse_proxy 127.0.0.1:8000 {
+		# Pin X-Forwarded-For to the real peer.
+		#
+		# This is defence in depth, NOT a fix for an open hole: Caddy
+		# already discards a client-supplied X-Forwarded-For by default
+		# ("the proxy will ignore their values from incoming requests, to
+		# prevent spoofing" - caddyserver.com/docs/caddyfile/directives/
+		# reverse_proxy), and only honours it for peers listed in
+		# trusted_proxies. The line below states that contract explicitly
+		# so it does not depend on a default staying put across upgrades.
+		#
+		# Why it matters: auth._client_ip() reads the FIRST entry of
+		# X-Forwarded-For and the login rate limiter buckets by it. If a
+		# client-chosen value ever reached the app, anyone could reset
+		# their own bucket on every attempt and the brute-force limit
+		# would be worth nothing. auth.py has its own half of this
+		# guarantee - it honours the header only when the immediate peer
+		# is loopback, which is exactly this hop.
+		#
+		# If a CDN is ever put in front of Caddy, this needs revisiting
+		# together with the global trusted_proxies option; otherwise every
+		# request would be attributed to the CDN's address.
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	log {
+		output file /var/log/caddy/gglabs.tukaze.com.log
+		format console
+	}
+}

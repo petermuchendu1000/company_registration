@@ -1,0 +1,33 @@
+[Unit]
+# A virtual X display for headed Chromium.
+#
+# A separate unit rather than wrapping gunicorn in `xvfb-run` so the display
+# outlives an app restart: with xvfb-run, every restart tears down the X
+# server and brings up a new one, and anything mid-flight against the old
+# display dies with it. It also makes the failure legible - `systemctl status
+# xvfb` answers "is there a display?" directly instead of that being an
+# inference about a wrapper process.
+#
+# Headed is not a preference. D&B blocks headless Chromium, so the DUNS
+# stage is forced headed (browser_stealth.py), and headed needs a display.
+Description=Xvfb virtual display :99 (headed Chromium for DUNS)
+After=network.target
+
+[Service]
+Type=simple
+User=pipeline
+Group=pipeline
+# -nolisten tcp: the display must never be reachable over the network. Only
+# local clients, via the socket in /tmp/.X11-unix, may connect.
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+# No PrivateTmp. Xvfb's socket lives in /tmp/.X11-unix and the application
+# unit must be able to open it; a private /tmp would give each unit its own
+# and the browser would find no display.
+
+[Install]
+WantedBy=multi-user.target

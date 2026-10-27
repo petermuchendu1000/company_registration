@@ -1,0 +1,52 @@
+[Unit]
+Description=Company Pipeline (gunicorn)
+After=network-online.target xvfb.service
+Wants=network-online.target
+# Requires, not Wants: without a display the DUNS stage cannot run at all,
+# and browser_stealth._require_display refuses rather than letting Chromium
+# die with an opaque closed-browser error. Better to not start.
+Requires=xvfb.service
+
+[Service]
+Type=simple
+User=pipeline
+Group=pipeline
+WorkingDirectory=/opt/company_registration
+
+# No EnvironmentFile. The application already loads .env itself through
+# python-dotenv (app.py:14, db.py:37), and WorkingDirectory puts it in
+# reach. Handing the same file to systemd as well would mean the database
+# password had to survive systemd's EnvironmentFile parsing, which is not
+# shell quoting: an unquoted value is taken to end of line, and characters
+# that are harmless to dotenv can change what systemd reads. One parser for
+# one file.
+Environment=DISPLAY=:99
+# Playwright downloaded its browsers into root's cache during install. The
+# service does not run as root, so point it at a copy it can read.
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/company_registration/.venv/bin/gunicorn -c gunicorn.conf.py app:app
+
+Restart=always
+RestartSec=5
+# gunicorn.conf.py sets timeout = 1800 for browser-driven requests; systemd
+# must not lose patience with a shutdown before gunicorn's own graceful
+# period (30s) has elapsed.
+TimeoutStopSec=45
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateDevices=true
+RestrictSUIDSGID=true
+# Deliberately NOT set:
+#   PrivateTmp      - Xvfb's socket is in /tmp/.X11-unix and is shared
+#   ProtectSystem=strict - the app writes pipeline_output/ and
+#                     duns_requests.json inside its own directory; strict
+#                     would need a ReadWritePaths list that silently rots
+#                     as the application grows new output paths.
+
+[Install]
+WantedBy=multi-user.target

@@ -291,6 +291,29 @@ which the DUNS path needs because it runs headed. This is the step that
 breaks on Debian 13 (microsoft/playwright#38689) and is the reason the
 base image is Debian 12.
 
+### 3d. Service account
+
+Must come AFTER 3c: it copies the browsers that step just downloaded.
+
+The app shells out to `run_pipeline`, drives a browser and accepts file
+uploads. Any of those going wrong as root is a different incident from the
+same thing going wrong as an unprivileged user, so it does not run as root.
+
+```bash
+useradd --system --home-dir /opt/company_registration \
+        --shell /usr/sbin/nologin pipeline 2>/dev/null || true
+
+# Playwright downloaded its browsers into ROOT's cache in 3c, where the
+# service user cannot read them.
+mkdir -p /opt/ms-playwright
+cp -a /root/.cache/ms-playwright/. /opt/ms-playwright/
+
+chown -R pipeline:pipeline /opt/company_registration /opt/ms-playwright
+chmod 600 /opt/company_registration/.env
+```
+
+The unit sets `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` to match.
+
 ## 4. Environment file
 
 `/opt/company_registration/.env`, mode `600`. Every name below was read out
@@ -325,17 +348,28 @@ DB_POOL_MAX=16           # must exceed gunicorn threads (8) plus stage threads
 `NAMECHEAP_SANDBOX=1` deliberately. Domain registration spends money; turn
 it off only when you intend a real purchase.
 
-### Use the shared pooler DSN, not the direct host
+### Direct host works here — the pooler is the fallback
 
-Per Supabase's own documentation, a **direct** connection to
-`db.<project-ref>.supabase.co:5432` is **IPv6-only** unless the project
-carries the paid IPv4 add-on. A Vultr instance gets an IPv4 address, so a
-direct DSN fails there. Confirmed by observation: that hostname returns no
-record from an IPv4-only network, while the project's own
-`<project-ref>.supabase.co` and the pooler hosts both resolve normally — so
-it is not a general DNS problem.
+An earlier version of this runbook said the direct host would not resolve
+on this server and mandated the pooler. **That was wrong, and the live box
+disproved it.** `deploy_check.py` connects over
+`db.ufsiqqsycywnplttvxbz.supabase.co:5432` and reports
+`PostgreSQL 17.11 on aarch64-unknown-linux-gnu`.
 
-The **shared pooler is IPv4 on every plan**. Two differences from the
+What is true: that hostname is **IPv6-only**. A DoH query returns AAAA
+records and no A record at all, with a nonsense sibling returning NXDOMAIN
+as a control, so it is a real and specific absence rather than a resolver
+artifact. Vultr gives this instance a working IPv6 address
+(`2a05:f480:1000:0170:…`), so the direct connection succeeds.
+
+Direct is also the better shape here when IPv6 works: no pooler hop, full
+Postgres feature support, and `db._pool()` already maintains its own
+`ThreadedConnectionPool` (max 16, `db.py:119`) — a transaction pooler
+underneath an application pool is pooling a pool.
+
+**Use the pooler only if IPv6 egress is unavailable**, which
+`deploy_check.py` will show as a `Network is unreachable` or a timeout in
+section 6 rather than a successful `connects:` line. Two differences from
 direct string matter, and the second is easy to miss:
 
 ```
@@ -345,11 +379,9 @@ postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.co
              NOT plain postgres                   is not guessable - copy it
 ```
 
-Use **port 5432 (session mode)**, which is Supabase's stated guidance for
-IPv4-only networks, not 6543 (transaction mode). Session mode keeps one
-backend per client connection, which is what `db._pool()` expects; stacking
-a transaction pooler under an application pool is the wrong shape and
-transaction mode also drops prepared statements.
+If you do need it, use **port 5432 (session mode)**, not 6543 (transaction
+mode). Session mode keeps one backend per client connection, which is what
+`db._pool()` expects; transaction mode also drops prepared statements.
 
 Copy the exact string from the Supabase dashboard: Project Settings →
 Database → Connection string → **Session pooler**. The region index in the
@@ -388,44 +420,34 @@ Two units rather than wrapping gunicorn in `xvfb-run`: a long-running daemon
 under `xvfb-run` complicates signal handling and restarts, and a standalone
 Xvfb gives the app a stable `DISPLAY` across restarts.
 
-`/etc/systemd/system/xvfb.service`:
-```ini
-[Unit]
-Description=Virtual framebuffer for the DUNS browser path
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-`/etc/systemd/system/companyreg.service`:
-```ini
-[Unit]
-Description=company_registration dashboard
-After=network.target xvfb.service
-Requires=xvfb.service
-
-[Service]
-WorkingDirectory=/opt/company_registration
-EnvironmentFile=/opt/company_registration/.env
-Environment=DISPLAY=:99
-ExecStart=/opt/company_registration/.venv/bin/gunicorn -c gunicorn.conf.py app:app
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+Both units are versioned in `deploy/`, so they are reviewed in the repo
+rather than pasted into a terminal from a chat window:
 
 ```bash
+cd /opt/company_registration
+install -m 644 deploy/xvfb.service deploy/company-registration.service \
+        /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now xvfb companyreg
-systemctl status companyreg --no-pager
+systemctl enable --now xvfb company-registration
+systemctl --no-pager status xvfb company-registration
 ```
+
+Two details in those files are deliberate and easy to undo by accident:
+
+**They run as `pipeline`, not root** (step 3d), and set
+`PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` because Playwright downloaded
+its browsers into root's cache.
+
+**Neither uses `EnvironmentFile`.** The app already loads `.env` through
+python-dotenv (`app.py:14`, `db.py:37`) and `WorkingDirectory` puts it in
+reach. Handing the same file to systemd as well would mean the database
+password had to survive systemd's `EnvironmentFile` parsing, which is not
+shell quoting — an unquoted value runs to end of line, and characters that
+are harmless to dotenv change what systemd reads. One parser, one file.
+
+**Neither sets `PrivateTmp`.** Xvfb's socket lives in `/tmp/.X11-unix` and
+both units must see the same one; a private `/tmp` gives each its own and
+the browser finds no display.
 
 `workers = 1` in `gunicorn.conf.py` is a correctness constraint, not tuning:
 the job table lives in process memory. Do not raise it.
@@ -436,7 +458,7 @@ one and you end up with two app processes. `duns_requests.json` is now
 guarded by an `fcntl.flock` on a `duns_requests.json.lock` sidecar, so the
 two cannot corrupt the store or lose each other's records, but the second
 process still has its own in-memory job table and the dashboard will
-disagree with itself about what is running. Use `systemctl stop companyreg`
+disagree with itself about what is running. Use `systemctl stop company-registration`
 first.
 
 If a DUNS operation ever fails with "could not lock
@@ -444,21 +466,80 @@ duns_requests.json.lock", that is this situation: something else holds the
 lock. Find the second process. The lock is released by the kernel when a
 process exits, so a crash cannot leave it stuck.
 
-## 7. Access — do not expose this publicly
+## 7. Public HTTPS with Caddy
 
-`gunicorn.conf.py` binds `127.0.0.1:8000` on purpose. Reach it over
-Tailscale instead of opening a port:
+`gunicorn.conf.py` binds `127.0.0.1:8000` on purpose: the app is never
+directly reachable, and Caddy is the only thing listening publicly.
+
+**This is a deliberate trade, made explicitly.** An earlier version of this
+runbook put the console behind Tailscale and said not to expose it. That is
+the stronger posture and it is the right one for a single technical
+operator. It was dropped because the console is used by someone who is not
+technical, and Tailscale means installing software and signing in on every
+device they might use. A public URL with HTTPS, a login page and a
+rate-limited password is the weaker posture; it is chosen knowingly, not by
+omission. If the operator ever becomes technical, Tailscale is strictly
+better and this section should be reverted.
+
+What carries the weight instead: TLS on every byte, `auth.py`'s login
+limiter (8 failures per 5 minutes per client), a session cookie that stores
+only a fingerprint of the token, and gunicorn never being reachable except
+through the proxy.
+
+### Install
 
 ```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-tailscale up
-tailscale ip -4        # the address you browse to, port 8000
+apt install --yes debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | tee /etc/apt/sources.list.d/caddy-stable.list
+chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+          /etc/apt/sources.list.d/caddy-stable.list
+apt update && apt install -y caddy
 ```
 
-You get no public attack surface, no TLS certificate and no reverse proxy,
-and the operator token becomes defence-in-depth rather than the only
-defence. For a single-operator system holding director dates of birth and a
-live payment credential, that is the right shape.
+Installing the package starts Caddy as a systemd service automatically.
+
+Caddy rather than nginx + certbot because it obtains and renews
+certificates by itself, with no cron job and no manual renewal step. For
+something that must keep working unattended, that outweighs nginx being
+more familiar.
+
+### Configure
+
+```bash
+cd /opt/company_registration
+cp deploy/Caddyfile /etc/caddy/Caddyfile
+# Edit the hostname at the top if it is not gglabs.tukaze.com
+caddy validate --config /etc/caddy/Caddyfile   # must pass BEFORE reloading
+systemctl reload caddy
+```
+
+`caddy validate` parses the file without touching the running server, so a
+typo is caught while the old config is still serving.
+
+### Prerequisites, in order
+
+1. A DNS **A record** for the hostname pointing at this server, confirmed
+   resolving before Caddy starts. Let's Encrypt validates by connecting to
+   that name; if it does not resolve yet, issuance fails and Caddy retries
+   with a backoff.
+2. **Ports 80 and 443 reachable from the internet.** 80 is not optional
+   even though the site is HTTPS — it carries the ACME HTTP-01 challenge
+   and the redirect to HTTPS.
+3. Let's Encrypt will **not** issue for a bare IP address. Without a
+   hostname the only option is plaintext HTTP, with the password crossing
+   the internet in the clear.
+
+### HSTS starts short on purpose
+
+`deploy/Caddyfile` sets `Strict-Transport-Security "max-age=300"`. Once a
+browser sees that header it refuses plain HTTP for the host for max-age
+seconds and there is no way to call it back early. Five minutes is enough
+to prove the header is served while leaving an HTTP fallback if issuance
+turns out to be broken. Raise it to `31536000` once the site is confirmed
+working over HTTPS — the commented line is already in the file.
 
 ## 8. Database schema
 
@@ -595,7 +676,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
 #    expect 200
 
 # 4. request correlation and the money channel are live
-journalctl -u companyreg -n 30 --no-pager | grep -E '\[app\]|\[money\]'
+journalctl -u company-registration -n 30 --no-pager | grep -E '\[app\]|\[money\]'
 #    expect lines like: INFO [app] [a1b2c3d4] GET /health -> 200 in 1ms
 
 # 5. a headed browser can actually start (the DUNS precondition)
