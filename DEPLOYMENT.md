@@ -62,18 +62,20 @@ Measured in the build environment:
 | **headed Chromium + Xvfb** | **1117 MB** |
 | gunicorn master + worker | 75 MB |
 
-Budget: 1117 + 75 + ~200 (Debian, [INFERRED]) ≈ **1.4 GB**. On the 2 GB
-plan that leaves ~600 MB, which works; on 4 GB it leaves ~2.6 GB, and the
-swap added in step 2 becomes a genuine safety net rather than part of the
-working set.
+Budget: 1117 + 75 + 363 (Debian at idle, [VERIFIED] by `free -m` on the
+live box) ≈ **1.6 GB**. On the 2 GB plan that would have left ~400 MB,
+which is tight enough that swap would have been part of the working set;
+on 4 GB it leaves ~2.3 GB, and the image's 8 GB swap stays a safety net.
+This is the measurement that justifies the upgrade to 4 GB.
 
 The second core is not optional either way. Headed Chromium under Xvfb is
 CPU-bound while rendering, and on a single core it contends with the
 process serving the dashboard — so a DUNS run would make the UI crawl
 exactly when you want to watch it.
 
-Add the swap regardless (step 2). It costs nothing and the browser is the
-spiky part of the profile, not the steady part.
+Swap needs no action: the Vultr Debian 12 image already provides 8 GB at
+`/swapfile`, active, prio -2 ([VERIFIED] on the live box). Step 2 only
+verifies it — it does not create it.
 
 ## 2. Base setup
 
@@ -82,11 +84,15 @@ spiky part of the profile, not the steady part.
 apt-get update
 apt-get install -y python3 python3-venv python3-pip git curl xvfb
 
-# 2 GB swap: headroom for the headed browser, not a substitute for RAM
-fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile
-swapon /swapfile
-echo '/swapfile none swap sw 0 0' >> /etc/fstab
-free -h          # verify: Swap total shows 2.0Gi
+# Swap: the Vultr Debian 12 image ALREADY ships an active 8 GB /swapfile.
+# VERIFY BEFORE TOUCHING IT. Running fallocate against a swapfile that is
+# swapped on truncates it in place and can take the box down.
+swapon --show    # expect: /swapfile  file  8G  0B  -2
+# Only if the line above prints nothing:
+#   fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile
+#   swapon /swapfile
+#   echo '/swapfile none swap sw 0 0' >> /etc/fstab
+free -h
 ```
 
 ## 3. Application
