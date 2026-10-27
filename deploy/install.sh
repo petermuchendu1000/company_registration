@@ -123,7 +123,15 @@ fi
 # ── 4. report ───────────────────────────────────────────────────────────
 say "4. result"
 echo "    listening sockets:"
-ss -tlnp 2>/dev/null | awk 'NR==1 || /:(80|443|8000)\s/ {print "      " $0}'
+# Plain grep, NOT awk. Debian's awk is mawk, which does not support \s, so
+# an earlier `awk '/:(80|443|8000)\s/'` here matched nothing and printed a
+# bare header - output that reads as "nothing is listening" when in fact
+# the filter was broken. Verified: mawk 1.3.4 prints only the header for
+# that pattern against ss output containing all three sockets.
+ss -tlnp 2>/dev/null > /tmp/_ss_install.txt
+head -1 /tmp/_ss_install.txt | sed 's/^/      /'
+grep -E ':(80|443|8000) ' /tmp/_ss_install.txt | sed 's/^/      /' || \
+  echo "      (none of :80 :443 :8000 are listening)"
 echo
 echo "    Certificate issuance happens on the first HTTPS request and can"
 echo "    take a few seconds. From your own machine, not this server:"
