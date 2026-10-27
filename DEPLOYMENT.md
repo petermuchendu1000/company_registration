@@ -24,7 +24,7 @@ Read from `api.vultr.com/v2/plans` [VERIFIED]:
 | price | $15/month |
 | vCPU | 2 |
 | RAM | 2048 MB |
-| disk | 65 GB NVMe |
+| disk | 65 GB SSD (the vc2 line is SSD; the NVMe plans are vhf/vhp) |
 | bandwidth | 3072 GB |
 | region | `lhr` (London) — confirmed available for this plan |
 
