@@ -38,17 +38,26 @@ for p in 80 443 8000; do
 done
 
 say "B. does this host answer on loopback"
-for url in "http://127.0.0.1/" "http://127.0.0.1:8000/health"; do
-  code=$(curl -sS -o /dev/null -m 8 -w '%{http_code}' "$url" 2>/dev/null || echo 000)
-  if [ "$code" != "000" ]; then ok "$url -> HTTP $code"; else bad "$url -> no answer"; fi
-done
-code=$(curl -skS -o /dev/null -m 10 -w '%{http_code}' \
-       --resolve "${HOST}:443:127.0.0.1" "https://${HOST}/health" 2>/dev/null || echo 000)
-if [ "$code" != "000" ]; then
-  ok "https://${HOST}/ via loopback -> HTTP $code (TLS terminates locally)"
-else
-  bad "https://${HOST}/ via loopback -> no answer"
-fi
+# Read curl's EXIT STATUS, not its printed body. An earlier version did
+# `code=$(curl ... || echo 000)` and tested `[ "$code" != "000" ]`. When
+# curl failed it printed 000 AND the fallback appended another, giving
+# "000000", which is != "000", so a FAILED request was reported [ok].
+# That is exactly the check that cannot fail in the direction it must.
+probe() {   # probe <label> <curl args...>
+  local label="$1"; shift
+  local out rc
+  out=$(curl -sS -o /dev/null -m 10 -w '%{http_code}' "$@" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$out" ] && [ "$out" != "000" ]; then
+    ok "$label -> HTTP $out"
+  else
+    bad "$label -> FAILED (curl exit $rc, code '${out:-none}')"
+  fi
+}
+probe "http://127.0.0.1/"             "http://127.0.0.1/"
+probe "http://127.0.0.1:8000/health"  "http://127.0.0.1:8000/health"
+probe "https://${HOST}/ via loopback" -k --resolve "${HOST}:443:127.0.0.1" \
+      "https://${HOST}/health"
 
 say "C. host firewall"
 found=0
@@ -68,7 +77,21 @@ if command -v iptables >/dev/null 2>&1; then
     found=1; bad "INPUT policy is DROP - inbound traffic is blocked by default"
   fi
 fi
-command -v ufw >/dev/null 2>&1 && { echo "      ufw: $(ufw status 2>/dev/null | head -1)"; }
+if command -v ufw >/dev/null 2>&1; then
+  ustat=$(ufw status 2>/dev/null | head -1)
+  echo "      ufw: ${ustat}"
+  if echo "$ustat" | grep -qi active; then
+    found=1
+    ufw status 2>/dev/null | sed 's/^/      /'
+    for p in 80 443; do
+      if ufw status 2>/dev/null | grep -qE "(^| )${p}(/tcp)?( |$|.*ALLOW)"; then
+        ok "ufw permits ${p}"
+      else
+        bad "ufw does NOT permit ${p}  ->  ufw allow ${p}/tcp"
+      fi
+    done
+  fi
+fi
 [ "$found" = "0" ] && ok "no host firewall rules found"
 
 say "D. caddy state"
