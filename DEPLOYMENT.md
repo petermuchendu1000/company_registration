@@ -28,6 +28,27 @@ Read from `api.vultr.com/v2/plans` [VERIFIED]:
 | bandwidth | 3072 GB |
 | region | `lhr` (London) — confirmed available for this plan |
 
+### As provisioned [VERIFIED on the live instance]
+
+| field | observed |
+|---|---|
+| hostname | `company-registration` |
+| IPv4 | `95.179.203.236` |
+| IPv6 | `2a05:f480:1000:0170:5400:06ff:fef5:25ad` (`/64` prefix) |
+| rDNS | `95.179.203.236.vultrusercontent.com` (Vultr default) |
+| ASN | `AS20473 The Constant Company, LLC` |
+| OS | `Debian GNU/Linux 12 (bookworm)`, kernel `6.1.0-53-amd64` |
+| OpenSSH | `9.2p1 Debian-2+deb12u10` |
+| CPU / RAM | 2 vCPU / 3909 MB (363 MB used at idle) |
+| disk | `/dev/vda2`, 120 G usable, 104 G free |
+| swap | `/swapfile`, 8 G, active, prio -2 — shipped by the image |
+| listening | `sshd` on `:22` only (v4 + v6) |
+
+Custom reverse DNS is available in the Vultr panel but was deliberately
+skipped: anti-bot systems key on ASN, which a PTR edit cannot change, and
+pointing the PTR at a domain you own ties the box to your registrations
+without removing the signal that matters.
+
 The cheapest plan that fits is `vc2-2c-2gb` at $15 (2 vCPU, 2048 MB, 65 GB
 SSD). It works on the measurements below, with roughly 600 MB spare. This
 deployment took the 4 GB plan instead, which turns that margin from
@@ -79,20 +100,129 @@ verifies it — it does not create it.
 
 ## 2. Base setup
 
+### 2a. Wait for first-boot provisioning
+
 ```bash
-# as root on the new instance
+cloud-init status        # must print exactly: status: done
+```
+
+cloud-init runs its own `apt` operations on first boot. Installing
+packages while it holds `/var/lib/dpkg/lock-frontend` gives either a lock
+error (harmless) or a half-configured package state (not). If it reports
+`running`, bound the wait rather than blocking indefinitely:
+
+```bash
+timeout 180 cloud-init status --wait; echo "exit=$?"   # 124 = still busy
+```
+
+Plain `cloud-init status --wait` blocks forever with no timeout. It looks
+like a hung terminal. It is not — but use the bounded form.
+
+### 2b. Verify swap — do not create it
+
+```bash
+swapon --show    # expect: /swapfile  file  8G  0B  -2
+free -h
+```
+
+The Vultr Debian 12 image ALREADY ships an active 8 GB `/swapfile`.
+Running `fallocate -l 2G /swapfile` against a swapfile the kernel is
+paging to truncates it in place and can take the box down. Only if
+`swapon --show` prints nothing:
+
+```bash
+# fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile
+# swapon /swapfile
+# echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
+### 2c. Close the root password surface
+
+The image ships `PasswordAuthentication yes` and `PermitRootLogin yes`,
+so root is brute-forceable from the public internet. Port 22 is the only
+open port and is scanned continuously.
+
+Do not start this until a key login is proven working. Keep the current
+session open throughout — it is the rollback path.
+
+```bash
+cat > /etc/ssh/sshd_config.d/01-hardening.conf <<'EOF'
+# Must sort before 50-cloud-init.conf: sshd takes the FIRST value it
+# obtains, so this file has to be read first to beat PasswordAuthentication yes.
+PasswordAuthentication no
+PermitRootLogin prohibit-password
+EOF
+chmod 600 /etc/ssh/sshd_config.d/01-hardening.conf
+
+sshd -t; echo "sshd -t exit=$?"
+sshd -T | grep -E "^(permitrootlogin|passwordauthentication) "
+```
+
+Both checks read from disk and leave the running daemon untouched, so a
+mistake here costs nothing. Expected:
+
+```
+sshd -t exit=0
+permitrootlogin without-password
+passwordauthentication no
+```
+
+**Trap 1 — the filename is load-bearing.** sshd takes the *first* value
+it obtains, and `sshd_config.d/*.conf` is globbed in lexical order. The
+image ships `50-cloud-init.conf` containing `PasswordAuthentication yes`.
+A conventionally-named `99-hardening.conf` is read second, loses, and
+changes nothing — while `systemctl reload` reports success and the file
+sits on disk looking correct. `01-` wins. It also beats `PermitRootLogin
+yes` at line 123 of the main config, because the `Include` is at line 12.
+
+**Trap 2 — `without-password` is the correct output.** On OpenSSH 9.2p1
+(Debian 12) `without-password` and `prohibit-password` both map to
+`PERMIT_NO_PASSWD`, and `sshd -T` prints whichever appears first in
+`multistate_permitrootlogin[]` — in 9.2p1, the deprecated spelling.
+sshd_config(5): "set to `prohibit-password` (or its deprecated alias,
+`without-password`), password and keyboard-interactive authentication are
+disabled for root." Current OpenSSH reversed the table order, so this
+line will read `prohibit-password` after a future upgrade. Cosmetic.
+
+Only if both checks pass:
+
+```bash
+systemctl reload ssh && systemctl is-active ssh
+```
+
+`reload` sends SIGHUP; existing connections survive.
+
+Then prove it bites. **On your workstation, in a new terminal**, with the
+server session still open:
+
+```bash
+hostname                                  # must NOT be the server
+ssh root@<ip> echo A_OK                   # must print A_OK
+ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+    root@<ip> true; echo "exit=$?"        # must be 255, and the error
+                                          # must read (publickey) ONLY
+```
+
+These must run on the workstation. The server holds only the *public*
+key, so it fails both tests from itself no matter how sshd is configured
+— a failure there proves nothing about lockout. `(publickey)` alone in
+the error is sshd enumerating the methods it still offers; if password
+auth were live it would read `(publickey,password)`.
+
+Rollback, from the still-open session:
+
+```bash
+rm /etc/ssh/sshd_config.d/01-hardening.conf && systemctl reload ssh
+```
+
+The Vultr noVNC console attaches below the network stack and works even
+if sshd is wedged, so lockout is recoverable in all cases.
+
+### 2d. Packages
+
+```bash
 apt-get update
 apt-get install -y python3 python3-venv python3-pip git curl xvfb
-
-# Swap: the Vultr Debian 12 image ALREADY ships an active 8 GB /swapfile.
-# VERIFY BEFORE TOUCHING IT. Running fallocate against a swapfile that is
-# swapped on truncates it in place and can take the box down.
-swapon --show    # expect: /swapfile  file  8G  0B  -2
-# Only if the line above prints nothing:
-#   fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile
-#   swapon /swapfile
-#   echo '/swapfile none swap sw 0 0' >> /etc/fstab
-free -h
 ```
 
 ## 3. Application
