@@ -40,33 +40,40 @@ gglabs.tukaze.com {
 		max_size 12MB
 	}
 
-	reverse_proxy 127.0.0.1:8000 {
-		# Pin X-Forwarded-For to the real peer.
-		#
-		# This is defence in depth, NOT a fix for an open hole: Caddy
-		# already discards a client-supplied X-Forwarded-For by default
-		# ("the proxy will ignore their values from incoming requests, to
-		# prevent spoofing" - caddyserver.com/docs/caddyfile/directives/
-		# reverse_proxy), and only honours it for peers listed in
-		# trusted_proxies. The line below states that contract explicitly
-		# so it does not depend on a default staying put across upgrades.
-		#
-		# Why it matters: auth._client_ip() reads the FIRST entry of
-		# X-Forwarded-For and the login rate limiter buckets by it. If a
-		# client-chosen value ever reached the app, anyone could reset
-		# their own bucket on every attempt and the brute-force limit
-		# would be worth nothing. auth.py has its own half of this
-		# guarantee - it honours the header only when the immediate peer
-		# is loopback, which is exactly this hop.
-		#
-		# If a CDN is ever put in front of Caddy, this needs revisiting
-		# together with the global trusted_proxies option; otherwise every
-		# request would be attributed to the CDN's address.
-		header_up X-Forwarded-For {remote_host}
-	}
+	# X-Forwarded-For is deliberately NOT set here.
+	#
+	# Caddy already discards a client-supplied X-Forwarded-For and
+	# substitutes the real peer ("the proxy will ignore their values from
+	# incoming requests, to prevent spoofing" -
+	# caddyserver.com/docs/caddyfile/directives/reverse_proxy), honouring
+	# it only for peers in trusted_proxies. An explicit
+	# `header_up X-Forwarded-For {remote_host}` made Caddy warn on every
+	# start that it was unnecessary, and a warning nobody can act on
+	# trains operators to ignore warnings.
+	#
+	# This matters because auth._client_ip() reads the FIRST entry of
+	# X-Forwarded-For and the login rate limiter buckets by it. If a
+	# client-chosen value reached the app, anyone could reset their own
+	# bucket on every attempt. Two things keep that shut: Caddy's default
+	# above, and auth.py honouring the header only when the immediate peer
+	# is loopback - which is exactly this hop.
+	#
+	# If a CDN is ever placed in front of Caddy, revisit this together
+	# with the global trusted_proxies option, or every request will be
+	# attributed to the CDN's address.
+	reverse_proxy 127.0.0.1:8000
 
-	log {
-		output file /var/log/caddy/gglabs.tukaze.com.log
-		format console
-	}
+	# Logging goes to journald, which is Caddy's default when no output is
+	# named. An earlier version wrote to /var/log/caddy/<host>.log and the
+	# service would not start:
+	#
+	#   open /var/log/caddy/gglabs.tukaze.com.log: permission denied
+	#
+	# `caddy validate` parses the config, it does not open the file, so the
+	# config validated and then died on start. The packaged unit sandboxes
+	# the filesystem, so making that path writable means fighting the unit
+	# and re-fighting it on upgrade. journalctl -u caddy is where an
+	# operator looks anyway:
+	#
+	#   journalctl -u caddy -f
 }
