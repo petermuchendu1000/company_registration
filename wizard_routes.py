@@ -5,7 +5,7 @@ Add to the bottom of app.py (before `if __name__ == "__main__":`)
 or import via:  from wizard_routes import register_wizard_routes
                 register_wizard_routes(app)
 """
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_file
 import os
 import json
 import sys
@@ -173,6 +173,37 @@ def _save_manual_inputs_db(db):
                 json.dump(db, f, indent=2)
         except Exception:
             pass
+
+
+# ──────────────────────────────────────────────────────────────
+# GET /wizard — the onboarding UI itself
+# ──────────────────────────────────────────────────────────────
+@wizard.route("/wizard")
+def wizard_page():
+    """Serve the onboarding wizard page.
+
+    static/index.html previously had no route of its own. It was reachable
+    only by knowing Flask's built-in static path, /static/index.html, so
+    the page was undiscoverable while every API it calls was registered and
+    live - /api/pipeline/*, /api/domains/*, /api/duns/*, all in this
+    module. The page was the only part without a front door.
+
+    Lives here rather than in app.py or api_v2.py because this module
+    already owns every endpoint the page talks to; the page and its API
+    stay in one place.
+
+    Serving the same file from a second URL needs no change to the page:
+    it references its assets absolutely (/static/style.css,
+    /static/wizard.js), so they resolve identically from /wizard.
+
+    Covered by the app-wide auth gate (app.py:84) like every other route,
+    and it adds no exemption. Worth stating plainly: this makes the wizard
+    exactly as privileged as the dashboard, because the app has one token
+    and one privilege level, not a user model. Anyone who can reach this
+    page can also run billed domain purchases.
+    """
+    return send_file(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "static", "index.html"))
 
 
 # ──────────────────────────────────────────────────────────────

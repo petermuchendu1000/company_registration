@@ -3,9 +3,15 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;}
 #app{max-width:960px;margin:0 auto;padding:0 1rem 3rem;}
-.top-bar{text-align:center;padding:2rem 0 .5rem;}
+.top-bar{text-align:center;padding:2rem 0 .5rem;position:relative;}
 .logo{font-size:1.8rem;font-weight:700;}.logo span{color:var(--primary);}
 .tagline{color:var(--text-muted);font-size:.95rem;margin-top:.25rem;}
+/* Absolute rather than in flow: .top-bar is text-align:center, so an inline
+   link would land under the tagline instead of in the corner. */
+.back-to-dashboard{position:absolute;top:2rem;right:0;color:var(--text-muted);text-decoration:none;font-size:.82rem;font-weight:600;padding:.4rem .75rem;border:1px solid var(--border);border-radius:999px;background:var(--surface);transition:color .2s,border-color .2s;}
+.back-to-dashboard:hover{color:var(--primary);border-color:var(--primary);}
+/* Narrow screens: drop it back into the flow so it cannot sit on the logo. */
+@media (max-width:560px){.back-to-dashboard{position:static;display:inline-block;margin-top:.75rem;}}
 .stepper{display:flex;justify-content:center;gap:.25rem;margin:1.5rem 0 2rem;flex-wrap:wrap;}
 .stepper .step{display:flex;align-items:center;gap:.4rem;padding:.45rem .9rem;border-radius:999px;font-size:.82rem;font-weight:500;color:var(--text-muted);background:var(--surface);border:1px solid var(--border);cursor:pointer;transition:all .25s;}
 .stepper .step .num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--border);font-size:.75rem;font-weight:600;color:var(--text-muted);transition:all .25s;}

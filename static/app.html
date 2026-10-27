@@ -47,6 +47,13 @@
       z-index: 10;
     }
     .topbar-logo { font-weight: 700; font-size: 15px; letter-spacing: -0.3px; white-space: nowrap; }
+    .topbar-link {
+      color: var(--muted); text-decoration: none; font-size: 12px;
+      font-weight: 600; white-space: nowrap; padding: 5px 10px;
+      border: 1px solid var(--border); border-radius: 5px;
+      transition: color .15s, border-color .15s;
+    }
+    .topbar-link:hover { color: var(--text); border-color: var(--blue); }
     .topbar-logo span { color: var(--blue); }
     .topbar-spacer { flex: 1; }
     .topbar-summary {
@@ -977,6 +984,7 @@
     <span id="topbar-running-label"></span>
   </div>
   <div class="topbar-summary" id="topbar-summary"></div>
+  <a class="topbar-link" href="/wizard" title="Guided single-company onboarding">Onboarding wizard &rarr;</a>
 </div>
 <div class="progress-strip" id="progress-strip" style="display:none">
   <div class="progress-fill" id="progress-fill"></div>
