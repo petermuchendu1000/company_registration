@@ -32,6 +32,26 @@ RESULTS: list[tuple[str, str, str]] = []
 BROWSER_TIMEOUT = 90
 
 
+def load_env() -> str:
+    """Honour .env the way every entry point does (app.py:14, db.py:37).
+
+    Without this the database section reports SKIP on a correctly configured
+    box: it reads os.environ before importing db, and db is what would
+    otherwise have loaded .env. A check that says "not configured" about a
+    configured system is worse than no check.
+    """
+    path = os.path.join(ROOT, ".env")
+    if not os.path.exists(path):
+        return "no .env file"
+    try:
+        from dotenv import load_dotenv
+    except Exception as e:                      # pragma: no cover - defensive
+        return f".env present but python-dotenv unusable: {e}"
+    load_dotenv(path)
+    mode = oct(os.stat(path).st_mode & 0o777)
+    return f"loaded {path} (mode {mode})"
+
+
 def record(name: str, state: str, detail: str = "") -> bool:
     RESULTS.append((name, state, detail))
     mark = {"PASS": "PASS", "FAIL": "FAIL", "SKIP": "SKIP"}[state]
@@ -225,6 +245,7 @@ def check_database() -> None:
 def main() -> int:
     print("Deployment self-check - read-only, changes nothing")
     print(f"repo: {ROOT}")
+    print(f"env:  {load_env()}")
     check_python()
     check_pins()
     check_stealth_import()
