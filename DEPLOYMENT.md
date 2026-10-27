@@ -338,8 +338,8 @@ NAMECHEAP_SANDBOX=1      # keep 1 until you have deliberately tested live
 NAMECHEAP_DEFAULT_ADDRESS_ID=
 NAMECHEAP_REFERENCE_DOMAIN=
 
-XBINDER_EMAIL=
-XBINDER_PASSWORD=
+XBINDER_EMAIL=           # the ibenty.com account - the service used to be
+XBINDER_PASSWORD=        # xbinder.net and the variables kept the old name
 
 LOG_LEVEL=INFO           # INFO switches on browser_stealth's diagnostics
 DB_POOL_MAX=16           # must exceed gunicorn threads (8) plus stage threads
