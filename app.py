@@ -117,6 +117,10 @@ register_wizard_routes(app)
 from api_v2 import api_v2
 app.register_blueprint(api_v2)
 
+# --- Operator Excel import (upload -> diff -> apply) ---
+from import_routes import imports
+app.register_blueprint(imports)
+
 
 API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY")
 BASE_URL = "https://api.company-information.service.gov.uk"

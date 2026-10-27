@@ -571,9 +571,20 @@ def _excel_records(path: str):
             return
         hdr = [str(v or "").strip() for v in hdr_row]
         for row in it:
-            # Positional pre-filter, kept verbatim: a row whose second cell
-            # is empty is dropped before the header-based lookup below runs.
-            if not row or not row[1 if len(row) > 1 else 0]:
+            # Drop wholly blank rows only. This used to be a POSITIONAL test
+            # - `not row[1]` - which assumed Company Number is the second
+            # column. Everything else in this parser is header-driven, and
+            # the real company-number filter is six lines below, so the
+            # positional test added nothing on a canonically ordered sheet
+            # and silently dropped every row of a reordered one: with
+            # Company Number moved, row[1] became some other column, and a
+            # company with that column empty vanished from the import
+            # without a word. Operator-supplied workbooks now arrive through
+            # /api/import/preview, so column order is no longer ours to
+            # assume. Behaviour on a canonical sheet is unchanged: a row with
+            # no company number is still skipped, just by the check below.
+            if not row or not any(v is not None and str(v).strip() != ""
+                                  for v in row):
                 continue
             rec = {hdr[i]: (row[i] if i < len(row) else None)
                    for i in range(len(hdr))}
