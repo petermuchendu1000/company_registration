@@ -20,26 +20,39 @@ Read from `api.vultr.com/v2/plans` [VERIFIED]:
 
 | field | value |
 |---|---|
-| plan | `vc2-2c-2gb` |
-| price | $15/month |
+| plan | `vhf-2c-4gb` (High Frequency) |
+| price | $24/month |
 | vCPU | 2 |
-| RAM | 2048 MB |
-| disk | 65 GB SSD (the vc2 line is SSD; the NVMe plans are vhf/vhp) |
+| RAM | 4096 MB |
+| disk | 128 GB NVMe |
 | bandwidth | 3072 GB |
 | region | `lhr` (London) — confirmed available for this plan |
 
-OS: **Debian 12**. The code needs no 3.10-only syntax — no `match`
-statements and no `except*` anywhere, and 18 files carry
-`from __future__ import annotations` — so Debian 12's Python 3.11 is
-sufficient. [INFERRED from those greps; only 3.13 is [VERIFIED], since that
-is what the build environment ran.]
+The cheapest plan that fits is `vc2-2c-2gb` at $15 (2 vCPU, 2048 MB, 65 GB
+SSD). It works on the measurements below, with roughly 600 MB spare. This
+deployment took the 4 GB plan instead, which turns that margin from
+"adequate" into "not something to think about".
+
+OS: **Debian 12 (bookworm)**, deliberately, and do not casually move to 13.
+The code itself is fine on either — no `match` statements, no `except*`,
+and 18 files carry `from __future__ import annotations`, so Debian 12's
+Python 3.11 is sufficient. [INFERRED from those greps; only 3.13 is
+[VERIFIED], being what the build environment ran.]
+
+The reason to stay on 12 is step 3. Playwright lists Debian 13 as
+supported from 1.55, but there is an open bug in which
+`playwright install --with-deps` on Debian 13 misidentifies the OS as
+Ubuntu and installs the Ubuntu 20.04 dependency set instead
+(microsoft/playwright#38689, playwright-python#2950). That command feeds
+the headed-browser path, which is already the least verifiable part of
+this system. Debian 12 removes the variable at no cost.
 
 **London, not Johannesburg**, even though you are in Nairobi. The server
 talks to Companies House, Namecheap and D&B far more than you click, and a
 dashboard does not care about 140 ms. A UK-origin IP is also the least
 anomalous source for UK company lookups.
 
-### Why 2 vCPU and not the $10 single-core
+### Why 2 vCPU, and why the memory headroom matters
 
 Measured in the build environment:
 
@@ -49,10 +62,18 @@ Measured in the build environment:
 | **headed Chromium + Xvfb** | **1117 MB** |
 | gunicorn master + worker | 75 MB |
 
-Budget: 1117 + 75 + ~200 (Debian, [INFERRED]) ≈ **1.4 GB of 2 GB**. The
-second core matters because headed Chromium under Xvfb is CPU-bound while
-rendering and would otherwise contend with the dashboard. Add swap anyway
-(step 2) — it costs nothing and the browser is the spiky part.
+Budget: 1117 + 75 + ~200 (Debian, [INFERRED]) ≈ **1.4 GB**. On the 2 GB
+plan that leaves ~600 MB, which works; on 4 GB it leaves ~2.6 GB, and the
+swap added in step 2 becomes a genuine safety net rather than part of the
+working set.
+
+The second core is not optional either way. Headed Chromium under Xvfb is
+CPU-bound while rendering, and on a single core it contends with the
+process serving the dashboard — so a DUNS run would make the UI crawl
+exactly when you want to watch it.
+
+Add the swap regardless (step 2). It costs nothing and the browser is the
+spiky part of the profile, not the steady part.
 
 ## 2. Base setup
 
