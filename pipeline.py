@@ -162,6 +162,25 @@ def stage_match(dry_run: bool = False) -> None:
         if cn and name:
             companies.append((cn, name, dom))
 
+    # How many rows were actually compared, and how many are still free to
+    # take a domain. Without this the stage is unreadable in the one case
+    # that matters: when the list is empty the inner loop never runs,
+    # best_score stays 0.0, and EVERY domain prints "best score=0.00" — a run
+    # with nothing to compare against is byte-identical to a run where
+    # nothing matched. That is the same fault as stage 1 printing OK over a
+    # refused call, and it was observed on production: 35 domains, 35 zeros,
+    # and no way to tell which had happened.
+    free = sum(1 for _, _, d in companies if not d)
+    print(f"  Companies loaded: {len(companies)} "
+          f"({free} without a domain, {len(companies) - free} already set)")
+    if not companies:
+        print("  NOTHING TO MATCH AGAINST — the companies table returned no "
+              "usable row\n"
+              "  (a row needs both a company number and a company name). "
+              "Every score\n"
+              "  below is 0.00 for that reason, not because the domains "
+              "failed to match.")
+
     written = 0
     for domain in domains:
         dom_core   = _domain_core(domain)

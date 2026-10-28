@@ -367,6 +367,48 @@ def check_provider_failures(r: Results) -> None:
                                          _co("00000009", "")])
     r.check("rows missing a number or a name are ignored",
             err is None and writes == [], f"err={err!r} writes={writes}")
+    # Asserting only "wrote nothing" is what let this through. When every
+    # usable row is discarded the inner loop never runs, so every domain
+    # prints best score=0.00 and the run is indistinguishable from one where
+    # the domains genuinely did not match. Observed on production: 35
+    # domains, 35 zeros, no way to tell which had happened.
+    r.check("...and the operator is told there was nothing to match against",
+            "NOTHING TO MATCH AGAINST" in out,
+            f"35 zeros with no explanation is not a readable result. {out!r}")
+    r.check("...and told the scores are 0.00 for that reason",
+            "not because the domains failed to match" in out, f"out={out!r}")
+
+
+def check_company_count_reported(r: Results) -> None:
+    print("\n-- the stage must say how many rows it compared against --")
+    writes, out, err = run_stage([DOM], [ACME_FREE, TRADING, UNRELATED])
+    r.check("the count of loaded companies is reported",
+            "Companies loaded: 3" in out, f"out={out!r}")
+    r.check("...split into free and already-set",
+            "3 without a domain, 0 already set" in out, f"out={out!r}")
+
+    writes, out, err = run_stage([DOM], [ACME_HELD, TRADING])
+    r.check("a held domain counts as already set",
+            "Companies loaded: 2" in out and "1 without a domain, 1 already set"
+            in out, f"out={out!r}")
+
+    # Rows the loader discards must not be counted, or the number is a
+    # comfort rather than a measurement.
+    writes, out, err = run_stage([DOM], [ACME_FREE, _co("", "NO NUMBER LTD"),
+                                         _co("00000009", "")])
+    r.check("discarded rows are not counted",
+            "Companies loaded: 1" in out, f"out={out!r}")
+
+    # With rows present the alarm must stay silent, or it means nothing.
+    r.check("the empty-table alarm does NOT fire when rows exist",
+            "NOTHING TO MATCH AGAINST" not in out, f"out={out!r}")
+
+    writes, out, err = run_stage([DOM], [])
+    r.check("an empty table reports zero loaded",
+            "Companies loaded: 0" in out, f"out={out!r}")
+    r.check("...and raises the alarm",
+            "NOTHING TO MATCH AGAINST" in out, f"out={out!r}")
+    r.check("...and still writes nothing", writes == [], f"writes={writes}")
 
 
 def check_missing_credentials(r: Results) -> None:
@@ -397,6 +439,7 @@ def main() -> int:
     check_tie_breaking(r)
     check_one_domain_per_company(r)
     check_provider_failures(r)
+    check_company_count_reported(r)
     check_missing_credentials(r)
     return r.report()
 
