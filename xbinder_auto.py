@@ -444,7 +444,6 @@ def download_id_via_ui(token: str, user_id: str | None, bind_id: str, id_no: str
         page.wait_for_timeout(3000)
 
         click_target = None
-        # Prefer the exact bind card created in this run.
         for _ in range(20):
             if id_no:
                 card = page.locator(f".binds-container:has-text('{id_no}')").first
@@ -455,16 +454,14 @@ def download_id_via_ui(token: str, user_id: str | None, bind_id: str, id_no: str
                         break
             page.wait_for_timeout(1000)
 
-        # Fallback to first available download button in the visible list.
-        if click_target is None:
-            fallback = page.locator(".binds-container span:has(i.bi-download)").first
-            if fallback.count() > 0:
-                click_target = fallback
-
         if click_target is None:
             page.screenshot(path=str(out_path.with_suffix(".debug.png")), full_page=True)
             browser.close()
-            raise RuntimeError("Could not find ID download control in UI (debug screenshot saved)")
+            raise RuntimeError(
+                f"Could not find bind card with idNo '{id_no}' on the active-binds page. "
+                f"The bind may not have rendered yet or may be on a different page. "
+                f"Debug screenshot saved."
+            )
 
         try:
             with page.expect_download(timeout=60000) as dl:
