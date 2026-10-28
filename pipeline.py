@@ -151,6 +151,20 @@ def stage_match(dry_run: bool = False) -> None:
                         ]
                         written += 1
                         break
+                else:
+                    # The loop found no company that both matches best_cn and
+                    # is free, so nothing was written - but MATCH was already
+                    # printed above, and without this the only trace was MATCH
+                    # lines outnumbering the "N new domain(s)" tally.
+                    # match_domains.py:211 prints this; the live path did not.
+                    #
+                    # best_name, not the loop's `name`: after a for loop runs
+                    # to completion its variables hold the LAST iterated
+                    # company, which is not the winner. The held domain is
+                    # looked up by best_cn for the same reason.
+                    held = next((d for c, n, d in companies if c == best_cn), "")
+                    print(f"  Skipped {domain} -> {best_name} "
+                          f"(already has: {held})")
         else:
             print(f"  SKIP   {domain!r:42s} (best score={best_score:.2f})")
 

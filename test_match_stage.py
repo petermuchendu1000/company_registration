@@ -13,17 +13,23 @@ This stage had no test of any kind, and it writes to the companies table
 (pipeline.py:146) against a billed Namecheap account, so the check that
 matters most is the last one: dry_run must never write.
 
-FINDING encoded below, not fixed here. When the top-scoring company already
-holds a domain, pipeline.py:144-153 writes nothing and says nothing, having
-already printed MATCH. The only trace is MATCH lines outnumbering the "N new
-domain(s) written" tally. Choosing the winner by score and only then testing
-eligibility is deliberate - match_domains.py:182-206 does the same - but
-that sibling also prints
-    "Skipped {domain} -> {name} (already has: {existing})"
-at match_domains.py:211, and the live path dropped it. The test asserts
-today's silent behaviour so the suite is honest about reality; if someone
-adds the message, the check below fails and must be updated on purpose
-rather than by accident.
+Previously, when the top-scoring company already held a domain,
+pipeline.py:144-153 wrote nothing and said nothing, having already printed
+MATCH - the only trace was MATCH lines outnumbering the "N new domain(s)
+written" tally. Choosing the winner by score and only then testing
+eligibility is deliberate (match_domains.py:182-206 does the same); what was
+missing was the message that sibling prints at match_domains.py:211. The
+loop-else at pipeline.py:154-167 now prints it, and the checks below hold the
+invariant that makes the output self-balancing:
+
+    MATCH count == writes + "Skipped" messages
+
+The message must name the WINNER, not the last company the loop happened to
+visit. After a for loop runs to completion its variables hold the final
+iteration, so `name` and `existing` would name the wrong company; the code
+uses best_name and looks the held domain up by best_cn. A check below pins
+that, because getting it wrong would produce a confidently incorrect line
+rather than a visible error.
 """
 from __future__ import annotations
 
@@ -147,6 +153,11 @@ def check_dry_run(r: Results) -> None:
             "a dry run that shows nothing is useless for review")
     r.check("dry_run says it did not write", "Dry run" in out,
             f"output was {out!r}")
+    # The loop-else at pipeline.py:154 sits inside `if not dry_run`. If its
+    # indentation slipped so it paired with that `if` instead of the `for`,
+    # a dry run would print a skip message it never evaluated.
+    r.check("dry_run prints no skip message", "Skipped" not in out,
+            f"output was {out!r}")
 
     # The same input WITHOUT dry_run must write - otherwise the check above
     # passes for the wrong reason and proves nothing.
@@ -214,23 +225,58 @@ def check_boundaries(r: Results) -> None:
 
 # ── duplicate / already-occupied ────────────────────────────────────────
 def check_occupied(r: Results) -> None:
-    print("\n-- a top scorer that already holds a domain (see FINDING) --")
+    print("\n-- a top scorer that already holds a domain --")
     writes, out, err = run_stage([DOM], [ACME_HELD, TRADING])
     r.check("nothing is written", writes == [], f"wrote {writes}")
     r.check("MATCH was nevertheless printed", "MATCH" in out, f"out {out!r}")
     r.check("the tally says zero written", "0 new domain(s)" in out,
             f"out {out!r}")
-    # The defect, pinned. match_domains.py:211 prints this; the live path
-    # does not. If someone adds it, this check fails on purpose.
-    r.check("FINDING: no reason is given for the skip (current behaviour)",
-            "already has" not in out,
-            "a reason is now printed - the finding is fixed; update this "
-            "check and the module docstring")
+    r.check("the skip is explained, not silent",
+            "Skipped" in out and "already has" in out, f"out {out!r}")
+    # The message must identify the WINNER. Using the loop's trailing `name`
+    # would print 'ACME TRADING LTD' here - the last company visited - which
+    # is wrong and would look authoritative.
+    r.check("the message names the winning company, not the last visited",
+            "ACME WIDGETS LTD" in out and "ACME TRADING LTD" not in out,
+            f"out {out!r}")
+    r.check("the message reports the domain actually held",
+            "already has: acme-old.uk" in out, f"out {out!r}")
     # And the free lower scorer does NOT receive it. Intended, per
     # match_domains.py:182-206, but worth pinning so a change is deliberate.
     r.check("the free lower scorer is not given the domain instead",
             not any(cn == "00000002" for cn, _ in writes),
             f"wrote {writes}")
+
+    # A successful write must NOT also print a skip: the loop-else fires only
+    # when the loop completed without break.
+    w2, out2, _ = run_stage([DOM], [ACME_FREE, TRADING])
+    r.check("a successful write prints no skip message",
+            len(w2) == 1 and "Skipped" not in out2, f"out {out2!r}")
+
+
+def check_output_invariant(r: Results) -> None:
+    print("\n-- every MATCH is accounted for: writes + skips --")
+    # Measured: one free company and two matching domains gives 2 MATCH,
+    # 1 write, 1 Skipped - the second skip reporting the domain written
+    # moments earlier via the in-memory update at pipeline.py:148-151.
+    for label, rows, dom_count in (
+            ("one free company, two matching domains", [ACME_FREE], 2),
+            ("one occupied company, two matching domains", [ACME_HELD], 2),
+            ("no match at all", [UNRELATED], 0)):
+        writes, out, err = run_stage([DOM, "acme2widgets.co.uk"], rows)
+        matches = out.count("MATCH")
+        skips = out.count("Skipped")
+        r.check(f"{label}: MATCH == writes + Skipped",
+                matches == len(writes) + skips,
+                f"MATCH={matches} writes={len(writes)} Skipped={skips}")
+        r.check(f"{label}: MATCH count is {dom_count}", matches == dom_count,
+                f"got {matches}")
+
+    # The second skip must quote the freshly written domain, which only
+    # happens if the in-memory list was updated.
+    writes, out, _ = run_stage([DOM, "acme2widgets.co.uk"], [ACME_FREE])
+    r.check("the second skip quotes the domain just written",
+            f"already has: {DOM}" in out, f"out {out!r}")
 
 
 def check_tie_breaking(r: Results) -> None:
@@ -325,6 +371,7 @@ def main() -> int:
     check_no_match(r)
     check_boundaries(r)
     check_occupied(r)
+    check_output_invariant(r)
     check_tie_breaking(r)
     check_one_domain_per_company(r)
     check_provider_failures(r)
