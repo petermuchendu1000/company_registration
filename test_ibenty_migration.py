@@ -135,6 +135,26 @@ def offline(r: Results, mod) -> None:
         r.check("the UI navigation is derived from SITE",
                 'f"{SITE}/active-binds"' in body)
 
+        # The function used to click the FIRST download control when it
+        # could not find the card it was asked for. Measured against the
+        # live site, that returned a file byte-identical to an unrelated
+        # record's - a different person's document, with no signal to the
+        # caller, whose only evidence is that a file arrived. Not finding
+        # the requested record is an error, so these assert the
+        # substitution cannot come back.
+        r.check("no fallback to an arbitrary download control",
+                "fallback" not in body.split("def ")[0].lower()
+                or ".binds-container span:has(i.bi-download)\").first" not in body,
+                "download_id_via_ui still selects a download control it was "
+                "not asked for")
+        r.check("the not-found path raises rather than substituting",
+                "raise RuntimeError(" in body and "No download control found"
+                in body)
+        r.check("the error names the record that was not found",
+                "idNo={id_no!r}" in body,
+                "the message must say which record was missing, or the "
+                "operator cannot tell a missing card from a broken page")
+
     print("\n-- the locations fallback is no longer silent --")
     # This is the check that the original code could not have passed, and
     # the reason the outage was invisible: a bare except that returns a

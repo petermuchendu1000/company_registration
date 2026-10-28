@@ -477,16 +477,28 @@ def download_id_via_ui(token: str, user_id: str | None, bind_id: str, id_no: str
                         break
             page.wait_for_timeout(1000)
 
-        # Fallback to first available download button in the visible list.
-        if click_target is None:
-            fallback = page.locator(".binds-container span:has(i.bi-download)").first
-            if fallback.count() > 0:
-                click_target = fallback
-
+        # There used to be a fallback here: if the card for id_no could not
+        # be found, click the FIRST download control on the page instead.
+        # That is not a fallback, it is a silent substitution - the function
+        # returned a different record's file and nothing anywhere said so.
+        #
+        # Measured against the live site: asked for a bind that exists but
+        # is not on the visible page, it returned a file byte-identical
+        # (sha256) to the first card's. The caller cannot detect this,
+        # because the only signal it gets is "a file arrived".
+        #
+        # The requested record is the only correct answer, so not finding
+        # it is an error. pipeline.py:478 already wraps this call in
+        # try/except and skips the company, which is the right outcome:
+        # no file beats the wrong file.
         if click_target is None:
             page.screenshot(path=str(out_path.with_suffix(".debug.png")), full_page=True)
             browser.close()
-            raise RuntimeError("Could not find ID download control in UI (debug screenshot saved)")
+            raise RuntimeError(
+                f"No download control found for idNo={id_no!r} "
+                f"(bind_id={bind_id!r}). The record may not be on the "
+                f"visible page. Refusing to download a different record; "
+                f"debug screenshot saved beside {out_path.name}.")
 
         try:
             with page.expect_download(timeout=60000) as dl:
