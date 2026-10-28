@@ -166,9 +166,12 @@ def _call_api(body: str | None = None, raises: BaseException | None = None,
 # merely contain the letters "ip", which is what the old substring rule
 # matched on.
 IP_CASES = [
-    ("Parameter RequestIP is invalid", True),                       # 1011150
+    # Measured against the live API, with their real error numbers:
+    ("Invalid request IP: 160.79.106.143", True),                   # 1011150
+    ("Parameter ClientIP is invalid", True),                        # 1011105
+    # Wordings this pattern is built to tolerate; not captured from the wire.
+    ("Parameter RequestIP is invalid", True),
     ("Invalid request IP", True),
-    ("Invalid request IP: 203.0.113.7", True),
     ("Parameter ClientIp is missing", True),
     ("IP is not whitelisted", True),
     ("Your IP is not in the whitelist", True),
@@ -303,25 +306,29 @@ def check_error_message_survives(r: Results) -> None:
             res is not None and "ParseError" in res[1], f"got {res!r}")
 
 
-# ── error 1011102: three causes, one message ────────────────────────────
-# Measured against the live API from a non-whitelisted host: the real key,
-# the same key with one hex digit changed, and a nonexistent ApiUser all
-# produced byte-identical responses —
+# ── 1011102 (credentials) vs 1011150 (whitelist) ────────────────────────
+# Both are blocking, both used to be invisible, and they need opposite things
+# done about them. Separated by measurement against the live API, holding
+# ApiUser fixed and varying only the key, across two different commands:
 #
-#   <ApiResponse Status="ERROR" ...><Errors>
-#     <Error Number="1011102">API Key is invalid or API access has not
-#     been enabled</Error></Errors>...
+#   the account's real key      -> 1011150  Invalid request IP: <address>
+#   one hex digit changed       -> 1011102  API Key is invalid or API ...
+#   first character changed     -> 1011102
+#   last character changed      -> 1011102
+#   the key reversed            -> 1011102
 #
-# so Namecheap has no distinct message for "your source address is not
-# whitelisted", and this one cannot be read as "the key is wrong". Treating
-# it as a non-IP error — which is what the first version of this fix did —
-# warns and carries on while the single thing stage 1 exists to detect has
-# happened.
+# so 1011102 is the credential being refused, not the address. A nonexistent
+# ApiUser produces 1011102 too, which is why the instructions for it name the
+# username before the key.
 ACCESS_MSG = "API Key is invalid or API access has not been enabled"
+# The live 1011150 text, captured verbatim. Earlier fixtures carried
+# "Parameter RequestIP is invalid" under that number, which is not what the
+# API actually sends for a non-whitelisted source address.
+WHITELIST_MSG = "Invalid request IP: 160.79.106.143"
 
 
 def check_access_error(r: Results) -> None:
-    print("\n-- 1011102 is ambiguous and must stop the run, not warn --")
+    print("\n-- 1011102 is the credential, not the whitelist, and must stop the run --")
     r.check("the live 1011102 text is recognised",
             bool(check_ip._ACCESS_ERROR_RE.search(ACCESS_MSG)))
     r.check("the 'API access' half is recognised on its own",
@@ -345,22 +352,74 @@ def check_access_error(r: Results) -> None:
             f"got ret={ret!r} err={err!r}")
     r.check("...and does not return an IP as if the check had passed",
             ret is None, f"got {ret!r}")
-    r.check("...naming the whitelist as the usual cause",
-            "Whitelisted IPs" in out, f"got {out!r}")
+    r.check("...naming the API user first", "NAMECHEAP_API_USER" in out,
+            "a nonexistent ApiUser produces this same error, so the username "
+            f"must be named. {out!r}")
+    r.check("...and the username variable", "NAMECHEAP_USERNAME" in out,
+            f"got {out!r}")
     # Assert on wording unique to the instruction line. "API access" alone is
     # satisfied by the echoed API message at the foot of the block, so a
     # mutant that deleted the instruction still passed.
     r.check("...naming the API-access switch",
-            "API access switched ON" in out, f"got {out!r}")
-    r.check("...naming the key in .env",
-            "NAMECHEAP_API_KEY in .env" in out, f"got {out!r}")
-    r.check("...and the address to check", "203.0.113.7" in out, f"got {out!r}")
-    r.check("...without claiming it is definitely the whitelist",
-            "whitelist your IP" not in out,
-            "the response cannot distinguish the three causes, so the "
-            f"instructions must not pick one. {out!r}")
+            "API access must be switched ON" in out, f"got {out!r}")
+    r.check("...naming the key",
+            "NAMECHEAP_API_KEY must be the key" in out, f"got {out!r}")
     r.check("...and it is not reported as a warning-and-continue",
             "WARNING" not in out, f"got {out!r}")
+    # The claim this block used to make, which measurement disproved.
+    r.check("...and it does NOT send the operator to the whitelist",
+            "Whitelisted IPs" not in out and "whitelist your IP" not in out,
+            "a non-whitelisted address gets 1011150 and its own block; "
+            f"pointing 1011102 at the whitelist wastes the operator. {out!r}")
+    r.check("...saying explicitly that this is not the whitelist",
+            "not the whitelist" in out.lower(), f"got {out!r}")
+
+    print("\n-- 1011150, the real non-whitelisted-address message --")
+    r.check("the live 1011150 text is read as an IP error",
+            bool(check_ip._IP_ERROR_RE.search(WHITELIST_MSG)),
+            f"{WHITELIST_MSG!r} must route to the whitelist block")
+    r.check("...and is NOT read as a credential error",
+            not check_ip._ACCESS_ERROR_RE.search(WHITELIST_MSG),
+            f"got {WHITELIST_MSG!r}")
+    (res, err) = _call_api(_err_xml(WHITELIST_MSG, number="1011150"))
+    r.check("the real 1011150 response gives (False, msg)",
+            res == (False, WHITELIST_MSG), f"got {res!r} {err!r}")
+    ret, err, out, _ = _run_ensure((False, WHITELIST_MSG))
+    r.check("...stops the run",
+            isinstance(err, SystemExit) and err.code == 1, f"got {err!r}")
+    r.check("...and DOES send the operator to the whitelist",
+            "Whitelisted IPs" in out, f"got {out!r}")
+    r.check("...naming the address to add", "203.0.113.7" in out, f"got {out!r}")
+    r.check("...and not the credential instructions",
+            "NAMECHEAP_API_KEY must be the key" not in out, f"got {out!r}")
+
+    # When the two disagree, the one to whitelist is the one Namecheap saw.
+    # Observed live: ipify reported .24 for the same run in which Namecheap
+    # reported .21, so the instruction named an address that would not have
+    # helped.
+    ret, err, out, _ = _run_ensure((False, "Invalid request IP: 198.51.100.9"),
+                                   current="203.0.113.7", stored="203.0.113.7")
+    r.check("the address to add is the one Namecheap reported",
+            "add: 198.51.100.9" in out,
+            f"must whitelist what Namecheap saw, not what ipify said. {out!r}")
+    r.check("...and the disagreement is pointed out",
+            "These differ" in out, f"got {out!r}")
+    r.check("...while still showing what this host thinks its IP is",
+            "203.0.113.7" in out, f"got {out!r}")
+
+    # When they agree, no confusing second address and no warning.
+    ret, err, out, _ = _run_ensure((False, "Invalid request IP: 203.0.113.7"),
+                                   current="203.0.113.7", stored="203.0.113.7")
+    r.check("matching addresses produce no disagreement notice",
+            "These differ" not in out, f"got {out!r}")
+    r.check("...and still name the address to add",
+            "add: 203.0.113.7" in out, f"got {out!r}")
+
+    # An IP error with no address in it must still name something usable.
+    ret, err, out, _ = _run_ensure((False, "IP is not whitelisted"),
+                                   current="203.0.113.7", stored="203.0.113.7")
+    r.check("an IP error carrying no address falls back to this host's",
+            "add: 203.0.113.7" in out, f"got {out!r}")
 
 
 # ── defect G: empty credentials ─────────────────────────────────────────

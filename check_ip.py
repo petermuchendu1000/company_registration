@@ -62,18 +62,23 @@ _IP_ERROR_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# Error 1011102, "API Key is invalid or API access has not been enabled", is
-# also what Namecheap returns to a host whose SOURCE address is not
-# whitelisted - it does not have a distinct message for that. Measured by
-# sending, from one non-whitelisted host: the real key, the same key with one
-# hex digit changed, and a nonexistent ApiUser. All three produced
-# byte-identical 1011102 responses. The message names three causes and the
-# response cannot tell them apart, so this must stop the run and say all
-# three, rather than warn and carry on as if only the whitelist mattered.
+# Error 1011102, "API Key is invalid or API access has not been enabled",
+# means the credential itself was rejected before the request got as far as
+# anything else. It is NOT the non-whitelisted-address message: Namecheap has
+# a distinct one for that, 1011150 "Invalid request IP: <address>", which
+# _IP_ERROR_RE already matches.
+#
+# Measured by holding ApiUser fixed and varying only the key, across two
+# different commands: the account's real key reached the IP check and came
+# back 1011150, while four separate corruptions of that same key - one hex
+# digit changed, first character changed, last character changed, and the key
+# reversed - were all refused at the credential check with 1011102. The same
+# 1011102 comes back when ApiUser names an account that does not exist, so
+# the message covers the user as well as the key.
 #
 # Kept separate from _IP_ERROR_RE because the operator instructions differ:
-# an unambiguous IP error means "add this address", this means "check these
-# three things".
+# an IP error means "add this address to the whitelist", this means "the
+# username or the key is not accepted".
 _ACCESS_ERROR_RE = re.compile(
     r"api\s*key\s+is\s+invalid"
     r"|api\s+access\s+has\s+not\s+been\s+enabled",
@@ -273,32 +278,42 @@ def ensure_ip_whitelisted(verbose: bool = True) -> str:
     # wrong one two times out of three.
     if _ACCESS_ERROR_RE.search(msg):
         print("=" * 60)
-        print("  ACTION REQUIRED: Namecheap refused the call")
+        print("  ACTION REQUIRED: Namecheap rejected the credentials")
         print("=" * 60)
-        print(f"  Your current public IP : {current_ip}")
         print(f"  Namecheap API settings : {NAMECHEAP_SETTINGS_URL}")
         print()
-        print("  Namecheap returns this one message for three different")
-        print("  causes and the response cannot tell them apart. Check all")
-        print("  three, in this order:")
-        print(f"    1. Is {current_ip} listed under 'Whitelisted IPs'?")
-        print("       (the usual cause — the whitelist is per-account and")
-        print("        does not follow a changed address)")
-        print("    2. Is API access switched ON for this account?")
-        print("    3. Is NAMECHEAP_API_KEY in .env the account's current key?")
-        print()
-        print("  NAMECHEAP_API_USER and NAMECHEAP_USERNAME must be the")
-        print("  account's username, not an email address.")
+        print("  This is not the whitelist. A non-whitelisted address gets a")
+        print("  different message, 'Invalid request IP'. Namecheap sends")
+        print("  this one when the API user or the key is not accepted:")
+        print("    1. NAMECHEAP_API_USER and NAMECHEAP_USERNAME must both be")
+        print("       the Namecheap account's username — not an email")
+        print("       address, and not a display name.")
+        print("    2. NAMECHEAP_API_KEY must be the key currently shown on")
+        print("       the settings page above.")
+        print("    3. API access must be switched ON for the account.")
     elif _IP_ERROR_RE.search(msg):
+        # Namecheap's own message names the address it saw ("Invalid request
+        # IP: 1.2.3.4"). Prefer that over get_public_ip's answer: that comes
+        # from a third party, and on a host whose outbound traffic leaves
+        # through a pool of addresses the two differ - observed in one run,
+        # ipify said .24 while Namecheap said .21. Whitelisting the address
+        # Namecheap did not see fixes nothing.
+        seen = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", msg)
+        to_add = seen.group(1) if seen else current_ip
         print("=" * 60)
         print("  ACTION REQUIRED: whitelist your IP in Namecheap")
         print("=" * 60)
         print(f"  Your current public IP : {current_ip}")
+        if to_add != current_ip:
+            print(f"  The address Namecheap saw : {to_add}")
+            print("  These differ, so this host's outbound traffic does not")
+            print("  always leave from one address. Whitelist what Namecheap")
+            print("  saw, and expect to repeat this until the egress is fixed.")
         print(f"  Namecheap API settings : {NAMECHEAP_SETTINGS_URL}")
         print()
         print("  Steps:")
         print("    1. Open the URL above")
-        print("    2. Under 'Whitelisted IPs', add:", current_ip)
+        print("    2. Under 'Whitelisted IPs', add:", to_add)
         print("    3. Save, then re-run this script")
     else:
         print("=" * 60)
