@@ -266,12 +266,15 @@ def generate_from_pipeline_results(
                 output[c.company_number]["status"] = "success"
                 output[c.company_number]["apk_path"] = got[c.company_number].get("apk", "")
                 output[c.company_number]["aab_path"] = got[c.company_number].get("aab", "")
+                # Single quotes inside these replacement fields, not double:
+                # nesting the enclosing quote is PEP 701 (Python 3.12+), and
+                # Debian 12 ships 3.11, where it is a SyntaxError at import.
                 if artifact == "aab":
-                    output[c.company_number]["message"] = f"AAB built: {Path(output[c.company_number]["aab_path"]).name if output[c.company_number]["aab_path"] else "missing"}"
+                    output[c.company_number]["message"] = f"AAB built: {Path(output[c.company_number]['aab_path']).name if output[c.company_number]['aab_path'] else 'missing'}"
                 elif artifact == "both":
-                    output[c.company_number]["message"] = f"APK/AAB built: {Path(output[c.company_number]["apk_path"]).name if output[c.company_number]["apk_path"] else "missing"}, {Path(output[c.company_number]["aab_path"]).name if output[c.company_number]["aab_path"] else "missing"}"
+                    output[c.company_number]["message"] = f"APK/AAB built: {Path(output[c.company_number]['apk_path']).name if output[c.company_number]['apk_path'] else 'missing'}, {Path(output[c.company_number]['aab_path']).name if output[c.company_number]['aab_path'] else 'missing'}"
                 else:
-                    output[c.company_number]["message"] = f"APK built: {Path(output[c.company_number]["apk_path"]).name if output[c.company_number]["apk_path"] else "missing"}"
+                    output[c.company_number]["message"] = f"APK built: {Path(output[c.company_number]['apk_path']).name if output[c.company_number]['apk_path'] else 'missing'}"
             else:
                 output[c.company_number]["status"] = "failed"
                 output[c.company_number]["error"] = f"{artifact_label} not found after build"
@@ -332,7 +335,10 @@ def main(argv: list[str] | None = None) -> int:
     if len(got) != len(built):
         print(f"\n  WARN: only {len(got)}/{len(built)} {artifact_label} collected.")
     else:
-        print(f"\n  OK: all {len(got)} {artifact_label} in {OUTPUT_DIR}")
+        # COMPANIES_DIR, not OUTPUT_DIR: the latter is defined nowhere in this
+        # module, so only this total-success branch raised NameError, skipping
+        # backup_and_make_assets below and leaving no assets or manifest.json.
+        print(f"\n  OK: all {len(got)} {artifact_label} under {COMPANIES_DIR}")
 
     print("\n[4] Backing up keystores and generating install assets…")
     backup_and_make_assets(built, got)
