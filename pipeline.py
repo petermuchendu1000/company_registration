@@ -111,12 +111,35 @@ def stage_match(dry_run: bool = False) -> None:
         sld = domain.lower().split(".")[0]
         return re.sub(r"[^a-z0-9]", "", sld)
 
-    def _score(company_norm: str, dom_core: str) -> float:
+    # A score, and WHICH RULE produced it. The rule matters as much as the
+    # number, because the two are not comparable.
+    #
+    # STRONG means the domain spells the company: the whole domain core is
+    # inside the company name, or nearly all of it in order.
+    # WEAK means only that the two share a word, which is a different claim
+    # and a far smaller one.
+    #
+    # The word-overlap rule divides by len(dom_words) alone, so a domain
+    # whose only alphabetic run is one common noun scores the maximum:
+    # "33traders.com" gives dom_words={"traders"}, and ANY company with
+    # "traders" in its name scores 1/1 = 1.00 — beating the 0.90 an exact
+    # substring earns. Measured: 33traders.com took TAMU TRADERS LTD at 1.00
+    # while tamutraders.com, the domain that actually spells it, scored 0.90
+    # and was then refused because the company was no longer free.
+    #
+    # Rescaling the weak tier alone does not fix that. Domains are processed
+    # in the order the API returns them, so an early weak match still claims
+    # a company before a later strong one is reached. The tier has to travel
+    # with the score so the caller can rank by it and refuse to write on weak
+    # evidence alone.
+    STRONG, WEAK = "strong", "weak"
+
+    def _score(company_norm: str, dom_core: str) -> tuple[float, str]:
         if not dom_core:
-            return 0.0
+            return 0.0, WEAK
         company_core = company_norm.replace(" ", "")
         if dom_core in company_core:
-            return 0.9
+            return 0.9, STRONG
         if len(dom_core) >= 7 and all(c in company_core for c in dom_core):
             pos = 0; seq = 0
             for ch in dom_core:
@@ -124,14 +147,26 @@ def stage_match(dry_run: bool = False) -> None:
                 if idx >= 0:
                     seq += 1; pos = idx + 1
             if seq / len(dom_core) >= 0.85:
-                return seq / len(dom_core)
+                return seq / len(dom_core), STRONG
         company_words = set(company_norm.split())
         dom_words = set(re.findall(r"[a-z]{3,}", dom_core))
         if dom_words:
-            overlap = len(company_words & dom_words) / len(dom_words)
+            # Symmetric. The old denominator was len(dom_words) alone, which
+            # asks only "is the domain explained by the company?" and never
+            # "does the company have words the domain does not account for?".
+            # {"traders"} against {"tamu","traders"} answered 1/1 = 1.00 while
+            # leaving "tamu" — the only part that says WHICH trader — unmatched.
+            # Over the union it is 1/2 = 0.50.
+            shared = company_words & dom_words
+            overlap = len(shared) / len(company_words | dom_words)
             if overlap >= 0.5:
-                return overlap
-        return 0.0
+                # Equal word sets mean the domain and the name are made of the
+                # same words, with nothing left over on either side
+                # ("acme2widgets" vs "ACME WIDGETS LTD"). Anything less is a
+                # partial overlap: real evidence, but not enough to write on.
+                tier = STRONG if company_words == dom_words else WEAK
+                return overlap, tier
+        return 0.0, WEAK
 
     base = {
         "ApiUser":  os.environ["NAMECHEAP_API_USER"],
@@ -181,18 +216,34 @@ def stage_match(dry_run: bool = False) -> None:
               "  below is 0.00 for that reason, not because the domains "
               "failed to match.")
 
-    written = 0
+    written = review = 0
     for domain in domains:
         dom_core   = _domain_core(domain)
         best_score = 0.0
+        best_tier  = WEAK
+        best_rank  = (0, 0.0)
         best_cn    = ""
         best_name  = ""
         for cn, name, existing in companies:
-            score = _score(_normalize(name), dom_core)
-            if score > best_score:
-                best_score = score; best_cn = cn; best_name = name
+            score, tier = _score(_normalize(name), dom_core)
+            # Rank on (tier, score), not score alone. Ranking on the number
+            # by itself lets a weak 1.00 beat a strong 0.90, which is how a
+            # company that merely shares a word outranks the one the domain
+            # actually spells.
+            rank = (1 if tier == STRONG else 0, score)
+            if rank > best_rank:
+                best_rank = rank
+                best_score = score; best_tier = tier
+                best_cn = cn; best_name = name
 
-        if best_score >= 0.5:
+        if best_score >= 0.5 and best_tier == WEAK:
+            # Shares a word, nothing more. Said out loud and left for a human,
+            # because `domain` is a money column (db.py:546) and the evidence
+            # does not carry the weight of a write.
+            print(f"  REVIEW {domain!r:42s} -> {best_cn} {best_name!r}  "
+                  f"(shares a word only, score={best_score:.2f}; not written)")
+            review += 1
+        elif best_score >= 0.5:
             print(f"  MATCH  {domain!r:42s} -> {best_cn} {best_name!r}  (score={best_score:.2f})")
             if not dry_run:
                 for cn, name, existing in companies:
@@ -222,10 +273,15 @@ def stage_match(dry_run: bool = False) -> None:
         else:
             print(f"  SKIP   {domain!r:42s} (best score={best_score:.2f})")
 
+    # The REVIEW tally is reported in both modes. A dry run that hides it
+    # would under-report what a real run leaves undone, and an operator who
+    # never sees the count has no reason to go and look at the lines.
+    tail = (f" {review} left for review (shared-word matches are not written)."
+            if review else "")
     if dry_run:
-        print("\n  [Dry run — not writing]")
+        print(f"\n  [Dry run — not writing]{tail}")
     else:
-        print(f"\n  {written} new domain(s) written to Supabase.")
+        print(f"\n  {written} new domain(s) written to Supabase.{tail}")
 
 
 # ── Stage 3: Dev email setup ─────────────────────────────────────────────────

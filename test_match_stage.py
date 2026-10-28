@@ -201,26 +201,202 @@ def check_no_match(r: Results) -> None:
 # ── boundaries ──────────────────────────────────────────────────────────
 def check_boundaries(r: Results) -> None:
     print("\n-- both boundaries of the 0.5 threshold --")
-    # Measured, not assumed: ACME TRADING LTD against acme2widgets scores
-    # exactly 0.50 - the lowest value _score can return without returning 0.
+    # Measured through the shipped stage, not derived on paper. The bands:
+    #
+    #   0.90        exact substring            STRONG  written
+    #   0.85-1.00   ordered subsequence        STRONG  written
+    #   1.00        identical word sets        STRONG  written
+    #   0.50-<1.00  partial word overlap       WEAK    REVIEW, not written
+    #   0.00        no relation                        SKIP
+    #
+    # 0.50 is still the lowest nonzero score, so the gate stays at 0.5 - but
+    # reaching it no longer means a write. A score can only be exactly 0.50
+    # through the word rule, and the word rule is STRONG only when the two
+    # word sets are equal, which scores 1.00. So 0.50 is always WEAK.
+    writes, out, _ = run_stage(["33traders.com"], [_co("00000001", "TAMU TRADERS LTD")])
+    r.check("a score of exactly 0.50 is reached",
+            "score=0.50" in out, f"out={out!r}")
+    r.check("...and is reported for review, not written",
+            writes == [] and "REVIEW" in out, f"writes={writes} out={out!r}")
+    r.check("...and is not claimed as a MATCH",
+            "MATCH" not in out, f"out={out!r}")
+
+    # Just below the gate. ACME TRADING shares only "acme" with
+    # acme2widgets, one word of a three-word union: 0.33.
     writes, out, _ = run_stage([DOM], [TRADING])
-    r.check("a score of exactly 0.50 is accepted",
-            len(writes) == 1 and "(score=0.50)" in out,
-            f"writes={writes} out={out!r}")
+    r.check("below 0.5 is rejected outright",
+            writes == [] and "SKIP" in out, f"writes={writes} out={out!r}")
+    r.check("...and is not offered for review either",
+            "REVIEW" not in out, f"out={out!r}")
 
     writes, out, _ = run_stage(["zzzqqqxxx.uk"], [UNRELATED])
     r.check("a score of 0.00 is rejected",
             writes == [] and "(best score=0.00)" in out,
             f"writes={writes} out={out!r}")
 
-    # The gate at :141 must not be stricter than the lowest nonzero score
-    # _score can produce, or matches vanish with no trace. 60k sampled
-    # inputs produced nothing in (0, 0.5) and a minimum nonzero of 0.5.
     src = open(os.path.join(REPO, "pipeline.py"), encoding="utf-8").read()
     r.check("the threshold is still 0.5, matching the lowest nonzero score",
-            "if best_score >= 0.5:" in src,
-            "if the gate rose above 0.5, word-overlap matches would be "
-            "silently discarded; if _score changed, re-derive the minimum")
+            "if best_score >= 0.5 and best_tier == WEAK:" in src
+            and "elif best_score >= 0.5:" in src,
+            "if the gate rose above 0.5, word-overlap matches would vanish "
+            "with no trace; if _score changed, re-derive the minimum")
+
+
+def check_sibling_scorer_agrees(r: Results) -> None:
+    print("\n-- match_domains.py's copy of the scorer must not diverge --")
+    # The same defect existed in two places. match_domains.py is a standalone
+    # script (nothing imports it) but it writes the Domain column into
+    # pipeline_output/companies_pipeline.xlsx, which is what stage 5 reads
+    # (catalog.py:79-84) - so a wrong assignment there reaches the app build.
+    # Its _score is module-level and therefore directly testable, unlike
+    # pipeline's nested copy; these cases pin the two to the same answers.
+    import match_domains as md
+
+    CASES = [
+        # (company_norm, dom_core, expected_score, expected_tier)
+        ("tamu traders",    "33traders",        0.5, "weak"),
+        ("tamu traders",    "tamutraders",      0.9, "strong"),
+        ("safi traders",    "safitraders",      0.9, "strong"),
+        ("much wins",       "1000wins",         0.5, "weak"),
+        ("much wins",       "muchwins",         0.9, "strong"),
+        ("acme widgets",    "acme2widgets",     1.0, "strong"),
+        ("acme trading",    "acme2widgets",     0.0, "weak"),
+        ("zebra logistics", "totallyunrelated", 0.0, "weak"),
+        ("acme widgets",    "",                 0.0, "weak"),
+        # The subsequence branch: not a substring, but every character
+        # present and in order. Nothing above reaches it, so without these
+        # a mutant that downgraded it to WEAK survived - the vowel-dropped
+        # domain of a company would stop being written.
+        ("shift journal",   "shiftjrnl",        1.0, "strong"),
+        ("acme widgets",    "acmwidgts",        1.0, "strong"),
+    ]
+    for norm, core, exp_score, exp_tier in CASES:
+        got = md._score(norm, core)
+        r.check(f"match_domains: {core or '(empty)'!r} vs {norm!r} "
+                f"-> {exp_score:.2f}/{exp_tier}",
+                got == (exp_score, exp_tier), f"got {got!r}")
+
+    # The verdicts the sibling produces must match what the live stage does
+    # with the same inputs, or the two will drift apart again.
+    for domain, name, expect in (("33traders.com",   "TAMU TRADERS LTD", "REVIEW"),
+                                 ("tamutraders.com", "TAMU TRADERS LTD", "MATCH"),
+                                 (DOM,               "ACME WIDGETS LTD", "MATCH"),
+                                 ("zzzqqqxxx.uk",    "ACME WIDGETS LTD", "SKIP")):
+        _, out, _ = run_stage([domain], [_co("00000001", name)])
+        stage_verdict = ("MATCH" if "MATCH" in out
+                         else "REVIEW" if "REVIEW" in out else "SKIP")
+        score, tier = md._score(
+            " ".join(w for w in name.lower().replace(",", " ").split()
+                     if w not in ("ltd", "limited")),
+            domain.split(".")[0].replace("-", ""))
+        sib_verdict = ("SKIP" if score < 0.5
+                       else "REVIEW" if tier == "weak" else "MATCH")
+        r.check(f"both modules agree on {domain!r}: {expect}",
+                stage_verdict == expect and sib_verdict == expect,
+                f"stage said {stage_verdict}, match_domains said {sib_verdict}")
+
+    # The constant pair must exist in both, or the tier is not being carried.
+    src = open(os.path.join(REPO, "match_domains.py"), encoding="utf-8").read()
+    r.check("match_domains carries the same STRONG/WEAK distinction",
+            'STRONG, WEAK = "strong", "weak"' in src, "tier constants missing")
+    r.check("...ranks on (tier, score), not score alone",
+            "rank = (1 if tier == STRONG else 0, score)" in src
+            and "if rank > best_rank:" in src, "ranking still score-only")
+    r.check("...and refuses to write on a weak match",
+            "if best_score >= 0.5 and best_tier == WEAK:" in src,
+            "weak matches still written to the sheet")
+    r.check("...and divides by the union, not the domain's words alone",
+            "len(company_words | dom_words)" in src
+            and "/ len(dom_words)" not in src,
+            "the asymmetric denominator is back")
+
+
+def check_shared_word_not_written(r: Results) -> None:
+    print("\n-- a shared generic word must not outrank the domain that spells "
+          "the name --")
+    # The reported defect. _score divided by len(dom_words) alone, so
+    # "33traders.com" -> dom_words={"traders"} scored 1/1 = 1.00 against ANY
+    # company containing "traders" - beating the 0.90 an exact substring
+    # earns. Measured before the fix: 33traders.com took TAMU TRADERS LTD,
+    # and tamutraders.com was then refused as "already has".
+    TAMU = _co("00000001", "TAMU TRADERS LTD")
+
+    writes, out, err = run_stage(["33traders.com"], [TAMU])
+    r.check("a shared word alone writes nothing",
+            writes == [], f"wrote {writes}")
+    r.check("...and says so rather than staying silent",
+            "REVIEW" in out, f"out={out!r}")
+    r.check("...naming the company it would have taken",
+            "TAMU TRADERS LTD" in out, f"out={out!r}")
+    r.check("...and explaining why it was not written",
+            # Asserted on the REVIEW line's own wording. Plain "not written"
+            # is also in the run summary ("shared-word matches are not
+            # written"), so a mutant that stripped the explanation from the
+            # line itself still passed.
+            "shares a word only" in out and "not written" in out,
+            f"out={out!r}")
+
+    # The whole point: the correct domain must still get through, in the
+    # order the API happens to return them - the wrong one first.
+    writes, out, err = run_stage(["33traders.com", "tamutraders.com"], [TAMU])
+    r.check("the domain that spells the name IS written",
+            writes == [("00000001", {"Domain": "tamutraders.com"})],
+            f"wrote {writes}")
+    r.check("...and the shared-word domain did not claim the company first",
+            "already has" not in out,
+            f"the correct domain must not be refused as occupied. {out!r}")
+
+    # Ranking, not just the write gate. This needs a case where the weak
+    # score is NUMERICALLY HIGHER than the strong one, or ranking on score
+    # alone would pick the same winner and the check could not fail. The
+    # first version of this check used safitraders.com, where the weak
+    # company scores 0.00 - nothing was ever ranked against anything.
+    #
+    # Constructed, because real inputs rarely reach it: weak is
+    # shared/union, so ten shared words of an eleven-word union is 0.91,
+    # just above the 0.90 an exact substring earns. Digits split the domain
+    # core into words.
+    W = ["aaa", "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh", "iii", "jjj"]
+    MANY = "1".join(W) + ".com"
+    STRONG_CO = _co("00000001", "1".join(w.upper() for w in W) + " LTD")
+    WEAK_CO = _co("00000002", " ".join(w.upper() for w in W) + " KKK LTD")
+
+    writes, out, _ = run_stage([MANY], [WEAK_CO])
+    r.check("the constructed weak match really does outscore 0.90",
+            "score=0.91" in out,
+            f"if this is not 0.91 the ranking checks below are vacuous. {out!r}")
+    writes, out, _ = run_stage([MANY], [STRONG_CO])
+    r.check("...and the constructed strong match really is 0.90",
+            "score=0.90" in out, f"out={out!r}")
+
+    for label, rows in (("strong row first", [STRONG_CO, WEAK_CO]),
+                        ("weak row first", [WEAK_CO, STRONG_CO])):
+        writes, out, _ = run_stage([MANY], rows)
+        r.check(f"the higher-scoring WEAK match loses to STRONG ({label})",
+                writes == [("00000001", {"Domain": MANY})],
+                f"wrote {writes}; 0.91 weak must not beat 0.90 strong")
+
+    # A domain whose words ARE the company's words is still a write. The
+    # first version of this fix refused acme2widgets.uk for ACME WIDGETS LTD,
+    # which shares both of its words - too blunt, and it would have stopped
+    # a correct assignment.
+    writes, out, err = run_stage([DOM], [ACME_FREE])
+    r.check("identical word sets are still written",
+            len(writes) == 1 and "score=1.00" in out,
+            f"wrote {writes} out={out!r}")
+    r.check("...as a MATCH, not a REVIEW",
+            "MATCH" in out and "REVIEW" not in out, f"out={out!r}")
+
+    # The tally must mention review, or an operator has no reason to look.
+    writes, out, err = run_stage(["33traders.com"], [TAMU], dry_run=True)
+    r.check("a dry run reports the review count too",
+            "1 left for review" in out, f"out={out!r}")
+    writes, out, err = run_stage(["33traders.com"], [TAMU])
+    r.check("a real run reports the review count",
+            "1 left for review" in out, f"out={out!r}")
+    writes, out, err = run_stage([DOM], [ACME_FREE])
+    r.check("...and says nothing about review when there is none",
+            "left for review" not in out, f"out={out!r}")
 
 
 # ── duplicate / already-occupied ────────────────────────────────────────
@@ -434,6 +610,8 @@ def main() -> int:
     check_write_shape(r)
     check_no_match(r)
     check_boundaries(r)
+    check_shared_word_not_written(r)
+    check_sibling_scorer_agrees(r)
     check_occupied(r)
     check_output_invariant(r)
     check_tie_breaking(r)

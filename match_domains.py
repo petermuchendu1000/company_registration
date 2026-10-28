@@ -53,14 +53,22 @@ def _domain_core(domain: str) -> str:
     return re.sub(r"[^a-z0-9]", "", sld)
 
 
-def _score(company_norm: str, dom_core: str) -> float:
-    """Return a match score 0-1."""
+# Which rule produced a score. STRONG means the domain spells the company;
+# WEAK means only that the two share words. They are different claims and
+# are not comparable as numbers, so the rule travels with the score.
+# Identical to pipeline.py's copy of this scorer, which is where the defect
+# below was found; the two must not diverge.
+STRONG, WEAK = "strong", "weak"
+
+
+def _score(company_norm: str, dom_core: str) -> tuple[float, str]:
+    """Return a match score 0-1 and which rule produced it."""
     if not dom_core:
-        return 0.0
+        return 0.0, WEAK
     company_core = company_norm.replace(" ", "")
     # Exact substring match
     if dom_core in company_core:
-        return 0.9
+        return 0.9, STRONG
     # Sequential character match — requires long domain core and high hit rate
     # to avoid false positives on short or common-letter domains
     if len(dom_core) >= 7 and all(c in company_core for c in dom_core):
@@ -73,15 +81,27 @@ def _score(company_norm: str, dom_core: str) -> float:
                 pos = idx + 1
         ratio = seq / len(dom_core)
         if ratio >= 0.85:
-            return ratio
-    # Word overlap
+            return ratio, STRONG
+    # Word overlap, measured symmetrically.
+    #
+    # The denominator used to be len(dom_words) alone, which asks only
+    # whether the domain is explained by the company and never whether the
+    # company has words the domain leaves unaccounted for. "33traders.com"
+    # gives dom_words={"traders"}, so ANY company with "traders" in its name
+    # scored 1/1 = 1.00 - above the 0.90 an exact substring earns - while
+    # "tamu", the only part that says WHICH trader, went unmatched. Over the
+    # union it is 1/2 = 0.50.
     company_words = set(company_norm.split())
     dom_words = set(re.findall(r"[a-z]{3,}", dom_core))
     if dom_words:
-        overlap = len(company_words & dom_words) / len(dom_words)
+        shared = company_words & dom_words
+        overlap = len(shared) / len(company_words | dom_words)
         if overlap >= 0.5:
-            return overlap
-    return 0.0
+            # Equal word sets mean nothing is left over on either side
+            # ("acme2widgets" vs "ACME WIDGETS LTD"). Less than that is a
+            # partial overlap: evidence, but not enough to write on.
+            return overlap, (STRONG if company_words == dom_words else WEAK)
+    return 0.0, WEAK
 
 
 def get_domains() -> list[str]:
@@ -172,30 +192,49 @@ def main():
 
     matched: dict[str, tuple[str, str, float]] = {}  # domain -> (cn, name, score)
 
+    review = 0
+
     for domain in domains:
         dom_core = _domain_core(domain)
         best_score = 0.0
+        best_tier = WEAK
+        best_rank = (0, 0.0)
         best_row = None
         best_name = ""
         best_cn = ""
 
         for row_idx, cn, name, existing in companies:
             name_norm = _normalize(name)
-            score = _score(name_norm, dom_core)
-            if score > best_score:
+            score, tier = _score(name_norm, dom_core)
+            # Rank on (tier, score). Ranking on the number alone lets a weak
+            # match outrank the company the domain actually spells.
+            rank = (1 if tier == STRONG else 0, score)
+            if rank > best_rank:
+                best_rank = rank
+                best_tier = tier
                 best_score = score
                 best_row = row_idx
                 best_name = name
                 best_cn = cn
 
-        if best_score >= 0.5:
+        if best_score >= 0.5 and best_tier == WEAK:
+            # Shares a word, nothing more. Reported and left for a human
+            # rather than written: the Domain column feeds the app build and
+            # is a money column in the database this sheet is imported into
+            # (db.py:546).
+            print(f"  REVIEW {domain!r:40s} -> {best_cn} {best_name!r}  "
+                  f"(shares a word only, score={best_score:.2f}; not written)")
+            review += 1
+        elif best_score >= 0.5:
             matched[domain] = (best_cn, best_name, best_score)
             print(f"  MATCH  {domain!r:40s} -> {best_cn} {best_name!r}  (score={best_score:.2f})")
         else:
             print(f"  SKIP   {domain!r:40s} (best score={best_score:.2f} for {best_name!r})")
 
     if args.dry_run:
-        print("\n[Dry run — not writing to Excel]")
+        print("\n[Dry run — not writing to Excel]"
+              + (f" {review} left for review (shared-word matches are not "
+                 f"written)." if review else ""))
         return
 
     # Write matches to Excel
@@ -213,7 +252,9 @@ def main():
 
     try:
         wb.save(EXCEL_PATH)
-        print(f"\nDone. {written} domains written to Excel.")
+        print(f"\nDone. {written} domains written to Excel."
+              + (f" {review} left for review (shared-word matches are not "
+                 f"written)." if review else ""))
     except PermissionError:
         print(f"\nERROR: Cannot save — close the Excel file first, then re-run.")
         sys.exit(1)
