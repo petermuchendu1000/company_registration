@@ -142,6 +142,14 @@ def stage_match(dry_run: bool = False) -> None:
 
     r = requests.get(API_URL, params={**base, "Command": "namecheap.domains.getList", "PageSize": "100"}, timeout=30)
     root = ET.fromstring(r.text)
+    # Status was not checked here, and an error response carries no Domain
+    # elements — so a rejected call produced an empty list, and the stage went
+    # on to print "Namecheap domains: []" and "0 new domain(s) written",
+    # which reads exactly like an account with nothing left to match.
+    # match_domains.py:118 raises on the same condition for the same call.
+    if root.get("Status") == "ERROR":
+        errs = [e.text for e in root.findall(".//nc:Error", NS)]
+        raise RuntimeError(f"Namecheap API error: {errs}")
     domains = [d.get("Name") for d in root.findall(".//nc:Domain", NS) if d.get("Name")]
     print(f"  Namecheap domains: {domains}")
 

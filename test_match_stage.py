@@ -335,9 +335,31 @@ def check_provider_failures(r: Results) -> None:
             err is not None and writes == [], f"err={err!r} writes={writes}")
 
     writes, out, err = run_stage([], [ACME_FREE],
-                                 body=f'<ApiResponse xmlns="{NS_URI}"/>')
+                                 body=f'<ApiResponse Status="OK" xmlns="{NS_URI}"/>')
     r.check("an empty domain list writes nothing and raises nothing",
             err is None and writes == [], f"err={err!r} writes={writes}")
+
+    # This case was missing from this suite: it covered timeouts and
+    # malformed XML, but not the response that is well-formed XML saying the
+    # call was refused. An error response carries no Domain elements, so the
+    # stage printed "Namecheap domains: []" and "0 new domain(s) written" -
+    # the same output as a healthy account with nothing left to match.
+    # Stage 1's "Namecheap API: OK" sat directly above it. match_domains.py:118
+    # raises on this condition for the identical call.
+    err_body = ('<?xml version="1.0" encoding="utf-8"?>'
+                f'<ApiResponse Status="ERROR" xmlns="{NS_URI}"><Errors>'
+                '<Error Number="2019166">API Key is invalid or API access '
+                'has not been enabled</Error></Errors></ApiResponse>')
+    writes, out, err = run_stage([], [ACME_FREE], body=err_body)
+    r.check("a refused call raises instead of looking like an empty account",
+            isinstance(err, RuntimeError), f"err={err!r} out={out!r}")
+    r.check("...carrying the API's own message",
+            err is not None and "API Key is invalid" in str(err), f"err={err!r}")
+    r.check("...and writes nothing", writes == [], f"writes={writes}")
+    r.check("...and does not print an empty domain list",
+            "Namecheap domains: []" not in out, f"out={out!r}")
+    r.check("...and does not report a successful run",
+            "new domain(s) written" not in out, f"out={out!r}")
 
     # A company row with no number or no name must be ignored
     # (pipeline.py:127 requires both).
