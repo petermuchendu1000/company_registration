@@ -5,6 +5,7 @@ Pillow
 playwright
 playwright-stealth
 psycopg2-binary
+pycryptodome
 python-dotenv
 qrcode
 requests
