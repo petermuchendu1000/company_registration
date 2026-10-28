@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Tests for stage 2, domain matching (pipeline.py:62-160).
+
+    python3 test_match_stage.py
+
+Hermetic: no network, no database, no Namecheap account. stage_match imports
+requests inside its own body (pipeline.py:64), so patching the module's
+`get` is enough, and db is a module-scope import (pipeline.py:30) so
+pipeline.db is replaceable. Nothing in production is modified to make this
+testable.
+
+This stage had no test of any kind, and it writes to the companies table
+(pipeline.py:146) against a billed Namecheap account, so the check that
+matters most is the last one: dry_run must never write.
+
+FINDING encoded below, not fixed here. When the top-scoring company already
+holds a domain, pipeline.py:144-153 writes nothing and says nothing, having
+already printed MATCH. The only trace is MATCH lines outnumbering the "N new
+domain(s) written" tally. Choosing the winner by score and only then testing
+eligibility is deliberate - match_domains.py:182-206 does the same - but
+that sibling also prints
+    "Skipped {domain} -> {name} (already has: {existing})"
+at match_domains.py:211, and the live path dropped it. The test asserts
+today's silent behaviour so the suite is honest about reality; if someone
+adds the message, the check below fails and must be updated on purpose
+rather than by accident.
+"""
+from __future__ import annotations
+
+import io
+import os
+import sys
+from contextlib import redirect_stdout
+
+REPO = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, REPO)
+
+# stage_match reads these with bracket access (pipeline.py:110-113), so a
+# missing one is a KeyError, not a silent default. Set before importing.
+os.environ.setdefault("NAMECHEAP_API_USER", "test-user")
+os.environ.setdefault("NAMECHEAP_API_KEY", "test-key")
+os.environ.setdefault("NAMECHEAP_USERNAME", "test-user")
+os.environ.setdefault("NAMECHEAP_CLIENT_IP", "127.0.0.1")
+os.environ.setdefault("DATABASE_URL", "postgresql://unused@127.0.0.1:1/none")
+os.environ.setdefault("LOG_LEVEL", "CRITICAL")
+
+import requests
+import pipeline
+
+NS_URI = "http://api.namecheap.com/xml.response"
+
+
+class Results:
+    def __init__(self) -> None:
+        self.passed = 0
+        self.failed: list[str] = []
+
+    def check(self, name: str, cond: bool, detail: str = "") -> bool:
+        if cond:
+            self.passed += 1
+            print(f"  PASS  {name}")
+        else:
+            self.failed.append(name)
+            print(f"  FAIL  {name}" + (f"\n          {detail}" if detail else ""))
+        return bool(cond)
+
+    def report(self) -> int:
+        print()
+        print(f"{self.passed} passed / {len(self.failed)} failed")
+        for f in self.failed:
+            print(f"  failed: {f}")
+        return 1 if self.failed else 0
+
+
+def _xml(*names: str) -> str:
+    doms = "".join(f'<Domain ID="{i}" Name="{n}" />'
+                   for i, n in enumerate(names, 1))
+    return ('<?xml version="1.0" encoding="utf-8"?>'
+            f'<ApiResponse Status="OK" xmlns="{NS_URI}">'
+            f'<CommandResponse><DomainGetListResult>{doms}'
+            '</DomainGetListResult></CommandResponse></ApiResponse>')
+
+
+class _Recorder:
+    """Stands in for db. Records writes; serves fixed rows."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+        self.writes: list[tuple[str, dict]] = []
+
+    def all_rows(self, use_cache: bool = True) -> list[dict]:
+        return [dict(r) for r in self._rows]
+
+    def update_row(self, cn: str, updates: dict) -> None:
+        self.writes.append((cn, dict(updates)))
+
+
+def run_stage(domains, rows, dry_run=False, body=None, raises=None):
+    """Call the real stage_match with requests and db stubbed."""
+    rec = _Recorder(rows)
+    text = body if body is not None else _xml(*domains)
+
+    class _Resp:
+        pass
+    _Resp.text = text
+
+    def fake_get(*a, **k):
+        if raises is not None:
+            raise raises
+        return _Resp()
+
+    saved_get, saved_db = requests.get, pipeline.db
+    buf = io.StringIO()
+    err = None
+    try:
+        requests.get = fake_get
+        pipeline.db = rec
+        with redirect_stdout(buf):
+            pipeline.stage_match(dry_run=dry_run)
+    except Exception as e:                      # noqa: BLE001 - reported, not hidden
+        err = e
+    finally:
+        requests.get = saved_get
+        pipeline.db = saved_db
+    out = buf.getvalue()
+    return rec.writes, out, err
+
+
+def _co(cn, name, domain=""):
+    return {"Company Number": cn, "Company Name": name, "Domain": domain}
+
+
+ACME_FREE = _co("00000001", "ACME WIDGETS LTD")
+ACME_HELD = _co("00000001", "ACME WIDGETS LTD", "acme-old.uk")
+TRADING = _co("00000002", "ACME TRADING LTD")
+UNRELATED = _co("00000003", "ZEBRA LOGISTICS LIMITED")
+DOM = "acme2widgets.uk"
+
+
+# ── the money-safety invariant ──────────────────────────────────────────
+def check_dry_run(r: Results) -> None:
+    print("\n-- dry_run must never write (the invariant that protects the table) --")
+    writes, out, err = run_stage([DOM], [ACME_FREE, TRADING], dry_run=True)
+    r.check("dry_run raised nothing", err is None, repr(err))
+    r.check("dry_run performed ZERO writes", writes == [], f"wrote {writes}")
+    r.check("dry_run still reported the match", "MATCH" in out,
+            "a dry run that shows nothing is useless for review")
+    r.check("dry_run says it did not write", "Dry run" in out,
+            f"output was {out!r}")
+
+    # The same input WITHOUT dry_run must write - otherwise the check above
+    # passes for the wrong reason and proves nothing.
+    writes2, _, _ = run_stage([DOM], [ACME_FREE, TRADING], dry_run=False)
+    r.check("the same input DOES write when dry_run is off",
+            len(writes2) == 1,
+            f"wrote {writes2}; if this is empty the dry_run check is vacuous")
+
+
+# ── the write itself ────────────────────────────────────────────────────
+def check_write_shape(r: Results) -> None:
+    print("\n-- the write targets the right company with the right payload --")
+    writes, out, err = run_stage([DOM], [ACME_FREE, TRADING])
+    r.check("exactly one write", len(writes) == 1, f"wrote {writes}")
+    if len(writes) != 1:
+        return
+    cn, updates = writes[0]
+    r.check("write targets the top scorer", cn == "00000001", f"cn={cn!r}")
+    r.check("payload is exactly the Domain header",
+            updates == {"Domain": DOM}, f"payload={updates!r}")
+    # "Domain" must be a header db.update_row recognises, or the write is a
+    # silent no-op (db.py:331-333 skips unknown headers).
+    import db as real_db
+    r.check("'Domain' is a mapped header in db.HEADER_TO_COL",
+            "Domain" in real_db.HEADER_TO_COL,
+            "db.update_row would silently drop it")
+    r.check("it maps to the 'domain' column",
+            real_db.HEADER_TO_COL.get("Domain") == "domain",
+            f"maps to {real_db.HEADER_TO_COL.get('Domain')!r}")
+
+
+# ── no match ────────────────────────────────────────────────────────────
+def check_no_match(r: Results) -> None:
+    print("\n-- a domain matching nothing is skipped, not written --")
+    writes, out, err = run_stage(["totallyunrelated.uk"], [UNRELATED])
+    r.check("no write", writes == [], f"wrote {writes}")
+    r.check("reported as SKIP", "SKIP" in out, f"output {out!r}")
+    r.check("no MATCH claimed", "MATCH" not in out, f"output {out!r}")
+
+
+# ── boundaries ──────────────────────────────────────────────────────────
+def check_boundaries(r: Results) -> None:
+    print("\n-- both boundaries of the 0.5 threshold --")
+    # Measured, not assumed: ACME TRADING LTD against acme2widgets scores
+    # exactly 0.50 - the lowest value _score can return without returning 0.
+    writes, out, _ = run_stage([DOM], [TRADING])
+    r.check("a score of exactly 0.50 is accepted",
+            len(writes) == 1 and "(score=0.50)" in out,
+            f"writes={writes} out={out!r}")
+
+    writes, out, _ = run_stage(["zzzqqqxxx.uk"], [UNRELATED])
+    r.check("a score of 0.00 is rejected",
+            writes == [] and "(best score=0.00)" in out,
+            f"writes={writes} out={out!r}")
+
+    # The gate at :141 must not be stricter than the lowest nonzero score
+    # _score can produce, or matches vanish with no trace. 60k sampled
+    # inputs produced nothing in (0, 0.5) and a minimum nonzero of 0.5.
+    src = open(os.path.join(REPO, "pipeline.py"), encoding="utf-8").read()
+    r.check("the threshold is still 0.5, matching the lowest nonzero score",
+            "if best_score >= 0.5:" in src,
+            "if the gate rose above 0.5, word-overlap matches would be "
+            "silently discarded; if _score changed, re-derive the minimum")
+
+
+# ── duplicate / already-occupied ────────────────────────────────────────
+def check_occupied(r: Results) -> None:
+    print("\n-- a top scorer that already holds a domain (see FINDING) --")
+    writes, out, err = run_stage([DOM], [ACME_HELD, TRADING])
+    r.check("nothing is written", writes == [], f"wrote {writes}")
+    r.check("MATCH was nevertheless printed", "MATCH" in out, f"out {out!r}")
+    r.check("the tally says zero written", "0 new domain(s)" in out,
+            f"out {out!r}")
+    # The defect, pinned. match_domains.py:211 prints this; the live path
+    # does not. If someone adds it, this check fails on purpose.
+    r.check("FINDING: no reason is given for the skip (current behaviour)",
+            "already has" not in out,
+            "a reason is now printed - the finding is fixed; update this "
+            "check and the module docstring")
+    # And the free lower scorer does NOT receive it. Intended, per
+    # match_domains.py:182-206, but worth pinning so a change is deliberate.
+    r.check("the free lower scorer is not given the domain instead",
+            not any(cn == "00000002" for cn, _ in writes),
+            f"wrote {writes}")
+
+
+def check_tie_breaking(r: Results) -> None:
+    print("\n-- a tie is broken deterministically by row order --")
+    # "LTD" and "LIMITED" are both in _STOPWORDS (pipeline.py:72), so these
+    # two names normalise to the same string and necessarily score the same.
+    # Which one wins is decided by `score > best_score` at pipeline.py:138
+    # being strict, and "first" is well defined because db.all_rows orders
+    # by row_no NULLS LAST, company_number (db.py:255).
+    #
+    # This exists because a mutation flipping :138 to `>=` survived the
+    # suite: no other fixture here ties, so last-wins was indistinguishable
+    # from first-wins.
+    a = _co("00000001", "ACME WIDGETS LTD")
+    b = _co("00000002", "ACME WIDGETS LIMITED")
+    w1, out1, e1 = run_stage([DOM], [a, b])
+    w2, out2, e2 = run_stage([DOM], [b, a])
+    r.check("neither order raised", e1 is None and e2 is None,
+            f"{e1!r} / {e2!r}")
+    r.check("both orders write exactly once",
+            len(w1) == 1 and len(w2) == 1, f"{w1} / {w2}")
+    r.check("the two names really do score identically",
+            "(score=1.00)" in out1 and "(score=1.00)" in out2,
+            "if the scores differ this is not a tie and proves nothing")
+    if len(w1) == 1 and len(w2) == 1:
+        r.check("the FIRST row in db order wins the tie, not the last",
+                w1[0][0] == "00000001" and w2[0][0] == "00000002",
+                f"A-then-B gave {w1[0][0]!r}, B-then-A gave {w2[0][0]!r}; "
+                "last-wins would invert both")
+
+
+def check_one_domain_per_company(r: Results) -> None:
+    print("\n-- one company cannot collect two domains in a single run --")
+    writes, out, _ = run_stage(["acme2widgets.uk", "acme2widgets.co.uk"],
+                               [ACME_FREE])
+    r.check("exactly one write for two matching domains",
+            len(writes) == 1, f"wrote {writes}")
+    r.check("two MATCH lines but one write",
+            out.count("MATCH") == 2 and len(writes) == 1,
+            f"MATCH count={out.count('MATCH')} writes={len(writes)}")
+    r.check("the tally reports 1, not 2", "1 new domain(s)" in out,
+            f"out {out!r}")
+
+
+# ── the provider misbehaving ────────────────────────────────────────────
+def check_provider_failures(r: Results) -> None:
+    print("\n-- the provider never responds, or answers rubbish --")
+    writes, out, err = run_stage([DOM], [ACME_FREE],
+                                 raises=requests.exceptions.ConnectTimeout("timeout"))
+    r.check("a connection timeout propagates rather than writing",
+            isinstance(err, requests.exceptions.ConnectTimeout) and writes == [],
+            f"err={err!r} writes={writes}")
+
+    writes, out, err = run_stage([], [ACME_FREE], body="this is not xml")
+    r.check("malformed XML propagates rather than writing",
+            err is not None and writes == [], f"err={err!r} writes={writes}")
+
+    writes, out, err = run_stage([], [ACME_FREE],
+                                 body=f'<ApiResponse xmlns="{NS_URI}"/>')
+    r.check("an empty domain list writes nothing and raises nothing",
+            err is None and writes == [], f"err={err!r} writes={writes}")
+
+    # A company row with no number or no name must be ignored
+    # (pipeline.py:127 requires both).
+    writes, out, err = run_stage([DOM], [_co("", "ACME WIDGETS LTD"),
+                                         _co("00000009", "")])
+    r.check("rows missing a number or a name are ignored",
+            err is None and writes == [], f"err={err!r} writes={writes}")
+
+
+def check_missing_credentials(r: Results) -> None:
+    print("\n-- a missing credential fails loudly, not silently --")
+    saved = os.environ.pop("NAMECHEAP_API_KEY")
+    try:
+        writes, out, err = run_stage([DOM], [ACME_FREE])
+        r.check("a missing NAMECHEAP_API_KEY raises KeyError",
+                isinstance(err, KeyError), f"err={err!r}")
+        r.check("and writes nothing", writes == [], f"wrote {writes}")
+    finally:
+        os.environ["NAMECHEAP_API_KEY"] = saved
+    # Prove the restore worked, or every later run in this process is void.
+    writes, _, err = run_stage([DOM], [ACME_FREE])
+    r.check("credentials restored for subsequent checks",
+            err is None and len(writes) == 1, f"err={err!r} writes={writes}")
+
+
+def main() -> int:
+    r = Results()
+    print(f"target: {os.path.join(REPO, 'pipeline.py')} stage_match")
+    check_dry_run(r)
+    check_write_shape(r)
+    check_no_match(r)
+    check_boundaries(r)
+    check_occupied(r)
+    check_tie_breaking(r)
+    check_one_domain_per_company(r)
+    check_provider_failures(r)
+    check_missing_credentials(r)
+    return r.report()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
