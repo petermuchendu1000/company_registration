@@ -62,6 +62,24 @@ _IP_ERROR_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Error 1011102, "API Key is invalid or API access has not been enabled", is
+# also what Namecheap returns to a host whose SOURCE address is not
+# whitelisted - it does not have a distinct message for that. Measured by
+# sending, from one non-whitelisted host: the real key, the same key with one
+# hex digit changed, and a nonexistent ApiUser. All three produced
+# byte-identical 1011102 responses. The message names three causes and the
+# response cannot tell them apart, so this must stop the run and say all
+# three, rather than warn and carry on as if only the whitelist mattered.
+#
+# Kept separate from _IP_ERROR_RE because the operator instructions differ:
+# an unambiguous IP error means "add this address", this means "check these
+# three things".
+_ACCESS_ERROR_RE = re.compile(
+    r"api\s*key\s+is\s+invalid"
+    r"|api\s+access\s+has\s+not\s+been\s+enabled",
+    re.IGNORECASE,
+)
+
 # Namecheap parameter -> the .env variable that supplies it. Used to name the
 # missing one, rather than sending an empty credential and letting the API's
 # complaint about it get swallowed.
@@ -197,10 +215,11 @@ def test_namecheap_api(ip: str) -> tuple[bool, str]:
         if root.get("Status") == "ERROR":
             errors = [e.text or "" for e in root.findall(".//nc:Error", NS)]
             msg = "; ".join(errors) or "Status=ERROR with no Error element"
-            if _IP_ERROR_RE.search(msg):
+            if _IP_ERROR_RE.search(msg) or _ACCESS_ERROR_RE.search(msg):
                 return False, msg
-            # Not an IP problem: we reached the API from this address. Hand
-            # the message back rather than "OK" so the caller can say so.
+            # Not an IP or access problem: we reached the API from this
+            # address and it answered about something else. Hand the message
+            # back rather than "OK" so the caller can say so.
             return True, msg
         return True, "OK"
     except Exception as e:
@@ -248,10 +267,29 @@ def ensure_ip_whitelisted(verbose: bool = True) -> str:
     print("FAILED")
     print()
 
-    # Only an IP verdict gets the whitelist instructions. A timeout or a
-    # malformed response also lands here, and telling the operator to go and
-    # whitelist an address sends them after the wrong fault.
-    if _IP_ERROR_RE.search(msg):
+    # Three different faults land here and they need three different things
+    # done about them. Printing the whitelist instructions for all of them —
+    # which is what a single block amounts to — sends the operator after the
+    # wrong one two times out of three.
+    if _ACCESS_ERROR_RE.search(msg):
+        print("=" * 60)
+        print("  ACTION REQUIRED: Namecheap refused the call")
+        print("=" * 60)
+        print(f"  Your current public IP : {current_ip}")
+        print(f"  Namecheap API settings : {NAMECHEAP_SETTINGS_URL}")
+        print()
+        print("  Namecheap returns this one message for three different")
+        print("  causes and the response cannot tell them apart. Check all")
+        print("  three, in this order:")
+        print(f"    1. Is {current_ip} listed under 'Whitelisted IPs'?")
+        print("       (the usual cause — the whitelist is per-account and")
+        print("        does not follow a changed address)")
+        print("    2. Is API access switched ON for this account?")
+        print("    3. Is NAMECHEAP_API_KEY in .env the account's current key?")
+        print()
+        print("  NAMECHEAP_API_USER and NAMECHEAP_USERNAME must be the")
+        print("  account's username, not an email address.")
+    elif _IP_ERROR_RE.search(msg):
         print("=" * 60)
         print("  ACTION REQUIRED: whitelist your IP in Namecheap")
         print("=" * 60)

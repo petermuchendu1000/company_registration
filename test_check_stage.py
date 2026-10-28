@@ -179,6 +179,10 @@ IP_CASES = [
     # not text quoted from Namecheap's documentation.
     ("Request from a non-whitelisted address", True),
     ("Access denied: address not whitelisted", True),
+    # False here means only "_IP_ERROR_RE does not match it". It is a
+    # blocking fault all the same, caught by _ACCESS_ERROR_RE instead — see
+    # check_access_error below. Namecheap sends this exact text to a host
+    # whose source address is not whitelisted.
     ("API Key is invalid or API access has not been enabled", False),
     ("Too many login attempts", False),
     ("Domain is invalid", False),                                   # 2030166
@@ -242,10 +246,10 @@ def check_error_message_survives(r: Results) -> None:
     (res, err) = _call_api(_ok_xml())
     r.check("Status=OK gives (True, 'OK')", res == (True, "OK"), f"{res!r} {err!r}")
 
-    for msg in ("API Key is invalid or API access has not been enabled",
-                "Too many login attempts",
+    for msg in ("Too many login attempts",
                 "Domain is invalid",
-                "Promotion code is invalid"):
+                "Promotion code is invalid",
+                "No Products in the cart"):
         (res, err) = _call_api(_err_xml(msg))
         ok = res is not None and res[0] is True and res[1] == msg
         r.check(f"non-IP error is returned verbatim: {msg[:38]!r}", ok,
@@ -297,6 +301,66 @@ def check_error_message_survives(r: Results) -> None:
             res is not None and res[0] is False, f"got {res!r} {err!r}")
     r.check("malformed XML names ParseError",
             res is not None and "ParseError" in res[1], f"got {res!r}")
+
+
+# ── error 1011102: three causes, one message ────────────────────────────
+# Measured against the live API from a non-whitelisted host: the real key,
+# the same key with one hex digit changed, and a nonexistent ApiUser all
+# produced byte-identical responses —
+#
+#   <ApiResponse Status="ERROR" ...><Errors>
+#     <Error Number="1011102">API Key is invalid or API access has not
+#     been enabled</Error></Errors>...
+#
+# so Namecheap has no distinct message for "your source address is not
+# whitelisted", and this one cannot be read as "the key is wrong". Treating
+# it as a non-IP error — which is what the first version of this fix did —
+# warns and carries on while the single thing stage 1 exists to detect has
+# happened.
+ACCESS_MSG = "API Key is invalid or API access has not been enabled"
+
+
+def check_access_error(r: Results) -> None:
+    print("\n-- 1011102 is ambiguous and must stop the run, not warn --")
+    r.check("the live 1011102 text is recognised",
+            bool(check_ip._ACCESS_ERROR_RE.search(ACCESS_MSG)))
+    r.check("the 'API access' half is recognised on its own",
+            bool(check_ip._ACCESS_ERROR_RE.search(
+                "API access has not been enabled")),
+            "the two halves of the message must match independently")
+    r.check("the 'API Key is invalid' half is recognised on its own",
+            bool(check_ip._ACCESS_ERROR_RE.search("API Key is invalid")))
+    for other in ("Domain is invalid", "Too many login attempts",
+                  "Promotion code is invalid", "Parameter RequestIP is invalid",
+                  "UserName is invalid", "Description is too long"):
+        r.check(f"{other!r} is not read as an access error",
+                not check_ip._ACCESS_ERROR_RE.search(other))
+
+    (res, err) = _call_api(_err_xml(ACCESS_MSG))
+    r.check("the real 1011102 response gives (False, msg)",
+            res == (False, ACCESS_MSG), f"got {res!r} {err!r}")
+
+    ret, err, out, _ = _run_ensure((False, ACCESS_MSG))
+    r.check("the stage stops", isinstance(err, SystemExit) and err.code == 1,
+            f"got ret={ret!r} err={err!r}")
+    r.check("...and does not return an IP as if the check had passed",
+            ret is None, f"got {ret!r}")
+    r.check("...naming the whitelist as the usual cause",
+            "Whitelisted IPs" in out, f"got {out!r}")
+    # Assert on wording unique to the instruction line. "API access" alone is
+    # satisfied by the echoed API message at the foot of the block, so a
+    # mutant that deleted the instruction still passed.
+    r.check("...naming the API-access switch",
+            "API access switched ON" in out, f"got {out!r}")
+    r.check("...naming the key in .env",
+            "NAMECHEAP_API_KEY in .env" in out, f"got {out!r}")
+    r.check("...and the address to check", "203.0.113.7" in out, f"got {out!r}")
+    r.check("...without claiming it is definitely the whitelist",
+            "whitelist your IP" not in out,
+            "the response cannot distinguish the three causes, so the "
+            f"instructions must not pick one. {out!r}")
+    r.check("...and it is not reported as a warning-and-continue",
+            "WARNING" not in out, f"got {out!r}")
 
 
 # ── defect G: empty credentials ─────────────────────────────────────────
@@ -652,7 +716,10 @@ def check_ensure_flow(r: Results) -> None:
     r.check("...prints no warning", "WARNING" not in out, f"got {out!r}")
 
     print("\n-- defect B: a non-IP API error must be visible, not silent --")
-    msg = "API Key is invalid or API access has not been enabled"
+    # Deliberately NOT the 1011102 text, which is a blocking fault and is
+    # covered by check_access_error. This is an error specific to one
+    # command, where carrying on is the right call.
+    msg = "Domain is invalid"
     ret, err, out, _ = _run_ensure((True, msg))
     r.check("the stage still returns the IP (contract unchanged)",
             ret == "203.0.113.7", f"got {ret!r} {err!r}")
@@ -782,6 +849,7 @@ def main() -> int:
           f" + {os.path.join(REPO, 'pipeline.py')} stage_check/stage_match")
     check_ip_classifier(r)
     check_error_message_survives(r)
+    check_access_error(r)
     check_missing_credentials(r)
     check_public_ip(r)
     check_env_rewrite(r)
