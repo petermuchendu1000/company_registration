@@ -69,7 +69,14 @@ def build_flavors(companies: Iterable[Company]) -> list[BuiltFlavor]:
 
 def run_gradle(built: list[BuiltFlavor], variant: str = "Release", artifact: str = DEFAULT_ARTIFACT) -> int:
     """Invoke the Gradle wrapper to assemble or bundle all flavors in one go."""
-    gradlew = os.path.join(TEMPLATE_ROOT, "gradlew.bat")
+    # gradlew.bat is a Windows batch file. On Linux it still EXISTS, so the
+    # existence guard below passed and subprocess.run then raised - errno 13
+    # without the exec bit, errno 8 (Exec format error) with it - so the
+    # pipeline died on an uncaught exception instead of returning 1.
+    # posix is the only new branch: every other os.name keeps the previous
+    # path exactly, so Windows cannot regress.
+    wrapper = "gradlew" if os.name == "posix" else "gradlew.bat"
+    gradlew = os.path.join(TEMPLATE_ROOT, wrapper)
     if not os.path.exists(gradlew):
         print(f"  ERROR: {gradlew} not found")
         return 1
