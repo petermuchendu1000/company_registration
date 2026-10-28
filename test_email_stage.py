@@ -131,27 +131,36 @@ class _DB:
 def run_stage(rows, get_body, set_body=OK_SET, dry_run=False,
               get_raises=None, base_dir=None):
     calls = _Calls(get_body, set_body, get_raises)
-    saved_get, saved_db, saved_base = requests.get, pipeline.db, pipeline.BASE_DIR
+    saved = (requests.get, pipeline.db, pipeline.BASE_DIR,
+             pipeline.COMPANIES_DIR)
     buf = io.StringIO()
     err = None
     try:
         requests.get = calls
         pipeline.db = _DB(rows)
         if base_dir is not None:
+            # COMPANIES_DIR is bound at import from BASE_DIR, so patching
+            # BASE_DIR alone does NOT redirect it - a check of mine passed
+            # for that exact wrong reason. Both are patched together.
             pipeline.BASE_DIR = Path(base_dir)
+            pipeline.COMPANIES_DIR = (Path(base_dir) / "pipeline_output"
+                                      / "companies")
         with redirect_stdout(buf):
             pipeline.stage_email(dry_run=dry_run)
     except Exception as e:                      # noqa: BLE001 - reported
         err = e
     finally:
-        requests.get = saved_get
-        pipeline.db = saved_db
-        pipeline.BASE_DIR = saved_base
+        (requests.get, pipeline.db, pipeline.BASE_DIR,
+         pipeline.COMPANIES_DIR) = saved
     return calls, buf.getvalue(), err
 
 
-def _co(cn="00000001", domain="acme.uk", email="owner@real.example"):
-    return {"Company Number": cn, "Domain": domain, "Assigned Email": email}
+def _co(cn="00000001", name="ACME LTD", domain="acme.uk",
+        email="owner@real.example"):
+    # Company Name matters: the manifest lives under _co_dir(cn, name), so a
+    # row without it resolves to the bare company number and finds nothing.
+    return {"Company Number": cn, "Company Name": name,
+            "Domain": domain, "Assigned Email": email}
 
 
 ONE = [_co()]
@@ -204,29 +213,35 @@ def check_preserves_existing(r: Results) -> None:
             p.get("DomainName") == "acme.uk", f"DomainName={p.get('DomainName')!r}")
 
 
-def check_finding_dropped_forward(r: Results) -> None:
-    print("\n-- FINDING 1: a forward with an empty field is dropped --")
-    # pipeline.py:225 keeps only entries where BOTH mailbox and target are
-    # non-empty. Because the set call replaces the entire set, a kept-out
-    # entry is DELETED from the live configuration. Whether Namecheap ever
-    # returns such a shape (a catch-all, say) is not established here - that
-    # would need the live API, which this suite deliberately does not call.
+def check_malformed_forward_refused(r: Results) -> None:
+    print("\n-- a forward with an empty field makes the domain refuse --")
+    # setEmailForwarding replaces the whole set, so an entry that cannot be
+    # re-submitted faithfully would be DELETED. The old code filtered such
+    # entries out and submitted the remainder, deleting them silently. It now
+    # refuses the domain. A missing dev@ forward is recoverable by re-running;
+    # someone else's deleted mail routing is not.
+    for label, pairs in (
+            ("empty mailbox (a catch-all shape)",
+             (("", "catchall@real.example"), ("info", "i@real.example"))),
+            ("empty target",
+             (("info", ""), ("sales", "s@real.example"))),
+            ("both empty", (("", ""),)),
+    ):
+        calls, out, err = run_stage(ONE, forwarding_xml(*pairs))
+        r.check(f"{label}: raised nothing", err is None, repr(err))
+        r.check(f"{label}: NOTHING is submitted, so nothing is deleted",
+                calls.sets == [], f"set calls: {calls.sets}")
+        r.check(f"{label}: the refusal is explained", "SKIP" in out
+                and "empty mailbox or target" in out, f"out {out!r}")
+        r.check(f"{label}: the offending entries are shown",
+                "Refusing to rewrite" in out, f"out {out!r}")
+
+    # Control: well-formed forwards must still be processed, or "nothing is
+    # submitted" above would pass for every input and prove nothing.
     calls, out, err = run_stage(
-        ONE, forwarding_xml(("", "catchall@real.example"),
-                            ("info", "i@real.example")))
-    if not r.check("exactly one set call", len(calls.sets) == 1, f"{calls.sets}"):
-        return
-    p = calls.sets[0]
-    submitted = {p[f"mailbox{i}"] for i in range(1, 9) if f"mailbox{i}" in p}
-    r.check("the well-formed forward is kept", "info" in submitted,
-            f"submitted {submitted}")
-    r.check("FINDING: the empty-mailbox entry is NOT re-submitted, so the "
-            "set call would delete it", "" not in submitted,
-            f"submitted {submitted} - if the empty entry now survives, this "
-            "finding is fixed; update the check and the docstring")
-    r.check("the dropped entry is not reported to the operator",
-            "catchall" not in out,
-            f"a warning now mentions it - finding fixed; update this check")
+        ONE, forwarding_xml(("info", "i@real.example")))
+    r.check("a well-formed set is still processed", len(calls.sets) == 1,
+            f"set calls: {calls.sets}; if empty the refusals above are vacuous")
 
 
 # ── idempotency ─────────────────────────────────────────────────────────
@@ -266,22 +281,57 @@ def check_provider_errors(r: Results) -> None:
     r.check("a failing set call is reported, not swallowed",
             err is None and "ERROR setting forwarding" in out, f"out {out!r}")
 
+    # These used to propagate and abort the stage. They are now reported
+    # per company and the run continues, matching what an API-reported error
+    # two lines earlier in the code already did.
     calls, out, err = run_stage(ONE, "this is not xml")
-    r.check("malformed XML propagates rather than being ignored",
-            err is not None and calls.sets == [],
-            f"err={err!r} sets={calls.sets}")
+    r.check("malformed XML is reported, not raised",
+            err is None and calls.sets == [], f"err={err!r} sets={calls.sets}")
+    r.check("the parse failure names the exception type",
+            "ParseError" in out and "ERROR reading forwards" in out,
+            f"out {out!r}")
 
     calls, out, err = run_stage(
         ONE, forwarding_xml(),
         get_raises=requests.exceptions.ConnectTimeout("timeout"))
-    r.check("a connection timeout propagates and sets nothing",
-            isinstance(err, requests.exceptions.ConnectTimeout)
-            and calls.sets == [], f"err={err!r} sets={calls.sets}")
+    r.check("a connection timeout is reported and sets nothing",
+            err is None and calls.sets == [], f"err={err!r} sets={calls.sets}")
+    r.check("the timeout names the exception type",
+            "ConnectTimeout" in out, f"out {out!r}")
+
+    # The guard is narrow on purpose. An unexpected exception type inside it
+    # means a fault in this code, not a provider hiccup, and must propagate
+    # instead of being logged per domain and skipped. Widening the catch to
+    # bare Exception survived this suite until this check existed - the
+    # credential case below does NOT distinguish them, because _api() is
+    # evaluated outside the try and so aborts either way.
+    calls, out, err = run_stage(ONE, forwarding_xml(),
+                                get_raises=ValueError("a bug, not the network"))
+    r.check("an unexpected exception type still propagates",
+            isinstance(err, ValueError) and calls.sets == [],
+            f"err={err!r} sets={calls.sets}; a bare `except Exception` would "
+            "swallow this and report it as a per-domain failure")
+
+    # A missing credential aborts too, for its own reason.
+    saved = os.environ.pop("NAMECHEAP_API_KEY")
+    try:
+        calls, out, err = run_stage(ONE, forwarding_xml())
+        r.check("a missing credential aborts rather than being skipped",
+                isinstance(err, KeyError), f"err={err!r}")
+    finally:
+        os.environ["NAMECHEAP_API_KEY"] = saved
+    calls, _, err = run_stage(ONE, forwarding_xml())
+    r.check("credentials restored for later checks",
+            err is None and len(calls.sets) == 1, f"err={err!r}")
 
 
 def check_partial_completion(r: Results) -> None:
     print("\n-- a failure midway leaves earlier companies already changed --")
-    rows = [_co("00000001", "first.uk"), _co("00000002", "second.uk")]
+    # Keywords, not positions: `name` was added as the second parameter of
+    # _co, which silently turned "first.uk" into a company name and left both
+    # rows on the default domain.
+    rows = [_co(cn="00000001", domain="first.uk"),
+            _co(cn="00000002", domain="second.uk")]
     # Good for the first company, unparseable for the second.
     state = {"n": 0}
     good = forwarding_xml(("info", "i@real.example"))
@@ -314,15 +364,20 @@ def check_partial_completion(r: Results) -> None:
         requests.get = saved_get
         pipeline.db = saved_db
 
-    r.check("the second company's bad response raises", err is not None,
+    out = buf.getvalue()
+    r.check("one bad company no longer aborts the run", err is None,
             f"err={err!r}")
-    r.check("the FIRST company was already modified before the raise",
+    r.check("the first company was still configured",
             len(calls.sets) == 1
             and calls.sets[0].get("DomainName") == "first.uk",
             f"sets={calls.sets}")
-    r.check("no summary line is printed, so the run looks aborted",
-            "Companies with domains: 2" in buf.getvalue(),
-            f"out {buf.getvalue()!r}")
+    r.check("the second company is reported as failed, not silent",
+            "ERROR reading forwards" in out, f"out {out!r}")
+    r.check("the summary accounts for both",
+            "1 forward(s) created" in out and "1 failed" in out,
+            f"out {out!r}")
+    r.check("and states how many were considered",
+            "of 2 considered" in out, f"out {out!r}")
 
 
 # ── which companies are considered ──────────────────────────────────────
@@ -361,56 +416,184 @@ def check_dev_address(r: Results) -> None:
 
 
 # ── the manifest update ─────────────────────────────────────────────────
+def _fresh_manifest(p: Path, email: str = "stale@real.example") -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"support_email": email}), encoding="utf-8")
+
+
 def check_manifest(r: Results) -> None:
-    print("\n-- FINDING 2: the manifest path is one nothing writes --")
+    print("\n-- the manifest the BUILD wrote is the one updated --")
     tmp = tempfile.mkdtemp()
     try:
-        # Where stage_email looks (pipeline.py:184,247).
-        looks = Path(tmp) / "pipeline_output" / "apps" / "00000001"
-        # Where the build actually writes (assets.py:858 via generate._co_dir).
-        writes = (Path(tmp) / "pipeline_output" / "companies"
-                  / "00000001 - ACME LTD" / "app")
-        writes.mkdir(parents=True)
-        (writes / "manifest.json").write_text(
-            json.dumps({"support_email": "stale@real.example"}), encoding="utf-8")
+        po = Path(tmp) / "pipeline_output"
+        # Where the build writes: assets.py:858 via generate._co_dir, which is
+        # COMPANIES_DIR/<cn> - <name>/app/. _co() supplies the name.
+        built = po / "companies" / "00000001 - ACME LTD" / "app" / "manifest.json"
+        # The path this stage used to read, which nothing has ever written.
+        stale = po / "apps" / "00000001" / "manifest.json"
+        _fresh_manifest(built)
+        _fresh_manifest(stale)
 
         calls, out, err = run_stage(ONE, forwarding_xml(), base_dir=tmp)
         r.check("raised nothing", err is None, repr(err))
-        r.check("FINDING: the manifest the build wrote is NOT updated",
-                json.loads((writes / "manifest.json").read_text())
-                ["support_email"] == "stale@real.example",
-                "it was updated - the paths now agree; update this check")
-        r.check("and nothing is said about the manifest at all",
-                "manifest" not in out.lower(), f"out {out!r}")
+        r.check("the build's manifest IS updated",
+                json.loads(built.read_text())["support_email"] == "dev@acme.uk",
+                f"still {json.loads(built.read_text())!r}; out {out!r}")
+        r.check("and the update is reported", "UPD" in out, f"out {out!r}")
+        r.check("the stale pipeline_output/apps path is NOT touched",
+                json.loads(stale.read_text())["support_email"]
+                == "stale@real.example",
+                "the old path is still being written")
 
-        # Control: at the path stage_email DOES look at, the update works.
-        # Without this the finding could be 'the update is simply broken'.
-        looks.mkdir(parents=True)
-        (looks / "manifest.json").write_text(
-            json.dumps({"support_email": "stale@real.example"}), encoding="utf-8")
-        calls, out, err = run_stage(ONE, forwarding_xml(), base_dir=tmp)
-        r.check("at pipeline_output/apps/<cn>/ the update DOES happen",
-                json.loads((looks / "manifest.json").read_text())
-                ["support_email"] == "dev@acme.uk",
-                f"out {out!r}")
-        r.check("and it is reported", "UPD" in out, f"out {out!r}")
+        # A row with no company name resolves to the bare number, so it must
+        # not silently update some other company's manifest.
+        bare = po / "companies" / "00000001" / "app" / "manifest.json"
+        _fresh_manifest(built)
+        _fresh_manifest(bare)
+        calls, out, err = run_stage([_co(name="")], forwarding_xml(),
+                                    base_dir=tmp)
+        r.check("a nameless row updates <cn>/, not <cn> - <name>/",
+                json.loads(bare.read_text())["support_email"] == "dev@acme.uk"
+                and json.loads(built.read_text())["support_email"]
+                == "stale@real.example",
+                f"bare={json.loads(bare.read_text())!r} "
+                f"named={json.loads(built.read_text())!r}")
 
         # Already correct -> left alone, and said so.
+        _fresh_manifest(built, "dev@acme.uk")
         calls, out, err = run_stage(ONE, forwarding_xml(("dev", "x@real.example")),
                                     base_dir=tmp)
-        r.check("an already-correct manifest is not rewritten",
+        r.check("an already-correct manifest is not rewritten and says so",
                 "manifest already has" in out, f"out {out!r}")
 
         # dry_run must not write the manifest either.
-        (looks / "manifest.json").write_text(
-            json.dumps({"support_email": "stale@real.example"}), encoding="utf-8")
+        _fresh_manifest(built)
         calls, out, err = run_stage(ONE, forwarding_xml(), dry_run=True,
                                     base_dir=tmp)
         r.check("dry_run leaves the manifest untouched",
-                json.loads((looks / "manifest.json").read_text())
-                ["support_email"] == "stale@real.example", f"out {out!r}")
+                json.loads(built.read_text())["support_email"]
+                == "stale@real.example", f"out {out!r}")
+        r.check("dry_run still reports what it would change",
+                "DRY" in out and "support_email" in out, f"out {out!r}")
+
+        # A missing manifest must not raise - the build may not have run.
+        shutil.rmtree(po / "companies")
+        calls, out, err = run_stage(ONE, forwarding_xml(), base_dir=tmp)
+        r.check("a missing manifest is not an error", err is None, repr(err))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_print_summary(r: Results) -> None:
+    print("\n-- print_summary reads what the build wrote --")
+    tmp = tempfile.mkdtemp()
+    try:
+        po = Path(tmp) / "pipeline_output"
+        app = po / "companies" / "13510663 - PORTABILITY FIXTURE LTD" / "app"
+        (app / "artifacts").mkdir(parents=True)
+        # Artifact paths are stored RELATIVE TO app/, as the real build writes
+        # them; resolving them against the company directory finds nothing.
+        (app / "artifacts" / "a.apk").write_bytes(b"x")
+        (app / "manifest.json").write_text(json.dumps({
+            "apk": "artifacts/a.apk", "aab": "artifacts/missing.aab",
+            "domain": "fixture-example.uk", "privacy_policy_url": None,
+            "support_email": "dev@fixture-example.uk"}), encoding="utf-8")
+        # stage_director_id writes here, not to pipeline_output/representative_ids.
+        idd = po / "companies" / "13510663 - PORTABILITY FIXTURE LTD" / "director_id"
+        idd.mkdir(parents=True)
+        (idd / "ID Front.jpeg").write_bytes(b"x")
+
+        saved = (pipeline.BASE_DIR, pipeline.COMPANIES_DIR)
+        buf = io.StringIO()
+        try:
+            pipeline.BASE_DIR = Path(tmp)
+            pipeline.COMPANIES_DIR = po / "companies"
+            with redirect_stdout(buf):
+                pipeline.print_summary()
+        finally:
+            pipeline.BASE_DIR, pipeline.COMPANIES_DIR = saved
+        out = buf.getvalue()
+
+        r.check("the company is listed at all",
+                "13510663 - PORTABILITY FIXTURE LTD" in out, f"out {out!r}")
+        r.check("an artifact that exists reads APK:OK", "APK:OK" in out,
+                f"out {out!r}")
+        r.check("an artifact that does not exist reads AAB:--",
+                "AAB:--" in out, f"out {out!r}")
+        r.check("the ID is found under <company>/director_id/",
+                "ID:OK" in out, f"out {out!r}")
+        r.check("a null privacy_policy_url reads Policy:--",
+                "Policy:--" in out, f"out {out!r}")
+        r.check("the domain is reported", "Domain:OK" in out, f"out {out!r}")
+        r.check("the support email is shown",
+                "dev@fixture-example.uk" in out, f"out {out!r}")
+        r.check("it no longer claims pipeline_output/apps is missing",
+                "No pipeline_output/apps" not in out, f"out {out!r}")
+
+        # An empty companies dir must say so rather than printing nothing.
+        shutil.rmtree(po / "companies")
+        (po / "companies").mkdir(parents=True)
+        buf = io.StringIO()
+        saved = (pipeline.BASE_DIR, pipeline.COMPANIES_DIR)
+        try:
+            pipeline.BASE_DIR = Path(tmp)
+            pipeline.COMPANIES_DIR = po / "companies"
+            with redirect_stdout(buf):
+                pipeline.print_summary()
+        finally:
+            pipeline.BASE_DIR, pipeline.COMPANIES_DIR = saved
+        r.check("an empty companies directory is reported, not silent",
+                "holds no manifest.json" in buf.getvalue(),
+                f"out {buf.getvalue()!r}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_co_dir_matches_writer(r: Results) -> None:
+    print("\n-- _co_dir agrees with the code that creates the directory --")
+    # THE invariant behind both fixes. pipeline._co_dir only finds the
+    # manifest if it builds the same folder name as the writer,
+    # apps/generator/generate.py:107-108. A mutation replacing pipeline's
+    # re.sub with a bare strip SURVIVED this suite until this check existed:
+    # no fixture had a name containing the stripped characters, so the two
+    # constructions could diverge silently and every manifest lookup would
+    # quietly miss.
+    import apps.generator.generate as gen
+
+    class _C:
+        def __init__(self, n, nm):
+            self.company_number, self.company_name = n, nm
+
+    cases = [
+        ("13510663", "PORTABILITY FIXTURE LTD"),
+        ("00000001", ""),                        # empty -> bare number
+        ("00000002", "   "),                     # whitespace only
+        ("00000003", 'A/B:C*D?E"F<G>H|I\\J'),    # every stripped character
+        ("00000004", "  Leading & trailing  "),
+        ("00000005", "Ünïcodé Ltd"),
+        ("00000006", "Dash - In - Name Ltd"),
+    ]
+    saved = pipeline.COMPANIES_DIR
+    try:
+        pipeline.COMPANIES_DIR = Path(gen.COMPANIES_DIR)
+        mismatches = []
+        for cn, nm in cases:
+            writer = os.path.normpath(gen._co_dir(_C(cn, nm)))
+            reader = os.path.normpath(str(pipeline._co_dir(cn, nm) / "app"))
+            if writer != reader:
+                mismatches.append((nm, writer, reader))
+        r.check(f"all {len(cases)} names resolve identically on both sides",
+                not mismatches,
+                "; ".join(f"{nm!r}: writer={w} reader={rd}"
+                          for nm, w, rd in mismatches))
+        # And the check must be capable of failing: a deliberately wrong
+        # construction has to be caught, or the loop above proves nothing.
+        bogus = os.path.normpath(str(saved / "00000003 - A/B" / "app"))
+        r.check("the comparison would catch a divergence",
+                bogus != os.path.normpath(gen._co_dir(_C("00000003", 'A/B'))),
+                "the comparison cannot distinguish a wrong folder name")
+    finally:
+        pipeline.COMPANIES_DIR = saved
 
 
 def check_no_db_write(r: Results) -> None:
@@ -425,13 +608,15 @@ def main() -> int:
     print(f"target: {os.path.join(REPO, 'pipeline.py')} stage_email")
     check_dry_run(r)
     check_preserves_existing(r)
-    check_finding_dropped_forward(r)
+    check_malformed_forward_refused(r)
     check_already_configured(r)
     check_provider_errors(r)
     check_partial_completion(r)
     check_row_filter(r)
     check_dev_address(r)
     check_manifest(r)
+    check_print_summary(r)
+    check_co_dir_matches_writer(r)
     check_no_db_write(r)
     return r.report()
 

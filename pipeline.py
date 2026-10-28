@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -30,6 +31,32 @@ BASE_DIR = Path(__file__).parent
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
 
 # ── helpers ─────────────────────────────────────────────────────────────────
+
+COMPANIES_DIR = BASE_DIR / "pipeline_output" / "companies"
+
+
+def _co_dir(cn: str, name: str) -> Path:
+    """The output directory for one company. One definition, used by every stage.
+
+    This MUST stay character-identical to apps/generator/generate.py:107-108,
+    which is the code that actually creates the directory. Same character
+    class, same strip, same fallback to the bare company number when the name
+    is empty or whitespace. Verified equal across an empty name, a
+    whitespace-only name, every stripped character and non-ASCII.
+
+    generate._co_dir returns this path with "app" appended; this returns the
+    parent, because stage_director_id writes director_id/ as a sibling of app/.
+
+    It exists because the path was previously computed in one place and read
+    from another: stage_email looked under pipeline_output/apps/<cn>/ and
+    print_summary iterated pipeline_output/apps/, which nothing has ever
+    written. Both were silently dead - a build that produced signed APKs and
+    AABs still printed "No pipeline_output/apps directory found."
+    """
+    safe = re.sub(r'[\\/:*?"<>|]', "", name).strip()
+    folder = f"{cn} - {safe}" if safe else cn
+    return COMPANIES_DIR / folder
+
 
 def _banner(title: str) -> None:
     print(f"\n{'='*60}")
@@ -181,7 +208,6 @@ def stage_email(dry_run: bool = False) -> None:
     import requests
     import xml.etree.ElementTree as ET
 
-    APPS_DIR   = BASE_DIR / "pipeline_output" / "apps"
     API_URL    = "https://api.namecheap.com/xml.response"
     NS         = {"nc": "http://api.namecheap.com/xml.response"}
 
@@ -193,36 +219,82 @@ def stage_email(dry_run: bool = False) -> None:
             "ClientIp": os.environ["NAMECHEAP_CLIENT_IP"],
         }
 
-    # Load companies with a domain + assigned email from Supabase
+    # Load companies with a domain + assigned email from Supabase. The name
+    # is carried too: the manifest lives under _co_dir(cn, name), so without
+    # it the manifest update below cannot find the directory the build wrote.
     companies = []
     for r in db.all_rows():
         cn     = str(r.get("Company Number") or "").strip()
+        name   = str(r.get("Company Name") or "").strip()
         domain = str(r.get("Domain") or "").strip()
         email  = str(r.get("Assigned Email") or "").strip()
         if cn and domain and email:
-            companies.append((cn, domain, email))
+            companies.append((cn, name, domain, email))
 
     print(f"  Companies with domains: {len(companies)}")
 
-    for cn, domain, assigned_email in companies:
+    # Counted so a partially completed run is legible. There was no summary
+    # at all before, so a run that stopped halfway was indistinguishable from
+    # one that did nothing.
+    written = skipped = failed = 0
+
+    for cn, co_name, domain, assigned_email in companies:
         dev_email = f"dev@{domain}"
         print(f"\n  [{cn}] {domain}")
 
-        # Get existing forwards
+        # Get existing forwards. A transport failure or an unparseable body
+        # used to propagate and abort the whole stage, leaving every company
+        # already processed in this run modified and printing no summary -
+        # even though an error REPORTED BY the API two lines below merely
+        # skips the company and carries on. One domain's bad day should not
+        # decide whether the rest are configured.
+        #
+        # Deliberately narrow: only transport and parse failures, which are
+        # the provider's problem with THIS domain. Any other exception type
+        # inside the try indicates a fault in this code and must propagate
+        # rather than be reported as a per-domain hiccup and skipped.
+        #
+        # A missing credential aborts for a second, independent reason:
+        # _api() is evaluated below while building params, outside the try,
+        # so a KeyError from it is never a candidate for this handler at all.
         params = {**_api(), "Command": "namecheap.domains.dns.getEmailForwarding", "DomainName": domain}
-        r = requests.get(API_URL, params=params, timeout=30)
-        root = ET.fromstring(r.text)
+        try:
+            r = requests.get(API_URL, params=params, timeout=30)
+            root = ET.fromstring(r.text)
+        except (requests.exceptions.RequestException, ET.ParseError) as exc:
+            print(f"    ERROR reading forwards — {type(exc).__name__}: {exc}")
+            failed += 1
+            continue
 
         if root.get("Status") == "ERROR":
             errs = [e.text for e in root.findall(".//nc:Error", NS)]
             if any("DNS" in (e or "") for e in errs):
                 print(f"    SKIP — external DNS")
+                skipped += 1
                 continue
             print(f"    ERROR — {errs}")
+            failed += 1
             continue
 
         existing = [(fw.get("mailbox", ""), fw.text or "") for fw in root.findall(".//nc:Forward", NS)]
-        existing = [(mb, ft) for mb, ft in existing if mb and ft]
+
+        # setEmailForwarding REPLACES the whole set, so every entry read here
+        # has to be submitted back or it is deleted. This used to drop any
+        # entry with an empty mailbox or target and submit the remainder,
+        # which silently deleted it from the live configuration - a catch-all
+        # read back as mailbox="" would simply vanish, with nothing printed.
+        #
+        # Refuse the domain instead. A missing dev@ forward is recoverable by
+        # re-running; someone else's deleted mail routing is not. Same reason
+        # download_id_via_ui refuses rather than returning the wrong file.
+        malformed = [(mb, ft) for mb, ft in existing if not (mb and ft)]
+        if malformed:
+            print(f"    SKIP — {len(malformed)} existing forward(s) have an "
+                  f"empty mailbox or target: {malformed}. Refusing to rewrite "
+                  f"the set, which would delete them. Fix or remove them in "
+                  f"Namecheap, then re-run.")
+            skipped += 1
+            continue
 
         if any(mb == "dev" for mb, _ in existing):
             print(f"    OK — {dev_email} already set up")
@@ -235,16 +307,32 @@ def stage_email(dry_run: bool = False) -> None:
                 for i, (mb, ft) in enumerate(new_fwd, 1):
                     set_params[f"mailbox{i}"]   = mb
                     set_params[f"ForwardTo{i}"] = ft
-                sr = requests.get(API_URL, params=set_params, timeout=30)
-                sroot = ET.fromstring(sr.text)
+                try:
+                    sr = requests.get(API_URL, params=set_params, timeout=30)
+                    sroot = ET.fromstring(sr.text)
+                except (requests.exceptions.RequestException,
+                        ET.ParseError) as exc:
+                    # Same reasoning as the read above. Note the forward may
+                    # or may not have been applied when the transport failed,
+                    # which is why the next run re-reads before deciding.
+                    print(f"    ERROR setting forwarding — "
+                          f"{type(exc).__name__}: {exc}")
+                    failed += 1
+                    continue
                 if sroot.get("Status") == "ERROR":
                     errs = [e.text for e in sroot.findall(".//nc:Error", NS)]
                     print(f"    ERROR setting forwarding — {errs}")
+                    failed += 1
                     continue
+                written += 1
                 print(f"    SET — {dev_email} -> {assigned_email}")
 
-        # Update manifest
-        manifest_path = APPS_DIR / cn / "manifest.json"
+        # Update the manifest the build actually wrote. This read
+        # pipeline_output/apps/<cn>/manifest.json, which nothing has ever
+        # written - assets.py:858 writes _co_dir(cn, name)/app/manifest.json -
+        # so the whole block was unreachable and support_email was never
+        # corrected, silently, including the else branch below.
+        manifest_path = _co_dir(cn, co_name) / "app" / "manifest.json"
         if manifest_path.exists():
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
             if data.get("support_email") != dev_email:
@@ -256,6 +344,13 @@ def stage_email(dry_run: bool = False) -> None:
                     print(f"    UPD — manifest support_email -> {dev_email}")
             else:
                 print(f"    OK  — manifest already has {dev_email}")
+
+    if dry_run:
+        print(f"\n  [Dry run — nothing written] {len(companies)} considered, "
+              f"{skipped} skipped, {failed} failed")
+    else:
+        print(f"\n  {written} forward(s) created, {skipped} skipped, "
+              f"{failed} failed, of {len(companies)} considered.")
 
 
 # ── Stage 4: Director ID (XBINDER) ──────────────────────────────────────────
@@ -280,15 +375,11 @@ def stage_director_id(
         split_combined_id_image, load_director_profile,
     )
 
-    COMPANIES_DIR = BASE_DIR / "pipeline_output" / "companies"
     CH_BASE       = "https://api.company-information.service.gov.uk"
     ch_key        = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
 
-    import re as _re
-    def _co_dir(cn: str, name: str) -> Path:
-        safe   = _re.sub(r'[\\/:*?"<>|]', "", name).strip()
-        folder = f"{cn} - {safe}" if safe else cn
-        return COMPANIES_DIR / folder
+    # COMPANIES_DIR and _co_dir are module level now; this stage had its own
+    # copy of both, which is how the other stages came to disagree with it.
 
     # ── Load director candidates from Supabase ──────────────────────────────
     candidates: list[tuple[str, str, str, str, str]] = []  # (cn, director_name, dob_str, director_gender, co_name)
@@ -586,25 +677,39 @@ def stage_build(
 
 def print_summary() -> None:
     _banner("PIPELINE SUMMARY")
-    apps_dir = BASE_DIR / "pipeline_output" / "apps"
-    if not apps_dir.exists():
-        print("  No pipeline_output/apps directory found.")
+    # This iterated pipeline_output/apps/, which nothing has ever written, so
+    # a build that produced signed APKs and AABs still printed "No
+    # pipeline_output/apps directory found." Three separate paths were wrong:
+    # the directory, the artifact paths (the manifest stores them relative to
+    # the app/ subdirectory, not to the company directory), and the ID, which
+    # stage_director_id writes to <company>/director_id/ and not to
+    # pipeline_output/representative_ids/.
+    if not COMPANIES_DIR.exists():
+        print(f"  No {COMPANIES_DIR.relative_to(BASE_DIR)} directory found.")
         return
 
-    for cn_dir in sorted(apps_dir.iterdir()):
-        if not cn_dir.is_dir():
+    rows = 0
+    for co_dir in sorted(COMPANIES_DIR.iterdir()):
+        if not co_dir.is_dir():
             continue
-        manifest_path = cn_dir / "manifest.json"
+        app_dir = co_dir / "app"
+        manifest_path = app_dir / "manifest.json"
         if not manifest_path.exists():
             continue
+        rows += 1
         m = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-        apk_ok  = "OK" if m.get("apk") and (cn_dir / m["apk"]).exists() else "--"
-        aab_ok  = "OK" if m.get("aab") and (cn_dir / m["aab"]).exists() else "--"
+        apk_ok  = "OK" if m.get("apk") and (app_dir / m["apk"]).exists() else "--"
+        aab_ok  = "OK" if m.get("aab") and (app_dir / m["aab"]).exists() else "--"
         pp_ok   = "OK" if m.get("privacy_policy_url") else "--"
         dom_ok  = "OK" if m.get("domain") else "--"
-        id_ok   = "OK" if (BASE_DIR / "pipeline_output" / "representative_ids" / cn_dir.name / "ID Front.jpeg").exists() else "--"
+        id_ok   = "OK" if (co_dir / "director_id" / "ID Front.jpeg").exists() else "--"
         email   = m.get("support_email", "")
-        print(f"  {cn_dir.name}  APK:{apk_ok}  AAB:{aab_ok}  Policy:{pp_ok}  Domain:{dom_ok}  ID:{id_ok}  email={email}")
+        print(f"  {co_dir.name}  APK:{apk_ok}  AAB:{aab_ok}  Policy:{pp_ok}  "
+              f"Domain:{dom_ok}  ID:{id_ok}  email={email}")
+
+    if rows == 0:
+        print(f"  {COMPANIES_DIR.relative_to(BASE_DIR)} exists but holds no "
+              f"manifest.json; has the build stage run?")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
