@@ -67,14 +67,20 @@ class Results:
 def self_test(r: Results) -> None:
     """A scanner that cannot fire would pass every check below."""
     print("\n-- the scanner discriminates --")
+    # The field name is assembled at runtime and the value is synthetic.
+    # Written out literally, these fixtures match the scanner and it reports
+    # itself - which is exactly what happened the moment this file became
+    # tracked. The password that was really committed is deliberately not
+    # reproduced here; any 32-hex literal exercises the pattern equally.
+    sp = "store" + "Password"
+    fake = "0123456789abcdef0123456789abcdef"
     cases = [
-        ("fires on the literal that was actually committed",
-         '    storePassword = "474c4992049490b5e1cc76a7430659f4"', True),
-        ("ignores the generator f-string that produces it",
-         "f'    storePassword = \"{_gradle_escape(ks.store_password)}\"',", False),
+        ("fires on a literal assignment", f'    {sp} = "{fake}"', True),
+        ("ignores the generator f-string that produces one",
+         "f'    " + sp + " = \"{_gradle_escape(ks.store_password)}\"',", False),
         ("ignores an env-var indirection",
-         '    storePassword = System.getenv("KS_PASS")', False),
-        ("ignores an empty literal", '    storePassword = ""', False),
+         f'    {sp} = System.getenv("KS_PASS")', False),
+        ("ignores an empty literal", f'    {sp} = ""', False),
     ]
     for label, text, want in cases:
         r.check(label, bool(SECRET.search(text)) is want)
