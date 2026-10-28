@@ -220,12 +220,21 @@ def check_globals_resolve(r: Results) -> None:
             "COMPANIES_DIR missing from the module")
 
 
-# ── 4. the rewrite did not change the output ────────────────────────────
+# ── 4a. the rewrite did not change the output ───────────────────────────
 def check_equivalence(r: Results) -> None:
+    """Compare the pre-fix and post-fix forms directly.
+
+    Only this section needs 3.12+, because evaluating the OLD form requires
+    a parser that accepts it. The shipped-source checks in 4b do not, and
+    must not be skipped here - they are the ones that run on the interpreter
+    production uses.
+    """
     print("\n-- the rewritten f-strings produce identical text --")
     if sys.version_info < PEP701_VERSION:
-        print(f"  SKIP  needs >= {PEP701_VERSION} to evaluate the old form "
-              f"at all (running {sys.version_info[:2]})")
+        print(f"  SKIP  comparing against the old form needs >= "
+              f"{PEP701_VERSION}; it is unparseable on "
+              f"{sys.version_info[0]}.{sys.version_info[1]}, which is the "
+              f"whole point. The shipped-source checks below still run.")
         return
 
     q = '"'
@@ -246,11 +255,19 @@ def check_equivalence(r: Results) -> None:
         r.check(f"old and new agree on {label}", got_old == got_new,
                 f"old={got_old!r} new={got_new!r}")
 
-    # Everything above compares two literals written in THIS file, so it
-    # proves the rewrite was faithful but says nothing about the source that
-    # actually ships. A mutation that changed generate.py's rendered text
-    # survived this suite until the checks below were added: they pull the
-    # f-strings out of generate.py itself and pin what each one renders.
+
+# ── 4b. what the shipped source actually renders ────────────────────────
+def check_shipped_renders(r: Results) -> None:
+    """Pin the text generate.py itself produces, on any Python >= 3.6.
+
+    check_equivalence compares two literals written in THIS file, which
+    proves the rewrite was faithful but says nothing about the source that
+    ships. A mutation that changed generate.py's rendered text survived the
+    suite until these checks existed. They were also being skipped on 3.11
+    by a guard that only section 4a needs - so on the very interpreter
+    production runs, nothing verified the shipped text at all.
+    """
+    print("\n-- the shipped f-strings render the expected text --")
     src = TARGET.read_text(encoding="utf-8")
     tree = ast.parse(src)
     fn = next((n for n in ast.walk(tree)
@@ -310,6 +327,7 @@ def main() -> int:
     check_lexical(r)
     check_globals_resolve(r)
     check_equivalence(r)
+    check_shipped_renders(r)
     return r.report()
 
 

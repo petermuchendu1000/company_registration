@@ -242,6 +242,48 @@ def check_database() -> None:
         record("all_rows() round-trips", "FAIL", f"{type(e).__name__}: {e}")
 
 
+# ── 7. The app-factory modules actually import ──────────────────────────────
+def check_app_imports() -> None:
+    """Import every apps/generator module and report what fails.
+
+    check_pins asks whether the 11 locked distributions are installed, which
+    is not the same question as "does the code import". Two defects got past
+    it: privacy_policy.py imports Crypto (pycryptodome), which is in neither
+    requirements file, and generate.py once used f-string syntax that is a
+    SyntaxError before Python 3.12. assets.py:838 swallows the first and a
+    build still reports success, so neither is visible without this.
+
+    The list is read from the directory, so a new module needs no edit here.
+    Modules that touch the database or .env at import - pipeline,
+    run_pipeline, develop_app - are deliberately excluded: ensure_schema runs
+    DDL, and this script promises to change nothing.
+    """
+    section("7. App-factory imports")
+    pkg_dir = os.path.join(ROOT, "apps", "generator")
+    if not os.path.isdir(pkg_dir):
+        record("apps/generator present", "FAIL", pkg_dir)
+        return
+
+    names = sorted(
+        f[:-3] for f in os.listdir(pkg_dir)
+        if f.endswith(".py") and f != "__init__.py"
+    )
+    if not names:
+        # An empty list would make every check below vacuously pass.
+        record("apps/generator contains modules", "FAIL", "no .py files found")
+        return
+
+    import importlib
+    bad = []
+    for name in names:
+        try:
+            importlib.import_module(f"apps.generator.{name}")
+        except Exception as e:
+            bad.append(f"{name} ({type(e).__name__}: {e})")
+    record(f"all {len(names)} apps/generator modules import",
+           "PASS" if not bad else "FAIL", "; ".join(bad))
+
+
 def main() -> int:
     print("Deployment self-check - read-only, changes nothing")
     print(f"repo: {ROOT}")
@@ -252,6 +294,7 @@ def main() -> int:
     have_display = check_display()
     check_browser(have_display)
     check_database()
+    check_app_imports()
 
     failed = [n for n, s, _ in RESULTS if s == "FAIL"]
     skipped = [n for n, s, _ in RESULTS if s == "SKIP"]
