@@ -13,6 +13,7 @@ import random
 import time
 import re
 import os
+import sys
 import logging
 from datetime import datetime
 
@@ -23,6 +24,34 @@ logger = logging.getLogger(__name__)
 
 # Singleton stealth instance with all evasions enabled
 _stealth = Stealth()
+
+
+def _require_display() -> None:
+    """Fail early, and legibly, when a headed browser cannot possibly start.
+
+    The D&B lookup is forced headed (see _run_duns_lookup_async), and on
+    Linux a headed Chromium needs an X or Wayland display. Without one,
+    Playwright surfaces "Target page, context or browser has been closed",
+    which says nothing about the cause - Chromium's own "Missing X server or
+    $DISPLAY" is buried in its stderr. On a server that is a long debugging
+    detour for a one-line deployment problem.
+
+    Checked on Linux only. Locally this runs on Windows, where a headed
+    browser needs no DISPLAY and the variable is normally unset, so checking
+    everywhere would break the desktop workflow.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        return
+    raise RuntimeError(
+        "A headed browser is required for the D&B lookup, but no display is "
+        "available: neither DISPLAY nor WAYLAND_DISPLAY is set on Linux. "
+        "Start the app under a virtual display, for example "
+        "`xvfb-run -a gunicorn -c gunicorn.conf.py app:app`, or run Xvfb and "
+        "export DISPLAY. Headless is not an alternative here - D&B blocks "
+        "headless browsers, which is why the lookup forces headed mode."
+    )
 
 # ---------------------------------------------------------------------------
 # Stealth configuration & human-like constants
@@ -68,6 +97,11 @@ async def _create_stealth_context(playwright, headless=True):
       - persistent profile for cookie jar reuse across runs
       - extra args to disable automation flags & force HTTP/1.1
     """
+    if not headless:
+        # Cheaper to refuse here with an actionable message than to let
+        # Chromium die and report a closed-browser error.
+        _require_display()
+
     viewport = random.choice(_VIEWPORTS)
     ua = random.choice(_USER_AGENTS)
     locale = random.choice(_LOCALES)
@@ -895,9 +929,19 @@ async def _run_duns_lookup_async(company_number, company_name, post_town="",
       2. If not found, try D&B UK lookup by company name
     Returns the result dict.
     """
-    # D&B blocks headless browsers entirely - force visible mode
+    # D&B blocks headless browsers entirely, so this path is ALWAYS headed.
+    # The `headless` argument is accepted to keep the signature aligned with
+    # _run_duns_apply_async, which DOES honour it, and is deliberately not
+    # honoured here: callers pass headless=True (api_v2.py:531,
+    # wizard_routes.py:306) and still get a headed browser. Logged at
+    # WARNING, not INFO, so the discrepancy is visible - and on Linux this
+    # path additionally needs a display, which _create_stealth_context
+    # refuses with an actionable message when there is none.
     if headless:
-        logger.info("Overriding headless=True -> False (D&B blocks headless browsers)")
+        logger.warning(
+            "DUNS lookup ignores headless=True and runs headed: D&B blocks "
+            "headless browsers. On Linux a display is required (xvfb-run)."
+        )
     async with async_playwright() as pw:
         context = await _create_stealth_context(pw, headless=False)
         try:

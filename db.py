@@ -21,12 +21,16 @@ Public API:
 """
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import threading
 import time
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extras
+import psycopg2.pool
 
 try:
     from dotenv import load_dotenv
@@ -41,6 +45,7 @@ COLUMNS: list[tuple[str, str]] = [
     ("No.",                     "row_no"),
     ("Company Number",          "company_number"),
     ("Company Name",            "company_name"),
+    ("Short Name",              "short_name"),
     ("Status",                  "status"),
     ("Type",                    "type"),
     ("Date of Creation",        "date_of_creation"),
@@ -90,8 +95,80 @@ def _dsn() -> str:
 
 
 def _connect():
+    """Open a brand-new connection.
+
+    Only for seeding the pool and for the exhaustion fallback in _cursor().
+    Everything else goes through _cursor().
+    """
     return psycopg2.connect(_dsn(), connect_timeout=15,
                             cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+# ── Connection pool ─────────────────────────────────────────────────────────
+# Every database call used to open a fresh connection. Measured on loopback,
+# with no TLS and no network in the way, a connect costs 2.57 ms against
+# 0.134 ms for a query on an already-open connection - 19x. Against a remote
+# Supabase, where a connect also pays TCP, TLS and auth round trips, the
+# connect dominates the request rather than the query does.
+#
+# _POOL_MAX must exceed the number of threads that can touch the database at
+# once. gunicorn runs threads = 8 (gunicorn.conf.py) and each pipeline stage
+# runs in its own daemon thread (api_v2.py:173), which is not a bounded set.
+# Exhaustion therefore must NOT become an error: _cursor() falls back to a
+# direct connection, which is precisely the pre-pool behaviour.
+_POOL_MAX = int(os.getenv("DB_POOL_MAX", "16"))
+_POOL = None
+_POOL_LOCK = threading.Lock()
+
+
+def _pool():
+    """Build the pool on first use, so importing this module never requires
+    DATABASE_URL to be set."""
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                # On failure _POOL stays None, so the next call retries
+                # rather than caching a broken pool.
+                _POOL = psycopg2.pool.ThreadedConnectionPool(
+                    1, _POOL_MAX, dsn=_dsn(), connect_timeout=15,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                )
+    return _POOL
+
+
+@contextlib.contextmanager
+def _cursor():
+    """Yield a cursor on a pooled connection.
+
+    Commits on a clean exit, rolls back on an exception, and ALWAYS hands the
+    connection back - including when the caller returns from inside the
+    with-block, which add_company does.
+
+    Never use `with _connect() as conn` for a pooled connection: psycopg2's
+    connection context manager commits but does not release, so the pool
+    would drain after _POOL_MAX calls and never recover. The commit matters
+    for pooling too - without it a connection returns to the pool
+    idle-in-transaction, holding its snapshot open.
+    """
+    pooled = True
+    try:
+        conn = _pool().getconn()
+    except psycopg2.pool.PoolError:
+        pooled = False          # exhausted: degrade, never fail
+        conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if pooled:
+            _pool().putconn(conn)
+        else:
+            conn.close()
 
 
 # ── Value normalisation ─────────────────────────────────────────────────────
@@ -127,9 +204,21 @@ def ensure_schema() -> None:
         + ",\n  ".join(cols_sql)
         + ",\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);"
     )
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(ddl)
-        conn.commit()
+        # CREATE TABLE IF NOT EXISTS does nothing when the table is already
+        # there, so a column added to COLUMNS later would be absent from a
+        # live table and every SELECT naming it would fail. Reconcile the
+        # columns idempotently instead. ADD COLUMN IF NOT EXISTS on a
+        # nullable column with no default is metadata-only in Postgres: no
+        # table rewrite, so this stays cheap as the table grows.
+        for header, col in COLUMNS:
+            if col == "company_number":
+                continue
+            coltype = "INTEGER" if col == "row_no" else "TEXT"
+            cur.execute(
+                f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS {col} {coltype}"
+            )
     _invalidate()
 
 
@@ -160,7 +249,7 @@ def all_rows(use_cache: bool = True) -> list[dict]:
         if use_cache and _CACHE["rows"] is not None and (time.time() - _CACHE["ts"]) < _TTL:
             return _CACHE["rows"]
     cols = ", ".join(col for _, col in COLUMNS)
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(
             f"SELECT {cols} FROM {TABLE} "
             f"ORDER BY row_no NULLS LAST, company_number"
@@ -173,7 +262,30 @@ def all_rows(use_cache: bool = True) -> list[dict]:
 
 
 def find_row(cn: str) -> dict | None:
+    """Fetch one company.
+
+    This used to call all_rows() and scan the result in Python, so looking up
+    a single company issued a full-table SELECT of all 34 columns and then
+    compared every row. company_number is the TEXT PRIMARY KEY
+    (ensure_schema), so a direct lookup is an index hit instead.
+
+    The scan is kept as a FALLBACK, not as the primary path: it normalised
+    BOTH sides with _cn8, so it matched a row stored unpadded ('1234567')
+    against a padded query ('01234567'). Legacy rows imported from the
+    spreadsheet can be stored that way, and dropping the fallback would turn
+    those into a silent "company not found".
+    """
     target = _cn8(cn)
+    if not target:
+        return None
+    cols = ", ".join(col for _, col in COLUMNS)
+    with _cursor() as cur:
+        cur.execute(
+            f"SELECT {cols} FROM {TABLE} WHERE company_number = %s", (target,)
+        )
+        row = cur.fetchone()
+    if row:
+        return _row_to_headerdict(row)
     for r in all_rows():
         if _cn8(r.get("Company Number")) == target:
             return r
@@ -195,7 +307,7 @@ def add_company(cn: str, name: str = "", date_of_creation: str = "") -> bool:
     cn = _cn8(cn)
     if not cn or cn == "00000000":
         return False
-    with _connect() as conn, conn.cursor() as cur:
+    with _cursor() as cur:
         cur.execute(f"SELECT 1 FROM {TABLE} WHERE company_number = %s", (cn,))
         if cur.fetchone():
             return False
@@ -205,7 +317,6 @@ def add_company(cn: str, name: str = "", date_of_creation: str = "") -> bool:
             f"VALUES (%s, %s, %s, %s) ON CONFLICT (company_number) DO NOTHING",
             (cn, _norm(name), _norm(date_of_creation), rn),
         )
-        conn.commit()
     _invalidate()
     return True
 
@@ -223,28 +334,111 @@ def update_row(cn: str, updates: dict) -> None:
         set_cols[col] = _norm(value)
     if not set_cols:
         return
-    with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT 1 FROM {TABLE} WHERE company_number = %s", (cn,))
-        exists = cur.fetchone() is not None
-        if not exists:
-            rn = _next_row_no(cur)
-            set_cols.setdefault("row_no", rn)
-            cols = ["company_number"] + list(set_cols.keys())
-            vals = [cn] + list(set_cols.values())
-            placeholders = ", ".join(["%s"] * len(cols))
-            cur.execute(
-                f"INSERT INTO {TABLE} ({', '.join(cols)}) VALUES ({placeholders})",
-                vals,
-            )
-        else:
-            assignments = ", ".join(f"{c} = %s" for c in set_cols)
-            cur.execute(
-                f"UPDATE {TABLE} SET {assignments}, updated_at = now() "
-                f"WHERE company_number = %s",
-                list(set_cols.values()) + [cn],
-            )
-        conn.commit()
+    # One statement instead of two, and atomic with it. This used to SELECT
+    # to find out whether the row existed and then INSERT or UPDATE: two
+    # round trips for every write, on top of whatever lookup the caller had
+    # already done. The INSERT also had no ON CONFLICT clause, so a
+    # concurrent insert landing between the SELECT and the INSERT raised a
+    # duplicate-key error.
+    cols = ["company_number"] + list(set_cols.keys())
+    exprs = ["%s"] * len(cols)
+    params = [cn] + list(set_cols.values())
+    if "row_no" not in set_cols:
+        # Position is assigned only when the row is created, and row_no is
+        # deliberately absent from the DO UPDATE list below, so an existing
+        # row keeps its place.
+        cols.append("row_no")
+        exprs.append(f"COALESCE((SELECT MAX(row_no) FROM {TABLE}), 0) + 1")
+
+    assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in set_cols)
+    with _cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {TABLE} ({', '.join(cols)}) "
+            f"VALUES ({', '.join(exprs)}) "
+            f"ON CONFLICT (company_number) DO UPDATE "
+            f"SET {assignments}, updated_at = now()",
+            params,
+        )
     _invalidate()
+
+
+# ── Domain purchase claim (money safety) ────────────────────────────────────
+# Buying a domain is a billed, irreversible side effect. The record of it must
+# exist BEFORE the money moves, otherwise a lost write looks identical to
+# "never bought" and the next run buys a second domain.
+DOMAIN_CLAIM = "purchasing"
+
+# Audit channel for anything that can spend money. Deliberately a named
+# logger rather than module-level, so it can be routed or kept when the rest
+# of the application logging is turned down.
+_money_log = logging.getLogger("money")
+
+
+def claim_domain_purchase(cn: str) -> bool:
+    """Atomically claim the exclusive right to buy a domain for `cn`.
+
+    Sets domain_status = 'purchasing', but ONLY where no claim is already
+    outstanding, in one statement. Doing this as a read-then-write would
+    leave a window in which two attempts both see "no claim" and both go on
+    to a billed purchase; a single conditional UPDATE cannot.
+
+    Returns True when the claim is ours and the caller may spend money.
+
+    False means one of:
+      - another attempt holds the claim, or
+      - an earlier attempt was never resolved, so a domain may already have
+        been bought and charged while its outcome went unrecorded, or
+      - the company has no row, so there is nowhere to record the purchase.
+    In every case the correct response is to refuse to buy, not to retry.
+    """
+    cn = _cn8(cn)
+    if not cn:
+        return False
+    # One statement, so there is no window between checking and claiming.
+    # INSERT covers run_pipeline's batch path, which reaches the domain stage
+    # (run_pipeline.py:1154) before it ever persists the row - its only db
+    # writes are db.save_results at run_pipeline.py:706 and :802, both
+    # outside the per-company loop. row_no is assigned here so a
+    # batch-created company still sorts correctly in all_rows().
+    with _cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {TABLE} (company_number, row_no, domain_status) "
+            f"VALUES (%s, COALESCE((SELECT MAX(row_no) FROM {TABLE}), 0) + 1, %s) "
+            f"ON CONFLICT (company_number) DO UPDATE "
+            f"   SET domain_status = %s, updated_at = now() "
+            f" WHERE {TABLE}.domain_status IS NULL "
+            f"    OR {TABLE}.domain_status <> %s",
+            (cn, DOMAIN_CLAIM, DOMAIN_CLAIM, DOMAIN_CLAIM),
+        )
+        claimed = cur.rowcount == 1
+    _invalidate()
+    if claimed:
+        _money_log.info("domain purchase claim TAKEN cn=%s", cn)
+    else:
+        _money_log.warning(
+            "domain purchase claim REFUSED cn=%s: an earlier attempt is "
+            "unresolved (domain_status=%s); a domain may already have been "
+            "bought and charged", cn, DOMAIN_CLAIM)
+    return claimed
+
+
+def domain_claim_held(cn: str) -> bool:
+    """True if an unresolved purchase claim is outstanding for `cn`.
+
+    Reads past the row cache deliberately: the caller is deciding whether
+    money was already spent, which must not be answered from a snapshot that
+    may be up to _TTL seconds old.
+    """
+    cn = _cn8(cn)
+    if not cn:
+        return False
+    with _cursor() as cur:
+        cur.execute(
+            f"SELECT domain_status FROM {TABLE} WHERE company_number = %s",
+            (cn,),
+        )
+        row = cur.fetchone()
+    return bool(row) and row.get("domain_status") == DOMAIN_CLAIM
 
 
 # Map a nested pipeline result dict (as produced by run_pipeline) to header labels.
@@ -345,53 +539,328 @@ def save_results(results: list[dict]) -> int:
 
 
 # ── One-time migration from the old Excel file ──────────────────────────────
-def import_from_excel(path: str) -> int:
+# Columns where a wrong value costs money rather than just being untidy.
+# domain_status carries the purchase claim that stops a second billed
+# namecheap.domains.create; Domain is what api_v2._compute_stages reads to
+# decide the domain stage is finished; duns_number gates the DUNS stage.
+MONEY_COLUMNS = ("domain", "domain_status", "domain_cost", "duns_number")
+
+# Presentation only. The sheet's "No." column renumbers rows, so almost
+# every company differs on it, and counting those alongside real changes
+# would bury the handful that involve money under one line each.
+ORDERING_COLUMNS = ("row_no",)
+
+
+def _excel_records(path: str):
+    """Yield (company_number, {column: value}) exactly as import_from_excel
+    would write them.
+
+    Shared by import_from_excel and diff_from_excel deliberately. A diff
+    that reimplemented this parse would drift from the import, and a diff
+    that disagrees with the operation it previews is worse than no diff:
+    it is read immediately before a production write, so it would give
+    false assurance.
+    """
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    ws = wb.active
-    it = ws.iter_rows(values_only=True)
-    hdr_row = next(it, None)
-    if not hdr_row:
-        wb.close()
-        return 0
-    hdr = [str(v or "").strip() for v in hdr_row]
-    imported = 0
-    with _connect() as conn, conn.cursor() as cur:
+    try:
+        ws = wb.active
+        it = ws.iter_rows(values_only=True)
+        hdr_row = next(it, None)
+        if not hdr_row:
+            return
+        hdr = [str(v or "").strip() for v in hdr_row]
         for row in it:
-            if not row or not row[1 if len(row) > 1 else 0]:
+            # Drop wholly blank rows only. This used to be a POSITIONAL test
+            # - `not row[1]` - which assumed Company Number is the second
+            # column. Everything else in this parser is header-driven, and
+            # the real company-number filter is six lines below, so the
+            # positional test added nothing on a canonically ordered sheet
+            # and silently dropped every row of a reordered one: with
+            # Company Number moved, row[1] became some other column, and a
+            # company with that column empty vanished from the import
+            # without a word. Operator-supplied workbooks now arrive through
+            # /api/import/preview, so column order is no longer ours to
+            # assume. Behaviour on a canonical sheet is unchanged: a row with
+            # no company number is still skipped, just by the check below.
+            if not row or not any(v is not None and str(v).strip() != ""
+                                  for v in row):
                 continue
-            rec = {hdr[i]: (row[i] if i < len(row) else None) for i in range(len(hdr))}
+            rec = {hdr[i]: (row[i] if i < len(row) else None)
+                   for i in range(len(hdr))}
             cn = _cn8(rec.get("Company Number"))
             if not cn or cn == "00000000":
                 continue
-            set_cols = {"company_number": cn}
+            set_cols = {}
             for header, col in COLUMNS:
                 if col == "company_number":
                     continue
-                if header in rec:
-                    set_cols[col] = _norm(rec.get(header))
-            cols = list(set_cols.keys())
-            vals = list(set_cols.values())
+                if header not in rec:
+                    continue
+                value = _norm(rec.get(header))
+                if value is None:
+                    # An import must never reduce information. A blank cell
+                    # means "the spreadsheet does not know this", not "clear
+                    # it". _norm maps "" to None, so without this skip the
+                    # EXCLUDED assignments below wrote NULL over live values.
+                    #
+                    # That was not merely lossy, it was a money hazard:
+                    # domain_status carries the purchase claim (DOMAIN_CLAIM)
+                    # that stops a second billed namecheap.domains.create,
+                    # and the Domain column is what api_v2._compute_stages
+                    # reads to decide the domain stage is finished. Nulling
+                    # either one lets run-all buy a second domain. Measured
+                    # against a stale sheet with blank domain cells: the
+                    # claim became None and a fresh claim then succeeded.
+                    #
+                    # save_results already filters empties this way; this
+                    # function did not.
+                    continue
+                set_cols[col] = value
+            yield cn, set_cols
+    finally:
+        wb.close()
+
+
+def diff_from_excel(path: str) -> dict:
+    """Preview what import_from_excel(path) would change. Writes nothing.
+
+    Skipping blank cells stopped the import erasing live data, but it did
+    not make the import harmless: a POPULATED but stale cell still
+    overwrites a populated column, because that is what an import is for.
+    Only a human can tell stale from authoritative, so this reports the
+    field-level consequences and leaves the judgement where it belongs.
+
+    Both sides are passed through _norm before comparison, so a value that
+    differs only by surrounding whitespace is not reported as a change.
+
+    Returns:
+        new_companies  - company numbers the sheet would create
+        additions      - count of fields filled where Postgres was empty
+        overwrites     - count of populated fields the sheet would replace
+        changes        - {cn: [{column, header, current, incoming, kind}]},
+                         kind being "add" or "overwrite"; unchanged fields
+                         are counted in `unchanged`, not listed
+        unchanged      - count of fields the sheet matches already
+        money_overwrites - the subset of overwrites touching MONEY_COLUMNS
+        claims_at_risk - companies whose outstanding purchase claim
+                         (DOMAIN_CLAIM) the sheet would overwrite. Treat a
+                         non-empty list here as a stop sign: it means a
+                         domain may have been bought and charged, and the
+                         import would discard the record of it.
+    """
+    current = {}
+    for row in all_rows():
+        cn = _cn8(row.get("Company Number"))
+        if cn:
+            current[cn] = row
+
+    out = {"new_companies": [], "additions": 0, "overwrites": 0,
+           "changes": {}, "unchanged": 0, "money_overwrites": [],
+           "claims_at_risk": [], "ordering_changes": 0}
+
+    for cn, set_cols in _excel_records(path):
+        existing = current.get(cn)
+        if existing is None:
+            out["new_companies"].append(cn)
+            out["additions"] += sum(1 for c in set_cols
+                                    if c not in ORDERING_COLUMNS)
+            continue
+        for col, incoming in set_cols.items():
+            was = _norm(existing.get(COL_TO_HEADER[col]))
+            if was == incoming:
+                out["unchanged"] += 1
+                continue
+            entry = {"column": col, "header": COL_TO_HEADER[col],
+                     "current": was, "incoming": incoming,
+                     "kind": "add" if was is None else "overwrite"}
+            # Recorded in `changes` whatever it is, so this stays a faithful
+            # preview of what the import writes - the import does write
+            # row_no. Only the headline counters treat it as noise.
+            out["changes"].setdefault(cn, []).append(entry)
+            if col in ORDERING_COLUMNS:
+                out["ordering_changes"] += 1
+                continue
+            if was is None:
+                out["additions"] += 1
+                continue
+            out["overwrites"] += 1
+            if col in MONEY_COLUMNS:
+                out["money_overwrites"].append({"company_number": cn, **entry})
+            if col == "domain_status" and was == DOMAIN_CLAIM:
+                out["claims_at_risk"].append(cn)
+
+    out["new_companies"].sort()
+    out["claims_at_risk"].sort()
+    return out
+
+
+def import_from_excel(path: str) -> int:
+    imported = 0
+    with _cursor() as cur:
+        for cn, set_cols in _excel_records(path):
+            cols = ["company_number"] + list(set_cols.keys())
+            vals = [cn] + list(set_cols.values())
             placeholders = ", ".join(["%s"] * len(cols))
-            updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "company_number")
+            updates = ", ".join(f"{c} = EXCLUDED.{c}"
+                                for c in cols if c != "company_number")
+            # A row carrying nothing but a company number still creates the
+            # company, but must not generate "DO UPDATE SET " with an empty
+            # assignment list, which is a syntax error.
+            conflict = f"DO UPDATE SET {updates}" if updates else "DO NOTHING"
             cur.execute(
                 f"INSERT INTO {TABLE} ({', '.join(cols)}) VALUES ({placeholders}) "
-                f"ON CONFLICT (company_number) DO UPDATE SET {updates}",
+                f"ON CONFLICT (company_number) {conflict}",
                 vals,
             )
             imported += 1
-        conn.commit()
-    wb.close()
     _invalidate()
     return imported
 
 
 if __name__ == "__main__":
     import sys
-    ensure_schema()
-    print(f"Schema ready. Table '{TABLE}' has {len(COLUMNS)} mapped columns.")
+
+    _cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    # --diff and --verify must not touch the schema. ensure_schema() issues
+    # ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so running it first would
+    # mean a command documented as read-only could change the database, and
+    # --verify in particular could not report the state it was asked about
+    # because it would have just repaired it.
+    _READ_ONLY_CMDS = ("--diff", "--verify")
+    if _cmd not in _READ_ONLY_CMDS:
+        ensure_schema()
+        print(f"Schema ready. Table '{TABLE}' has {len(COLUMNS)} mapped columns.")
+
+    if _cmd == "--verify":
+        # Read-only. Answers the questions that cannot be checked anywhere
+        # but against the live database.
+        print(f"\nVerifying '{TABLE}' against db.COLUMNS ({len(COLUMNS)} "
+              f"mapped columns). Nothing is written.\n")
+        with _cursor() as cur:
+            cur.execute(
+                "select column_name, data_type from information_schema.columns "
+                "where table_schema = 'public' and table_name = %s",
+                (TABLE,),
+            )
+            live = {r["column_name"]: r["data_type"] for r in cur.fetchall()}
+
+        if not live:
+            print(f"  TABLE '{TABLE}' DOES NOT EXIST in the public schema.")
+            print("  Run `python db.py` with no arguments to create it.")
+            sys.exit(1)
+
+        expected = [c for _, c in COLUMNS]
+        missing = [c for c in expected if c not in live]
+        extra = [c for c in live if c not in expected and c != "updated_at"]
+
+        print(f"  columns live        : {len(live)}")
+        print(f"  columns expected    : {len(expected)} (+ updated_at)")
+        print(f"  missing from live   : {missing or 'none'}")
+        print(f"  present but unmapped: {extra or 'none'}")
+        if missing:
+            print("\n  Missing columns mean every SELECT naming them fails.")
+            print("  `python db.py` with no arguments adds them "
+                  "(ADD COLUMN IF NOT EXISTS, metadata-only).")
+
+        # Each query is guarded on the column existing. Querying domain_status
+        # unconditionally would crash on exactly the schema this command is
+        # meant to report on.
+        with _cursor() as cur:
+            cur.execute(f"select count(*) as n from {TABLE}")
+            total = cur.fetchone()["n"]
+            claims = None
+            if "domain_status" in live:
+                cur.execute(
+                    f"select company_number from {TABLE} "
+                    f"where domain_status = %s order by company_number",
+                    (DOMAIN_CLAIM,),
+                )
+                claims = [r["company_number"] for r in cur.fetchall()]
+            with_domain = None
+            if "domain" in live:
+                cur.execute(
+                    f"select count(*) as n from {TABLE} "
+                    f"where domain is not null and domain <> ''"
+                )
+                with_domain = cur.fetchone()["n"]
+
+        print(f"\n  companies           : {total}")
+        print(f"  with a domain       : "
+              f"{with_domain if with_domain is not None else 'n/a (column missing)'}")
+        if claims is None:
+            print("  outstanding claims  : n/a (domain_status column missing)")
+        elif claims:
+            # Printed last, and loudly: each one may represent a domain that
+            # was bought and charged without its outcome being recorded.
+            print(f"\n  OUTSTANDING PURCHASE CLAIMS ('{DOMAIN_CLAIM}'): "
+                  f"{len(claims)}")
+            for cn in claims:
+                print(f"    {cn}")
+            print("  Each of these may already have been bought and charged. "
+                  "Reconcile against\n  the Namecheap account before running "
+                  "the domain stage for them again.")
+        else:
+            print("  outstanding claims  : none")
+        print()
+        # Non-zero when the schema does not match, so this is usable as a
+        # gate in a deploy script rather than something a human must read.
+        sys.exit(1 if missing else 0)
+    DEFAULT_SHEET = "pipeline_output/companies_pipeline.xlsx"
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--diff":
+        # Read-only. Run this before --import, every time.
+        path = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_SHEET
+        try:
+            d = diff_from_excel(path)
+        except psycopg2.errors.UndefinedColumn as e:
+            # This command deliberately does not run ensure_schema, so a
+            # table older than db.COLUMNS fails here instead of being
+            # silently altered by a "read-only" command. Say so plainly
+            # rather than printing a traceback.
+            print(f"\nThe database is missing a column this code expects: {e}"
+                  .rstrip())
+            print("Run `python db.py --verify` to see which, then "
+                  "`python db.py` with no arguments to add them.")
+            sys.exit(1)
+        print(f"\nDiff of {path} against the database (nothing written):")
+        print(f"  companies the sheet would create : {len(d['new_companies'])}")
+        print(f"  fields it would fill in          : {d['additions']}")
+        print(f"  populated fields it would REPLACE: {d['overwrites']}")
+        print(f"  fields already matching          : {d['unchanged']}")
+        print(f"  row renumbering ('No.' only)     : "
+              f"{d['ordering_changes']} (cosmetic)")
+        if d["new_companies"]:
+            print(f"\n  new: {', '.join(d['new_companies'][:20])}"
+                  + (" ..." if len(d["new_companies"]) > 20 else ""))
+        if d["overwrites"]:
+            print("\n  Overwrites, by company. Each line replaces a value "
+                  "that is already set:")
+            for cn, entries in sorted(d["changes"].items()):
+                over = [e for e in entries if e["kind"] == "overwrite"
+                        and e["column"] not in ORDERING_COLUMNS]
+                if not over:
+                    continue
+                print(f"    {cn}")
+                for e in over:
+                    flag = "  <-- MONEY" if e["column"] in MONEY_COLUMNS else ""
+                    print(f"      {e['header']}: {e['current']!r} -> "
+                          f"{e['incoming']!r}{flag}")
+        if d["claims_at_risk"]:
+            # Deliberately last, so it is the final thing on screen.
+            print(f"\n  STOP. {len(d['claims_at_risk'])} company(ies) hold an "
+                  f"outstanding purchase claim ('{DOMAIN_CLAIM}') that this "
+                  f"sheet would overwrite:")
+            for cn in d["claims_at_risk"]:
+                print(f"    {cn}")
+            print("  A domain may already have been bought and charged for "
+                  "these. Importing discards the record of it and allows a "
+                  "second purchase. Reconcile against Namecheap first.")
+        print()
+
     if len(sys.argv) > 1 and sys.argv[1] == "--import":
-        path = sys.argv[2] if len(sys.argv) > 2 else "pipeline_output/companies_pipeline.xlsx"
+        path = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_SHEET
         n = import_from_excel(path)
         print(f"Imported {n} rows from {path}.")
     print(f"Total rows in DB: {len(all_rows(use_cache=False))}")

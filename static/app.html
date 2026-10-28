@@ -47,6 +47,13 @@
       z-index: 10;
     }
     .topbar-logo { font-weight: 700; font-size: 15px; letter-spacing: -0.3px; white-space: nowrap; }
+    .topbar-link {
+      color: var(--muted); text-decoration: none; font-size: 12px;
+      font-weight: 600; white-space: nowrap; padding: 5px 10px;
+      border: 1px solid var(--border); border-radius: 5px;
+      transition: color .15s, border-color .15s;
+    }
+    .topbar-link:hover { color: var(--text); border-color: var(--blue); }
     .topbar-logo span { color: var(--blue); }
     .topbar-spacer { flex: 1; }
     .topbar-summary {
@@ -444,6 +451,43 @@
       transition: opacity .15s;
     }
     .overlay.open { opacity: 1; pointer-events: all; }
+
+    /* Excel import */
+    .btn-add-secondary {
+      margin-top: 6px;
+      background: var(--surface2);
+      color: var(--text);
+    }
+    .imp-drop {
+      border: 2px dashed var(--border); border-radius: 6px;
+      padding: 18px; text-align: center; cursor: pointer;
+      color: var(--muted); font-size: 12px; transition: border-color .15s;
+    }
+    .imp-drop:hover, .imp-drop.over { border-color: var(--blue); }
+    .imp-drop strong { color: var(--text); display: block; margin-bottom: 4px; }
+    .imp-stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+    .imp-stat {
+      flex: 1 1 86px; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 7px 9px;
+    }
+    .imp-stat b { display: block; font-size: 17px; line-height: 1.2; }
+    .imp-stat span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+    .imp-stat.danger { border-color: #a6341f; }
+    .imp-stat.danger b { color: #ff6b4a; }
+    .imp-warn {
+      border: 1px solid #a6341f; background: rgba(166,52,31,.12);
+      border-radius: 5px; padding: 10px; margin: 10px 0; font-size: 12px;
+    }
+    .imp-warn h4 { margin: 0 0 5px; font-size: 12px; color: #ff6b4a; }
+    .imp-changes { max-height: 240px; overflow: auto; margin-top: 10px; }
+    .imp-changes table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .imp-changes th, .imp-changes td {
+      text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border);
+      vertical-align: top; word-break: break-word;
+    }
+    .imp-changes th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+    .imp-changes td.was { color: var(--muted); text-decoration: line-through; }
+    .imp-changes tr.money td { background: rgba(166,52,31,.10); }
     .modal {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -940,6 +984,12 @@
     <span id="topbar-running-label"></span>
   </div>
   <div class="topbar-summary" id="topbar-summary"></div>
+  <a class="topbar-link" href="/wizard" title="Guided single-company onboarding">Onboarding wizard &rarr;</a>
+  <!-- Shown to everyone; auth.py's gate refuses /admin below admin rank and
+       explains why, which is clearer than a link that silently is not there. -->
+  <a class="topbar-link" href="/admin" title="Approve users and manage access">Users</a>
+  <a class="topbar-link" href="/change-password" title="Change your password">Password</a>
+  <a class="topbar-link" href="/logout" title="End this session on this device">Sign out</a>
 </div>
 <div class="progress-strip" id="progress-strip" style="display:none">
   <div class="progress-fill" id="progress-fill"></div>
@@ -977,6 +1027,7 @@
     </div>
     <div class="sidebar-foot">
       <button class="btn-add" onclick="openAddModal()">+ Add Company</button>
+      <button class="btn-add btn-add-secondary" onclick="openImportModal()">⬆ Import from Excel</button>
     </div>
   </div>
 
@@ -1004,6 +1055,43 @@
 </div>
 
 <!-- Add Company Modal -->
+<!-- Excel import -->
+<div class="overlay" id="import-overlay">
+  <div class="modal" style="max-width:860px;">
+    <div class="modal-head">
+      <h2>Import Companies from Excel</h2>
+      <button class="modal-x" onclick="closeImportModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>1 &middot; Get the template</label>
+        <a class="btn btn-sm btn-ghost" href="/api/import/template" download>⬇ Download template (.xlsx)</a>
+        <div class="version-hint">
+          Headers are matched by name, so you may reorder or delete columns.
+          Blank cells are skipped and never erase stored values.
+        </div>
+      </div>
+
+      <div class="field">
+        <label>2 &middot; Upload your filled sheet</label>
+        <div class="imp-drop" id="imp-drop" onclick="document.getElementById('imp-file').click()">
+          <strong>Click to choose a file, or drop one here</strong>
+          .xlsx or .xlsm, up to 10&nbsp;MB — nothing is written yet
+        </div>
+        <input id="imp-file" type="file" accept=".xlsx,.xlsm" style="display:none"
+               onchange="importPreview(this.files[0])" />
+      </div>
+
+      <div id="imp-status" style="font-size:12px;color:var(--muted);min-height:16px;"></div>
+      <div id="imp-report"></div>
+    </div>
+    <div class="modal-foot" id="imp-foot" style="display:none;">
+      <button class="btn btn-ghost" onclick="importDiscard()">Cancel</button>
+      <button class="btn btn-primary" id="imp-apply-btn" onclick="importApply(false)">Apply import</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="add-overlay">
   <div class="modal">
     <div class="modal-head">
@@ -2690,6 +2778,218 @@ function toast(msg, type = "info") {
   document.getElementById("toasts").appendChild(el);
   setTimeout(() => el.remove(), 4500);
 }
+
+// ── Excel import ──────────────────────────────────────────────────────────────
+// Two steps on purpose. /api/import/preview writes nothing and returns a
+// field-level diff; /api/import/apply does the write. The server re-runs the
+// diff at apply time and answers 409 if the sheet would clear an outstanding
+// domain purchase claim, so this UI is never the only thing standing between a
+// stale spreadsheet and a second charge for a domain already bought.
+
+let IMP = { token: null, diff: null };
+
+function openImportModal() {
+  IMP = { token: null, diff: null };
+  document.getElementById("imp-status").textContent = "";
+  document.getElementById("imp-report").innerHTML = "";
+  document.getElementById("imp-foot").style.display = "none";
+  document.getElementById("imp-file").value = "";
+  document.getElementById("import-overlay").classList.add("open");
+}
+
+function closeImportModal() {
+  if (IMP.token) importDiscard(true);
+  document.getElementById("import-overlay").classList.remove("open");
+}
+
+async function importPreview(file) {
+  if (!file) return;
+  const status = document.getElementById("imp-status");
+  document.getElementById("imp-report").innerHTML = "";
+  document.getElementById("imp-foot").style.display = "none";
+  status.textContent = `Reading ${file.name}…`;
+
+  const fd = new FormData();
+  fd.append("file", file);
+  let r, data;
+  try {
+    // No Content-Type header on purpose: the browser must set it so the
+    // multipart boundary is included. Setting it by hand breaks the parse.
+    r = await fetch("/api/import/preview", { method: "POST", body: fd });
+    data = await r.json();
+  } catch (e) {
+    status.textContent = "Upload failed: " + e.message;
+    return;
+  }
+  if (!r.ok) {
+    status.textContent = data.error || `HTTP ${r.status}`;
+    return;
+  }
+  IMP.token = data.token;
+  IMP.diff = data.diff;
+  status.textContent =
+    `${file.name} — ${(data.bytes / 1024).toFixed(1)} KB. Nothing written yet.`;
+  renderImportDiff(data.diff);
+  document.getElementById("imp-foot").style.display = "";
+}
+
+function renderImportDiff(d) {
+  const esc = (s) => String(s === null || s === undefined ? "—" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const moneyCols = new Set((d.money_overwrites || []).map(m => m.column));
+
+  let h = `<div class="imp-stats">
+    <div class="imp-stat"><b>${d.new_companies.length}</b><span>New companies</span></div>
+    <div class="imp-stat"><b>${d.additions}</b><span>Fields filled</span></div>
+    <div class="imp-stat${d.overwrites ? " danger" : ""}"><b>${d.overwrites}</b><span>Overwrites</span></div>
+    <div class="imp-stat${d.money_overwrites.length ? " danger" : ""}"><b>${d.money_overwrites.length}</b><span>Money fields</span></div>
+    <div class="imp-stat"><b>${d.unchanged}</b><span>Unchanged</span></div>
+  </div>`;
+
+  if (d.claims_at_risk && d.claims_at_risk.length) {
+    h += `<div class="imp-warn">
+      <h4>⚠ ${d.claims_at_risk.length} outstanding domain purchase claim(s) would be overwritten</h4>
+      ${esc(d.claims_at_risk.join(", "))}<br><br>
+      A domain status of <code>purchasing</code> means a domain may already have been
+      bought and charged. Clearing it lets the pipeline buy and pay a second time.
+      The server will refuse this import unless you explicitly override.</div>`;
+  } else if (d.money_overwrites.length) {
+    h += `<div class="imp-warn">
+      <h4>${d.money_overwrites.length} money field(s) would be replaced</h4>
+      Domain, domain status, domain cost or DUNS number. Check the highlighted rows.</div>`;
+  }
+
+  const rows = [];
+  for (const cn of Object.keys(d.changes || {})) {
+    for (const c of d.changes[cn]) {
+      if (c.column === "row_no") continue;   // renumbering noise, counted separately
+      rows.push(Object.assign({ cn }, c));
+    }
+  }
+  // Money first: the rows that can cost money should not need scrolling to.
+  rows.sort((a, b) => (moneyCols.has(b.column) ? 1 : 0) - (moneyCols.has(a.column) ? 1 : 0));
+
+  if (rows.length) {
+    h += `<div class="imp-changes"><table><thead><tr>
+      <th>Company</th><th>Field</th><th>Currently</th><th>Becomes</th>
+      </tr></thead><tbody>`;
+    for (const r of rows.slice(0, 400)) {
+      h += `<tr class="${moneyCols.has(r.column) ? "money" : ""}">
+        <td>${esc(r.cn)}</td><td>${esc(r.header)}</td>
+        <td class="was">${esc(r.current)}</td><td>${esc(r.incoming)}</td></tr>`;
+    }
+    h += `</tbody></table></div>`;
+    if (rows.length > 400) {
+      h += `<div class="version-hint">Showing the first 400 of ${rows.length} changes.</div>`;
+    }
+  } else if (!d.new_companies.length) {
+    h += `<div class="version-hint">This sheet matches what is already stored.
+          Importing it would change nothing.</div>`;
+  }
+
+  if (d.new_companies.length) {
+    const shown = d.new_companies.slice(0, 50).join(", ");
+    h += `<div class="version-hint" style="margin-top:8px;">New companies:
+          ${esc(shown)}${d.new_companies.length > 50 ? " …" : ""}</div>`;
+  }
+  if (d.ordering_changes) {
+    h += `<div class="version-hint">${d.ordering_changes} row-number change(s)
+          not listed — presentation only.</div>`;
+  }
+  document.getElementById("imp-report").innerHTML = h;
+}
+
+async function importApply(force) {
+  const btn = document.getElementById("imp-apply-btn");
+  const status = document.getElementById("imp-status");
+  btn.disabled = true;
+  status.textContent = force ? "Applying with override…" : "Applying…";
+
+  let r, data;
+  try {
+    r = await fetch("/api/import/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: IMP.token, force: !!force }),
+    });
+    data = await r.json();
+  } catch (e) {
+    btn.disabled = false;
+    status.textContent = "Apply failed: " + e.message;
+    return;
+  }
+
+  if (r.status === 409) {
+    // The server re-read the sheet at apply time and found a live claim that
+    // the preview did not show, or that the operator chose to ignore.
+    btn.disabled = false;
+    status.textContent = "";
+    renderImportDiff(data.diff);
+    const warn = document.createElement("div");
+    warn.className = "imp-warn";
+    warn.innerHTML = `<h4>Refused — ${data.claims_at_risk.length} live purchase claim(s)</h4>
+      ${data.hint}<br><br>
+      <button class="btn btn-sm btn-danger" onclick="importApply(true)">
+        I have checked the registrar — import anyway</button>`;
+    document.getElementById("imp-report").prepend(warn);
+    return;
+  }
+  if (!r.ok) {
+    btn.disabled = false;
+    status.textContent = data.error || `HTTP ${r.status}`;
+    return;
+  }
+
+  IMP = { token: null, diff: null };
+  btn.disabled = false;
+  document.getElementById("import-overlay").classList.remove("open");
+  toast(`Imported ${data.imported} companies`, "success");
+  loadCompanies();
+}
+
+async function importDiscard(silent) {
+  const token = IMP.token;
+  IMP = { token: null, diff: null };
+  if (token) {
+    try {
+      await fetch("/api/import/discard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+    } catch (e) { /* the server expires it on its own anyway */ }
+  }
+  if (!silent) document.getElementById("import-overlay").classList.remove("open");
+}
+
+// Drag and drop onto the modal's drop zone. Guarded on offsetParent so these
+// document-level listeners do nothing while the modal is closed.
+(function () {
+  const zone = () => {
+    const d = document.getElementById("imp-drop");
+    return d && d.offsetParent ? d : null;
+  };
+  ["dragenter", "dragover"].forEach(ev =>
+    document.addEventListener(ev, e => {
+      const d = zone();
+      if (!d) return;
+      e.preventDefault();
+      d.classList.add("over");
+    }));
+  document.addEventListener("dragleave", () => {
+    const d = zone();
+    if (d) d.classList.remove("over");
+  });
+  document.addEventListener("drop", e => {
+    const d = zone();
+    if (!d) return;
+    e.preventDefault();
+    d.classList.remove("over");
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+      importPreview(e.dataTransfer.files[0]);
+    }
+  });
+})();
 
 // ── Tree click delegation ─────────────────────────────────────────────────────
 // Single listener on the document handles all .tree-btn clicks regardless of

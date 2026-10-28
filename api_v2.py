@@ -12,6 +12,7 @@ import openpyxl
 from flask import Blueprint, jsonify, request, send_file, abort
 
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
+from safe_path import resolve_within
 
 api_v2 = Blueprint("api_v2", __name__)
 
@@ -551,12 +552,15 @@ def _exec_stage(cn: str, stage: str, row: dict):
             "sic_codes": str(row.get("SIC Codes") or ""),
             "address": str(row.get("Address") or ""),
         }
-        r = register_company_domain(name, details)
-        if r.get("domain"):
-            _update_excel_row(cn, {"Domain": r["domain"],
-                                   "Domain Status": r.get("status", ""),
-                                   "Domain Cost": r.get("charged", "")})
-        return r
+        # Persistence of Domain / Domain Status / Domain Cost belongs to
+        # register_company_domain (run_pipeline.py), which owns the purchase
+        # claim and must record the outcome in the same place it spends the
+        # money. Writing them here as well gave two owners for one fact, and
+        # this call site used the mere presence of a "domain" key as proof of
+        # purchase - which the failure path also satisfied, so a rejected
+        # order was recorded as a registered domain and the stage was marked
+        # complete for good. Do not reintroduce a write here.
+        return register_company_domain(name, details)
 
     elif stage == "email":
         from email_pool import EmailPool
@@ -969,8 +973,11 @@ def v2_download():
     path = request.args.get("path", "").strip()
     if not path:
         return abort(400)
-    abs_path = Path(os.path.abspath(path))
-    if not str(abs_path).startswith(str(DL_BASE.resolve())):
+    # A string prefix on abspath() accepted siblings such as
+    # ".../pipeline_output_X" and followed symlinks out of the directory;
+    # see safe_path for both reproductions.
+    abs_path = resolve_within(DL_BASE, path)
+    if abs_path is None:
         return abort(403)
     if not abs_path.is_file():
         return abort(404)

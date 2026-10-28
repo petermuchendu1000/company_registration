@@ -5,7 +5,7 @@ Add to the bottom of app.py (before `if __name__ == "__main__":`)
 or import via:  from wizard_routes import register_wizard_routes
                 register_wizard_routes(app)
 """
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_file
 import os
 import json
 import sys
@@ -15,6 +15,9 @@ import glob
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime
+
+import db  # Supabase (PostgreSQL) — the single source of truth for companies
+from safe_path import resolve_within
 
 wizard = Blueprint("wizard", __name__)
 
@@ -46,11 +49,20 @@ _PIPELINE_RUN_STATE = {
 
 
 def _resolve_pipeline_script():
-    root = os.path.dirname(os.path.abspath(__file__))
-    ggplay_script = os.path.join(root, "ggplay", "run_pipeline.py")
-    if os.path.exists(ggplay_script):
-        return ggplay_script
-    return os.path.join(root, "run_pipeline.py")
+    """Path to the pipeline script POST /api/pipeline/run executes.
+
+    This used to prefer ggplay/run_pipeline.py whenever that file existed,
+    which made the forked copy the script that actually ran. That fork does
+    not import db at all, so it had no purchase claim
+    (db.claim_domain_purchase) protecting its billed
+    namecheap.domains.create call, and it persisted to the spreadsheet rather
+    than to Supabase. The dashboard's main action therefore bypassed both the
+    money safety and the single source of truth.
+
+    Always use the maintained copy next to this file.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "run_pipeline.py")
 
 
 def _snapshot_pipeline_state_locked():
@@ -164,6 +176,37 @@ def _save_manual_inputs_db(db):
 
 
 # ──────────────────────────────────────────────────────────────
+# GET /wizard — the onboarding UI itself
+# ──────────────────────────────────────────────────────────────
+@wizard.route("/wizard")
+def wizard_page():
+    """Serve the onboarding wizard page.
+
+    static/index.html previously had no route of its own. It was reachable
+    only by knowing Flask's built-in static path, /static/index.html, so
+    the page was undiscoverable while every API it calls was registered and
+    live - /api/pipeline/*, /api/domains/*, /api/duns/*, all in this
+    module. The page was the only part without a front door.
+
+    Lives here rather than in app.py or api_v2.py because this module
+    already owns every endpoint the page talks to; the page and its API
+    stay in one place.
+
+    Serving the same file from a second URL needs no change to the page:
+    it references its assets absolutely (/static/style.css,
+    /static/wizard.js), so they resolve identically from /wizard.
+
+    Covered by the app-wide auth gate (app.py:84) like every other route,
+    and it adds no exemption. Worth stating plainly: this makes the wizard
+    exactly as privileged as the dashboard, because the app has one token
+    and one privilege level, not a user model. Anyone who can reach this
+    page can also run billed domain purchases.
+    """
+    return send_file(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "static", "index.html"))
+
+
+# ──────────────────────────────────────────────────────────────
 # POST /api/pipeline/add — add a company from the wizard
 # ──────────────────────────────────────────────────────────────
 @wizard.route("/api/pipeline/add", methods=["POST"])
@@ -174,81 +217,45 @@ def pipeline_add():
     if not cn:
         return jsonify({"success": False, "error": "company_number is required"}), 400
 
-    _ensure_excel()
+    # Writes go to Supabase, not to the spreadsheet. This route and
+    # /api/v2/company/add used to write to two different stores, so a company
+    # added in the wizard was invisible in the dashboard and vice versa.
+    if db.find_row(cn):
+        return jsonify({"success": False,
+                        "error": f"Company {cn} already exists in the pipeline."}), 409
 
-    wb = openpyxl.load_workbook(EXCEL_FILE)
-    ws = wb.active
+    name = data.get("company_name", "")
+    duns_number = data.get("duns_number", "")
+    duns_email = data.get("duns_email", "")
 
-    # Read header to find columns dynamically
-    header = [cell.value for cell in ws[1]]
+    db.add_company(cn, name, data.get("date_of_creation", ""))
+    db.update_row(cn, {
+        "Company Name":           name,
+        "Short Name":             data.get("short_name", ""),
+        "Status":                 data.get("status", ""),
+        "Type":                   data.get("type", ""),
+        "Date of Creation":       data.get("date_of_creation", ""),
+        "SIC Codes":              data.get("sic_codes", ""),
+        "Address":                data.get("address", ""),
+        "Directors":              data.get("directors", ""),
+        "Director Nationalities": data.get("nationalities", ""),
+        "DUNS Number":            duns_number,
+        # Same three outcomes as before: a number means found, an email
+        # without a number means submitted, neither means blank.
+        "DUNS Status":            ("found" if duns_number
+                                   else ("submitted" if duns_email else "")),
+        "DUNS Email Used":        duns_email,
+        "Domain":                 data.get("domain", ""),
+        "Domain Status":          "pending" if data.get("domain") else "",
+        "Assigned Email":         data.get("email", ""),
+    })
 
-    # Check for duplicate
-    col_cn = _col_index(header, "Company Number")
-    if col_cn is not None:
-        for row in ws.iter_rows(min_row=2, values_only=False):
-            if row[col_cn].value and str(row[col_cn].value).strip() == cn:
-                wb.close()
-                return jsonify({"success": False, "error": f"Company {cn} already exists in the pipeline."}), 409
-
-    # If "Short Name" column doesn't exist yet, add it
-    col_sn = _col_index(header, "Short Name")
-    if col_sn is None:
-        # Insert after "Company Name"
-        col_name = _col_index(header, "Company Name")
-        insert_at = (col_name + 2) if col_name is not None else (len(header) + 1)
-        ws.insert_cols(insert_at)
-        ws.cell(row=1, column=insert_at, value="Short Name")
-        # Re-read header
-        header = [cell.value for cell in ws[1]]
-        col_sn = _col_index(header, "Short Name")
-
-    # Determine row number
-    next_row = ws.max_row + 1
-    row_num = next_row - 1  # 1-indexed company number
-
-    def put(col_name, value):
-        idx = _col_index(header, col_name)
-        if idx is not None:
-            ws.cell(row=next_row, column=idx + 1, value=value)
-
-    put("No.", row_num)
-    put("Company Number", cn)
-    put("Company Name", data.get("company_name", ""))
-    put("Short Name", data.get("short_name", ""))
-    put("Status", data.get("status", ""))
-    put("Type", data.get("type", ""))
-    put("Date of Creation", data.get("date_of_creation", ""))
-    put("SIC Codes", data.get("sic_codes", ""))
-    put("Address", data.get("address", ""))
-    put("Directors", data.get("directors", ""))
-    put("Director Nationalities", data.get("nationalities", ""))
-    put("DUNS Number", data.get("duns_number", ""))
-    put("DUNS Status", "submitted" if data.get("duns_email") and not data.get("duns_number") else ("found" if data.get("duns_number") else ""))
-    put("DUNS Email Used", data.get("duns_email", ""))
-    put("Domain", data.get("domain", ""))
-    put("Domain Status", "pending" if data.get("domain") else "")
-    put("Assigned Email", data.get("email", ""))
-
-    # Auto-width
-    for col in ws.columns:
-        max_len = 0
-        letter = col[0].column_letter
-        for cell in col:
-            try:
-                if cell.value:
-                    max_len = max(max_len, len(str(cell.value)))
-            except Exception:
-                pass
-        ws.column_dimensions[letter].width = min(max_len + 2, 50)
-
-    wb.save(EXCEL_FILE)
-    wb.close()
-
+    row = db.find_row(cn) or {}
     return jsonify({
         "success": True,
-        "row": row_num,
+        "row": row.get("No.") or 0,
         "company_number": cn,
-        "message": f"Added {data.get('company_name', cn)} to pipeline."
+        "message": f"Added {name or cn} to pipeline."
     })
 
 
@@ -257,25 +264,10 @@ def pipeline_add():
 # ──────────────────────────────────────────────────────────────
 @wizard.route("/api/pipeline/list")
 def pipeline_list():
-    _ensure_excel()
-    wb = openpyxl.load_workbook(EXCEL_FILE, read_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
-
-    if not rows:
-        return jsonify([])
-
-    header = [str(h).strip() if h else f"col_{i}" for i, h in enumerate(rows[0])]
-    companies = []
-    for row in rows[1:]:
-        entry = {}
-        for i, val in enumerate(row):
-            if i < len(header):
-                entry[header[i]] = val
-        companies.append(entry)
-
-    return jsonify(companies)
+    # db.all_rows() already returns header-label-keyed dicts, which is the
+    # exact shape this route built by hand from the spreadsheet's header row,
+    # so static/wizard.js needs no change.
+    return jsonify(db.all_rows())
 
 
 # ──────────────────────────────────────────────────────────────
@@ -333,6 +325,27 @@ def duns_lookup():
         return jsonify({"found": False, "error": str(e)})
 
 
+# DUNS requests run in a background thread, not in the request.
+# stealth_request_duns drives a real browser and then sleeps 10s before
+# checking for mail, so running it inline held a gunicorn worker thread for
+# the whole duration. With threads = 8 (gunicorn.conf.py), eight of these
+# left nothing to serve the dashboard. The state lives in process memory,
+# which is sound only because workers = 1 - the same constraint api_v2._JOBS
+# already imposes.
+_DUNS_JOBS_LOCK = threading.Lock()
+_DUNS_JOBS: dict = {}
+
+
+def _duns_job_get(cn):
+    with _DUNS_JOBS_LOCK:
+        return dict(_DUNS_JOBS.get(cn, {}))
+
+
+def _duns_job_set(cn, **kw):
+    with _DUNS_JOBS_LOCK:
+        _DUNS_JOBS.setdefault(cn, {}).update(kw)
+
+
 @wizard.route("/api/duns/request", methods=["POST"])
 def duns_request():
     data = request.get_json(force=True)
@@ -340,12 +353,45 @@ def duns_request():
     email = data.get("email", "").strip()
     if not cn or not email:
         return jsonify({"error": "company_number and email required"}), 400
-    try:
+
+    if _duns_job_get(cn).get("status") == "running":
+        return jsonify({"status": "running", "company_number": cn,
+                        "message": "A DUNS request for this company is "
+                                   "already running."}), 409
+
+    def _work():
         from duns_automation import stealth_request_duns
-        result = stealth_request_duns(cn, headless=True)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"found": False, "error": str(e)})
+        try:
+            result = stealth_request_duns(cn, headless=True)
+            _duns_job_set(cn, status="done", result=result,
+                          finished_at=datetime.now().isoformat())
+        except Exception as e:
+            # The browser path raises for a missing display among other
+            # things; surface the message rather than losing it in a thread.
+            _duns_job_set(cn, status="failed", error=str(e),
+                          finished_at=datetime.now().isoformat())
+
+    _duns_job_set(cn, status="running", started_at=datetime.now().isoformat(),
+                  result=None, error=None, finished_at=None)
+    threading.Thread(target=_work, daemon=True).start()
+    return jsonify({"status": "started", "company_number": cn}), 202
+
+
+@wizard.route("/api/duns/status/<company_number>")
+def duns_status(company_number):
+    """Poll a background DUNS request. static/wizard.js polls this after the
+    202 from /api/duns/request."""
+    job = _duns_job_get(company_number)
+    if not job:
+        return jsonify({"status": "idle", "company_number": company_number})
+    # Flatten the finished result so the UI can read duns_number directly,
+    # which is the shape it consumed when this route was synchronous.
+    out = {"status": job.get("status"), "company_number": company_number,
+           "error": job.get("error")}
+    if job.get("status") == "done" and isinstance(job.get("result"), dict):
+        out.update(job["result"])
+        out["status"] = "done"
+    return jsonify(out)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -518,31 +564,21 @@ def domains_apply_google_txt():
         if "error" in txt_result:
             return jsonify({"error": txt_result["error"], "stage": "add_txt_record"}), 400
 
-        # Best-effort write-back to pipeline sheet if company exists.
+        # Best-effort write-back to Supabase, the single source of truth.
+        # The response key is still "excel_updated" because static/wizard.js
+        # reads that name; only the store behind it has changed.
         updated_excel = False
         excel_warning = ""
-        if company_number and os.path.exists(EXCEL_FILE):
+        if company_number:
             try:
-                wb = openpyxl.load_workbook(EXCEL_FILE)
-                ws = wb.active
-                header = [cell.value for cell in ws[1]]
-                col_cn = _col_index(header, "Company Number")
-                row_found = False
-                if col_cn is not None:
-                    col_txt_status = _ensure_column(ws, "Google TXT Status")
-                    col_domain = _ensure_column(ws, "Domain")
-                    for r in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                        cell_cn = r[col_cn]
-                        if cell_cn.value and str(cell_cn.value).strip() == company_number:
-                            ws.cell(row=cell_cn.row, column=col_domain + 1, value=domain)
-                            ws.cell(row=cell_cn.row, column=col_txt_status + 1, value="configured")
-                            row_found = True
-                            break
-                    wb.save(EXCEL_FILE)
-                    updated_excel = row_found
-                wb.close()
+                if db.find_row(company_number):
+                    db.update_row(company_number, {
+                        "Domain": domain,
+                        "Google TXT Status": "configured",
+                    })
+                    updated_excel = True
             except Exception as e:
-                excel_warning = f"TXT applied, but could not update Excel: {e}"
+                excel_warning = f"TXT applied, but could not update the database: {e}"
 
         return jsonify({
             "success": True,
@@ -564,8 +600,9 @@ def domains_apply_google_txt():
 @wizard.route("/api/pipeline/manual-inputs/<company_number>", methods=["GET"])
 def pipeline_manual_inputs_get(company_number):
     try:
-        db = _load_manual_inputs_db()
-        return jsonify(db.get(company_number, {}))
+        # Named manual_db, not db: `db` is the Supabase module imported above.
+        manual_db = _load_manual_inputs_db()
+        return jsonify(manual_db.get(company_number, {}))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -588,32 +625,22 @@ def pipeline_manual_inputs_save(company_number):
             }
         }
 
-        db = _load_manual_inputs_db()
-        db[company_number] = manual
-        _save_manual_inputs_db(db)
+        # Named manual_db, not db: `db` is the Supabase module imported above.
+        manual_db = _load_manual_inputs_db()
+        manual_db[company_number] = manual
+        _save_manual_inputs_db(manual_db)
 
+        # This used to mirror a "Rep ID Status" column into the spreadsheet.
+        # That column was written here and read nowhere - its value was just
+        # "both ID images present?", which is derivable from the manual-inputs
+        # record above - so it is not carried over to Supabase. The response
+        # flag now reports whether the company is known, keeping the shape
+        # static/wizard.js expects.
         excel_updated = False
-        if os.path.exists(EXCEL_FILE):
-            try:
-                wb = openpyxl.load_workbook(EXCEL_FILE)
-                ws = wb.active
-                header = [cell.value for cell in ws[1]]
-                col_cn = _col_index(header, "Company Number")
-                if col_cn is not None:
-                    col_rep = _ensure_column(ws, "Rep ID Status")
-
-                    rep_ready = bool(manual["representative_id"].get("id_image_front")) and bool(manual["representative_id"].get("id_image_back"))
-
-                    for r in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                        cn_cell = r[col_cn]
-                        if cn_cell.value and str(cn_cell.value).strip() == company_number:
-                            ws.cell(row=cn_cell.row, column=col_rep + 1, value="ready" if rep_ready else "manual_required")
-                            excel_updated = True
-                            break
-                    wb.save(EXCEL_FILE)
-                wb.close()
-            except Exception:
-                excel_updated = False
+        try:
+            excel_updated = db.find_row(company_number) is not None
+        except Exception:
+            excel_updated = False
 
         return jsonify({"success": True, "company_number": company_number, "excel_updated": excel_updated})
     except Exception as e:
@@ -632,17 +659,21 @@ def download_file():
     if not file_path:
         return abort(400)
 
-    # Security: only allow files under pipeline_output
+    # Security: only allow files under pipeline_output. A string prefix on
+    # abspath() accepted siblings such as ".../pipeline_output_X" and
+    # followed symlinks out of the directory; see safe_path for both
+    # reproductions. is_file() replaces the old exists() check so a
+    # directory is refused as 404 rather than handed to send_file.
     base_dir = os.path.join(os.path.dirname(__file__), "pipeline_output")
-    abs_path = os.path.abspath(file_path)
-    
-    if not abs_path.startswith(os.path.abspath(base_dir)):
+    abs_path = resolve_within(base_dir, file_path)
+
+    if abs_path is None:
         return abort(403)
 
-    if not os.path.exists(abs_path):
+    if not abs_path.is_file():
         return abort(404)
 
-    return send_file(abs_path, as_attachment=True)
+    return send_file(str(abs_path), as_attachment=True)
 
 
 @wizard.route("/api/pipeline/retry/<company_number>", methods=["POST"])
@@ -655,28 +686,35 @@ def pipeline_retry(company_number):
         return jsonify({"error": "company_number is required"}), 400
 
     try:
-        from ggplay.run_pipeline import _load_existing_results, save_to_excel
-        
-        if not os.path.exists(EXCEL_FILE):
-            return jsonify({"error": "Pipeline has not run yet"}), 400
-
-        existing = _load_existing_results(EXCEL_FILE)
-        company = next((c for c in existing if c.get("company_number") == company_number), None)
-        
-        if not company:
+        row = db.find_row(company_number)
+        if not row:
             return jsonify({"error": f"Company {company_number} not found"}), 404
 
-        # Reset error states
-        for key in ["certificate", "domain", "email", "apk_generation"]:
-            if key in company:
-                company[key] = {k: v for k, v in company[key].items() if k != "error"}
-
-        # Save back to Excel
-        save_to_excel([company], EXCEL_FILE)
+        # Clear only the status columns that currently hold an error, which is
+        # what dropping the "error" key from each stage dict used to do. This
+        # previously read and rewrote the spreadsheet via the forked
+        # ggplay.run_pipeline copy, so a retry changed nothing the dashboard
+        # reads.
+        #
+        # MONEY SAFETY: db.DOMAIN_CLAIM ("purchasing") is NOT an error and
+        # must never be cleared here. It is the record that a billed
+        # namecheap.domains.create order may already have gone through
+        # (run_pipeline.register_company_domain). Clearing it would let the
+        # domain stage buy a second domain. Only values that start with
+        # "error" are reset, so the claim survives a retry by construction.
+        cleared = {}
+        for col in ("DUNS Status", "Domain Status", "Google TXT Status",
+                    "Dev Email Forwarding"):
+            value = str(row.get(col) or "").strip().lower()
+            if value.startswith("error"):
+                cleared[col] = ""
+        if cleared:
+            db.update_row(company_number, cleared)
 
         return jsonify({
             "success": True,
             "company_number": company_number,
+            "cleared": sorted(cleared),
             "message": "Company queued for retry. Pipeline will process on next run.",
         })
     except Exception as e:
@@ -806,10 +844,17 @@ def pipeline_run_logs():
             if not log_path:
                 return jsonify({"running": state.get("running", False), "log": "", "line_count": 0})
 
-        logs_base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline_output", "logs"))
-        abs_log_path = os.path.abspath(log_path)
-        if not abs_log_path.startswith(logs_base):
+        # log_path is server-derived here (_PIPELINE_RUN_STATE above, or
+        # _latest_pipeline_log_path), never taken from the request, so this
+        # was not an exploitable bypass like the two download endpoints.
+        # Hardened with the same helper so there is one containment rule in
+        # the codebase rather than three hand-rolled ones.
+        logs_base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "pipeline_output", "logs")
+        safe_log = resolve_within(logs_base, log_path)
+        if safe_log is None:
             return jsonify({"error": "invalid log path"}), 403
+        abs_log_path = str(safe_log)
 
     if not os.path.exists(abs_log_path):
         return jsonify({"running": state.get("running", False), "log": "", "line_count": 0})
@@ -840,22 +885,16 @@ def company_files_api(cn):
     ROOT = os.path.dirname(os.path.abspath(__file__))
     COMP_DIR = os.path.join(ROOT, "pipeline_output", "companies")
 
+    # The company name only decides which folder to look in. db.find_row
+    # already normalises the company number the same way the old spreadsheet
+    # scan did with .zfill(8).
     name = ""
-    if os.path.exists(EXCEL_FILE):
-        try:
-            wb = openpyxl.load_workbook(EXCEL_FILE, data_only=True)
-            ws = wb.active
-            hdr = [str(c.value or "").strip().lower() for c in ws[1]]
-            cn_c = next((i for i, h in enumerate(hdr) if h == "company number"), None)
-            nm_c = next((i for i, h in enumerate(hdr) if h == "company name"), None)
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                if not row or cn_c is None: continue
-                if str(row[cn_c] or "").strip().zfill(8) == cn.zfill(8):
-                    name = str(row[nm_c] or "").strip() if nm_c is not None else ""
-                    break
-            wb.close()
-        except Exception:
-            pass
+    try:
+        row = db.find_row(cn)
+        if row:
+            name = str(row.get("Company Name") or "").strip()
+    except Exception:
+        pass
 
     safe = _re.sub(r'[\\/:*?"<>|]', "", name).strip()
     folder = f"{cn.zfill(8)} - {safe}" if safe else cn.zfill(8)

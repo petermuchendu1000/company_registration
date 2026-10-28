@@ -6,6 +6,7 @@ import os
 import random
 import re
 import string
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -16,10 +17,20 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 
-API_BASE = "https://apis.ibenty.com/api"
+# The service moved from xbinder.net / apis.bestdatabinder.com to ibenty.com
+# / apis.ibenty.com. The old API host has NO A, AAAA or CNAME record at all
+# (NODATA from both this host's resolver and Cloudflare's, against a
+# nonsense-host control that returned NXDOMAIN), so every call through it
+# failed; the old web host still answers but serves a self-signed
+# certificate and 403.
+#
+# One constant per host, and everything else derived, because the previous
+# version repeated the hostname in five places and they were free to drift.
+# A rename is now one line.
 SITE = "https://ibenty.com"
+API_BASE = "https://apis.ibenty.com/api"
 COOKIE_DOMAIN = ".ibenty.com"
-LOCATIONS_URL = "https://ibenty.com/Kenya-Counties-SubCounties-and-Wards.json"
+LOCATIONS_URL = f"{SITE}/Kenya-Counties-SubCounties-and-Wards.json"
 CH_BASE = "https://api.company-information.service.gov.uk"
 
 load_dotenv()
@@ -118,7 +129,18 @@ def _load_random_location() -> dict:
             "subLocation": ward,
             "pois": subcounty,
         }
-    except Exception:
+    except Exception as exc:
+        # This used to be a bare `except Exception: return fallback`, which
+        # is why the host rename went unnoticed for as long as it did:
+        # LOCATIONS_URL was dead, so every bind silently received the same
+        # Nairobi/Westlands location and nothing anywhere said so. A caught
+        # exception that prints nothing is indistinguishable from success.
+        # The fallback is kept - a missing county must not abort a run - but
+        # it now announces itself.
+        print(f"  WARN: could not load locations from {LOCATIONS_URL} "
+              f"({type(exc).__name__}: {exc}); falling back to "
+              f"{fallback['district']}/{fallback['division']} for this bind",
+              file=sys.stderr)
         return fallback
 
 
@@ -444,6 +466,7 @@ def download_id_via_ui(token: str, user_id: str | None, bind_id: str, id_no: str
         page.wait_for_timeout(3000)
 
         click_target = None
+        # Prefer the exact bind card created in this run.
         for _ in range(20):
             if id_no:
                 card = page.locator(f".binds-container:has-text('{id_no}')").first
@@ -454,14 +477,28 @@ def download_id_via_ui(token: str, user_id: str | None, bind_id: str, id_no: str
                         break
             page.wait_for_timeout(1000)
 
+        # There used to be a fallback here: if the card for id_no could not
+        # be found, click the FIRST download control on the page instead.
+        # That is not a fallback, it is a silent substitution - the function
+        # returned a different record's file and nothing anywhere said so.
+        #
+        # Measured against the live site: asked for a bind that exists but
+        # is not on the visible page, it returned a file byte-identical
+        # (sha256) to the first card's. The caller cannot detect this,
+        # because the only signal it gets is "a file arrived".
+        #
+        # The requested record is the only correct answer, so not finding
+        # it is an error. pipeline.py:478 already wraps this call in
+        # try/except and skips the company, which is the right outcome:
+        # no file beats the wrong file.
         if click_target is None:
             page.screenshot(path=str(out_path.with_suffix(".debug.png")), full_page=True)
             browser.close()
             raise RuntimeError(
-                f"Could not find bind card with idNo '{id_no}' on the active-binds page. "
-                f"The bind may not have rendered yet or may be on a different page. "
-                f"Debug screenshot saved."
-            )
+                f"No download control found for idNo={id_no!r} "
+                f"(bind_id={bind_id!r}). The record may not be on the "
+                f"visible page. Refusing to download a different record; "
+                f"debug screenshot saved beside {out_path.name}.")
 
         try:
             with page.expect_download(timeout=60000) as dl:

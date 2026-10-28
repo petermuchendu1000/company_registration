@@ -5,8 +5,16 @@ apps/template-shift-journal/app/keystores/
 pipeline_output/apps/*/signing.json
 pipeline_output/apps/*/*.jks
 
+# DUNS request tracking store. Holds company data AND the temp-email
+# password in plaintext (duns_automation.py stores it under temp_email), so
+# it must never reach the repository.
+duns_requests.json
+duns_requests.json.lock
+
 # Generated pipeline output (data, not code)
 pipeline_output/companies/
+pipeline_output/manual_inputs.json
+pipeline_output/companies_pipeline.xlsx
 pipeline_output/icon_test/
 pipeline_output/logs/
 pipeline_output/~$*

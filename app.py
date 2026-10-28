@@ -1,4 +1,6 @@
-from flask import Flask, request, jsonify, send_from_directory, Response
+from flask import Flask, request, jsonify, send_from_directory, Response, g
+import logging
+import uuid
 import requests as http_requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -13,6 +15,91 @@ load_dotenv()
 
 app = Flask(__name__, static_folder="static")
 
+# --- Observability ---
+# Configured here, before the auth gate below, so that rejected requests are
+# logged too: a 401 is exactly the event worth seeing on a system that can
+# spend money. Nothing configured logging before this, so the ~30
+# logger.info calls already present in browser_stealth.py were being
+# discarded - see logging_setup for why that matters.
+from logging_setup import configure_logging
+configure_logging()
+log = logging.getLogger("app")
+
+
+@app.before_request
+def _assign_request_id():
+    """Give every request a short id so its log lines can be correlated."""
+    g.request_id = uuid.uuid4().hex[:8]
+    g.request_started = time.perf_counter()
+
+
+@app.after_request
+def _log_request(response):
+    try:
+        started = getattr(g, "request_started", None)
+        if started is not None:
+            log.info("%s %s -> %s in %.0fms", request.method, request.path,
+                     response.status_code,
+                     (time.perf_counter() - started) * 1000)
+        else:
+            log.info("%s %s -> %s", request.method, request.path,
+                     response.status_code)
+    except Exception:
+        # Logging must never be the reason a response fails to return.
+        pass
+    response.headers["X-Request-Id"] = getattr(g, "request_id", "")
+    return response
+
+
+# --- Single-operator authentication gate ---
+# Every route in this app was once reachable with no credentials at all,
+# including the stage runner that issues billed namecheap.domains.create
+# orders (api_v2.py:554 -> run_pipeline.py:582). One app-wide before_request
+# closes that at the root: it covers the wizard routes, the api_v2 and
+# imports blueprints, and any route added later, so no endpoint can be left
+# open by omission.
+#
+# The gate, the login page and the brute-force limiter live in auth.py, so
+# "what protects this app?" has one answer rather than a before_request
+# sitting between the Companies House proxy and the DUNS endpoints.
+# install_auth accepts three credentials, all checking APP_AUTH_TOKEN:
+#
+#   signed session cookie                       - browsers, via /login
+#   Authorization: Bearer <APP_AUTH_TOKEN>      - scripts, curl, deploy checks
+#   HTTP Basic, any username, password = token  - pre-existing callers
+#
+# Fails CLOSED: with APP_AUTH_TOKEN unset the app serves nothing but
+# /health. A system that spends money must not default to open.
+from auth import install_auth, _AUTH_EXEMPT  # noqa: E402  (after app exists)
+
+_AUTH_TOKEN = os.getenv("APP_AUTH_TOKEN", "")
+install_auth(app)
+
+# --- Accounts, roles and the approval workflow ---
+# This module deliberately does NOT create the accounts schema or the
+# bootstrap superadmin at import.
+#
+# It used to. That meant merely starting the process - which gunicorn does
+# on every deploy, every restart and every crash-loop iteration - issued
+# CREATE TABLE and an INSERT against the production database, silently, as
+# a side effect of an import. Schema changes on a live system should be a
+# thing somebody decides to do, with the statements in front of them, not
+# a thing that happens because a service came up.
+#
+# `companies` has always worked this way: db.py creates it only when run as
+# a command. Accounts now match that. To initialise:
+#
+#     .venv/bin/python users.py --init
+#
+# Until then the service token still signs in (auth.py never touches the
+# users table for that path), /health still answers, and the login page
+# reports that the account database is unavailable rather than crashing.
+import users  # noqa: E402
+
+from admin_routes import admin as _admin_bp  # noqa: E402
+app.register_blueprint(_admin_bp)
+
+
 # --- Wizard onboarding UI ---
 from wizard_routes import register_wizard_routes
 register_wizard_routes(app)
@@ -20,6 +107,10 @@ register_wizard_routes(app)
 # --- Company Pipeline API v2 ---
 from api_v2 import api_v2
 app.register_blueprint(api_v2)
+
+# --- Operator Excel import (upload -> diff -> apply) ---
+from import_routes import imports
+app.register_blueprint(imports)
 
 
 API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY")
@@ -686,14 +777,17 @@ def api_duns_stealth_full(company_number):
 
         # Auto-store if found
         if result.get("duns_number"):
-            from duns_automation import _load_duns_db, _save_duns_db
+            # _put_duns_record, not _save_duns_db: it re-reads under the lock
+            # and replaces only this company's key, so a snapshot taken
+            # before another company's long browser run cannot erase it.
+            from duns_automation import _load_duns_db, _put_duns_record
             db = _load_duns_db()
             if company_number in db:
                 db[company_number]["duns_number"] = result["duns_number"]
                 db[company_number]["status"] = "completed"
                 db[company_number]["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                 db[company_number]["completed_via"] = "stealth_full_pipeline"
-                _save_duns_db(db)
+                _put_duns_record(company_number, db[company_number])
 
         return jsonify(result)
     except Exception as e:

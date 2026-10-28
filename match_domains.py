@@ -85,14 +85,34 @@ def _score(company_norm: str, dom_core: str) -> float:
 
 
 def get_domains() -> list[str]:
+    # These four used to carry literal fallbacks - a real Namecheap API key,
+    # account name and client IP - committed in the initial commit and
+    # therefore readable by anyone for as long as this repository has
+    # existed. A credential in source is published the moment it is pushed;
+    # no amount of later deletion unpublishes it, which is why the key
+    # itself has to be regenerated and not merely removed from here.
+    #
+    # Empty defaults, and a guard, so a missing variable fails immediately
+    # and says which one. The previous behaviour was worse than a crash: it
+    # silently fell back to someone else's credentials, so the script
+    # appeared to work while talking to the wrong account.
     params = {
-        "ApiUser": os.environ.get("NAMECHEAP_API_USER", "muchendu"),
-        "ApiKey": os.environ.get("NAMECHEAP_API_KEY", "f81fa145ea414646babce9f8c98cb860"),
-        "UserName": os.environ.get("NAMECHEAP_USERNAME", "muchendu"),
-        "ClientIp": os.environ.get("NAMECHEAP_CLIENT_IP", "154.159.252.4"),
+        "ApiUser": os.environ.get("NAMECHEAP_API_USER", ""),
+        "ApiKey": os.environ.get("NAMECHEAP_API_KEY", ""),
+        "UserName": os.environ.get("NAMECHEAP_USERNAME", ""),
+        "ClientIp": os.environ.get("NAMECHEAP_CLIENT_IP", ""),
         "Command": "namecheap.domains.getList",
         "PageSize": "100",
     }
+    missing = [k for k in ("ApiUser", "ApiKey", "UserName", "ClientIp")
+               if not params[k]]
+    if missing:
+        env = {"ApiUser": "NAMECHEAP_API_USER", "ApiKey": "NAMECHEAP_API_KEY",
+               "UserName": "NAMECHEAP_USERNAME", "ClientIp": "NAMECHEAP_CLIENT_IP"}
+        raise RuntimeError(
+            "Namecheap credentials are not configured: "
+            + ", ".join(env[k] for k in missing)
+            + " must be set in .env")
     r = requests.get(API_URL, params=params, timeout=20)
     root = ET.fromstring(r.text)
     if root.get("Status") == "ERROR":

@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import logging
 import re
 import json
 import os
@@ -34,6 +35,11 @@ except ModuleNotFoundError:
 load_dotenv()
 
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
+
+# Audit channel for anything that can spend money. Every billed
+# namecheap.domains.create order and its outcome is recorded here, so there
+# is a record of the charge outside the company row itself.
+_money_log = logging.getLogger("money")
 try:
     db.ensure_schema()
 except Exception as _e:
@@ -579,9 +585,110 @@ def register_company_domain(company_name, details):
         }
         contacts_source = f"fallback_companies_house:{registrant_info.get('EmailAddress', '')}"
 
+    # ── MONEY SAFETY ────────────────────────────────────────────────────────
+    # register_domain() below issues a billed namecheap.domains.create order.
+    # Claim the purchase durably FIRST: if the outcome write is later lost,
+    # the claim survives and the next attempt refuses, instead of buying a
+    # second domain. The claim is one atomic statement, so two concurrent
+    # attempts cannot both proceed to a purchase.
+    cn = str(details.get("company_number") or "").strip()
+    if not cn:
+        return {
+            "status": "error",
+            "error": "company_number missing from details; refusing to buy a "
+                     "domain with nowhere to record the purchase",
+        }
+    if not db.claim_domain_purchase(cn):
+        return {
+            "status": "error",
+            "error": f"a domain purchase for {cn} is already outstanding "
+                     f"(domain_status='{db.DOMAIN_CLAIM}'). A domain may "
+                     f"already have been bought and charged without its "
+                     f"outcome being recorded. Reconcile against the "
+                     f"Namecheap account by hand before retrying; retrying "
+                     f"blind risks a second charge.",
+        }
+
+    # Logged BEFORE the call, not after: if the process dies mid-order this
+    # line is the only evidence that money may have moved.
+    _money_log.info("issuing namecheap.domains.create cn=%s domain=%s years=1",
+                    cn, domain)
     reg_result = register_domain(domain, years=1, registrant_info=registrant_info)
+
     if "error" in reg_result:
-        return {"status": "error", "error": reg_result["error"], "domain": domain}
+        # Namecheap rejected the order, so nothing was charged. Release the
+        # claim so a retry is possible.
+        #
+        # The attempted domain is deliberately NOT returned under the
+        # "domain" key: db._result_to_headers (db.py:277) and the api_v2
+        # stage runner both treat a present "domain" as proof of purchase,
+        # so returning it on a failure records a domain that was never
+        # bought and marks the stage complete for good.
+        _money_log.warning(
+            "domain order REJECTED cn=%s domain=%s; nothing charged, claim "
+            "released: %s", cn, domain, reg_result["error"])
+        db.update_row(cn, {"Domain Status": "error"})
+        return {
+            "status": "error",
+            "error": f"{reg_result['error']} (attempted domain: {domain})",
+            "attempted_domain": domain,
+        }
+
+    # Namecheap accepting the call is not the same as registering the domain.
+    # resp["status"] comes from the ApiResponse root's Status attribute
+    # (namecheap_automation.py:78) and reports whether the API CALL
+    # succeeded. Whether the domain was actually registered is the separate
+    # DomainCreateResult/@Registered attribute, parsed at
+    # namecheap_automation.py:231 - and nothing read it, so an order that
+    # came back Registered="false" was recorded as a registered domain.
+    #
+    # ChargedAmount is likewise a separate attribute, and some TLDs are
+    # NonRealTimeDomain: they do not register instantly. Registered being
+    # false therefore does NOT establish that no money moved.
+    #
+    # So this outcome is UNKNOWN, not a clean failure, and the claim is
+    # deliberately left in place. Releasing it here is what previously let a
+    # retry issue a second billed order for a purchase that may already be
+    # pending and charged. Only a human reconciling against the Namecheap
+    # account can resolve it.
+    if not reg_result.get("registered"):
+        charged = reg_result.get("charged", "")
+        _money_log.error(
+            "domain order UNRESOLVED cn=%s domain=%s charged=%s order=%s; "
+            "Namecheap reported Registered=false, claim KEPT to prevent a "
+            "second charge - reconcile by hand",
+            cn, domain, charged or "unknown",
+            reg_result.get("order_id") or "unknown")
+        if charged:
+            # Record the amount WITHOUT touching domain_status, so the claim
+            # survives while the operator has the figure to reconcile with.
+            db.update_row(cn, {"Domain Cost": charged})
+        return {
+            "status": "unresolved",
+            "error": (
+                f"Namecheap accepted the order for {domain} but reported "
+                f"Registered=false (charged: {charged or 'unknown'}, order: "
+                f"{reg_result.get('order_id') or 'unknown'}). The domain may "
+                f"be pending rather than failed, so the purchase claim is "
+                f"kept to prevent a second charge. Reconcile against the "
+                f"Namecheap account, then clear domain_status by hand."
+            ),
+            "attempted_domain": domain,
+            "charged": charged,
+            "order_id": reg_result.get("order_id", ""),
+        }
+
+    # Registered. Record the outcome, which also releases the claim.
+    # db.update_row raises if the write fails; that exception must propagate,
+    # because the surviving claim is what stops a second purchase.
+    _money_log.info("domain REGISTERED cn=%s domain=%s charged=%s order=%s",
+                    cn, domain, reg_result.get("charged") or "unknown",
+                    reg_result.get("order_id") or "unknown")
+    db.update_row(cn, {
+        "Domain": domain,
+        "Domain Status": "registered",
+        "Domain Cost": reg_result.get("charged", ""),
+    })
 
     return {
         "status": "registered",
@@ -1392,6 +1499,13 @@ def generate_play_console_dossier_only():
 
 
 if __name__ == "__main__":
+    # This file is also run as a subprocess by the dashboard
+    # (wizard_routes._resolve_pipeline_script), which is a separate process
+    # from app.py, so it has to configure its own logging or the money audit
+    # trail and browser_stealth's diagnostics would be discarded here.
+    from logging_setup import configure_logging
+    configure_logging()
+
     parser = argparse.ArgumentParser(description="Companies Pipeline")
     parser.add_argument("--count", type=int, default=1, help="Number of companies to process")
     parser.add_argument("--nationality", default="kenyan", help="Officer nationality filter")

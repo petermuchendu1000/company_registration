@@ -69,7 +69,14 @@ def build_flavors(companies: Iterable[Company]) -> list[BuiltFlavor]:
 
 def run_gradle(built: list[BuiltFlavor], variant: str = "Release", artifact: str = DEFAULT_ARTIFACT) -> int:
     """Invoke the Gradle wrapper to assemble or bundle all flavors in one go."""
-    gradlew = os.path.join(TEMPLATE_ROOT, "gradlew.bat")
+    # gradlew.bat is a Windows batch file. On Linux it still EXISTS, so the
+    # existence guard below passed and subprocess.run then raised - errno 13
+    # without the exec bit, errno 8 (Exec format error) with it - so the
+    # pipeline died on an uncaught exception instead of returning 1.
+    # posix is the only new branch: every other os.name keeps the previous
+    # path exactly, so Windows cannot regress.
+    wrapper = "gradlew" if os.name == "posix" else "gradlew.bat"
+    gradlew = os.path.join(TEMPLATE_ROOT, wrapper)
     if not os.path.exists(gradlew):
         print(f"  ERROR: {gradlew} not found")
         return 1
@@ -266,12 +273,15 @@ def generate_from_pipeline_results(
                 output[c.company_number]["status"] = "success"
                 output[c.company_number]["apk_path"] = got[c.company_number].get("apk", "")
                 output[c.company_number]["aab_path"] = got[c.company_number].get("aab", "")
+                # Single quotes inside these replacement fields, not double:
+                # nesting the enclosing quote is PEP 701 (Python 3.12+), and
+                # Debian 12 ships 3.11, where it is a SyntaxError at import.
                 if artifact == "aab":
-                    output[c.company_number]["message"] = f"AAB built: {Path(output[c.company_number]["aab_path"]).name if output[c.company_number]["aab_path"] else "missing"}"
+                    output[c.company_number]["message"] = f"AAB built: {Path(output[c.company_number]['aab_path']).name if output[c.company_number]['aab_path'] else 'missing'}"
                 elif artifact == "both":
-                    output[c.company_number]["message"] = f"APK/AAB built: {Path(output[c.company_number]["apk_path"]).name if output[c.company_number]["apk_path"] else "missing"}, {Path(output[c.company_number]["aab_path"]).name if output[c.company_number]["aab_path"] else "missing"}"
+                    output[c.company_number]["message"] = f"APK/AAB built: {Path(output[c.company_number]['apk_path']).name if output[c.company_number]['apk_path'] else 'missing'}, {Path(output[c.company_number]['aab_path']).name if output[c.company_number]['aab_path'] else 'missing'}"
                 else:
-                    output[c.company_number]["message"] = f"APK built: {Path(output[c.company_number]["apk_path"]).name if output[c.company_number]["apk_path"] else "missing"}"
+                    output[c.company_number]["message"] = f"APK built: {Path(output[c.company_number]['apk_path']).name if output[c.company_number]['apk_path'] else 'missing'}"
             else:
                 output[c.company_number]["status"] = "failed"
                 output[c.company_number]["error"] = f"{artifact_label} not found after build"
@@ -332,7 +342,10 @@ def main(argv: list[str] | None = None) -> int:
     if len(got) != len(built):
         print(f"\n  WARN: only {len(got)}/{len(built)} {artifact_label} collected.")
     else:
-        print(f"\n  OK: all {len(got)} {artifact_label} in {OUTPUT_DIR}")
+        # COMPANIES_DIR, not OUTPUT_DIR: the latter is defined nowhere in this
+        # module, so only this total-success branch raised NameError, skipping
+        # backup_and_make_assets below and leaving no assets or manifest.json.
+        print(f"\n  OK: all {len(got)} {artifact_label} under {COMPANIES_DIR}")
 
     print("\n[4] Backing up keystores and generating install assets…")
     backup_and_make_assets(built, got)
