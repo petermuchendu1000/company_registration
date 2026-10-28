@@ -16,8 +16,10 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 
-API_BASE = "https://apis.bestdatabinder.com/api"
-LOCATIONS_URL = "https://xbinder.net/Kenya-Counties-SubCounties-and-Wards.json"
+API_BASE = "https://apis.ibenty.com/api"
+SITE = "https://ibenty.com"
+COOKIE_DOMAIN = ".ibenty.com"
+LOCATIONS_URL = "https://ibenty.com/Kenya-Counties-SubCounties-and-Wards.json"
 CH_BASE = "https://api.company-information.service.gov.uk"
 
 load_dotenv()
@@ -416,7 +418,7 @@ def download_id_via_ui(token: str, user_id: str | None, bind_id: str, id_no: str
             {
                 "name": "auth",
                 "value": token,
-                "domain": ".xbinder.net",
+                "domain": COOKIE_DOMAIN,
                 "path": "/",
                 "httpOnly": False,
                 "secure": True,
@@ -428,7 +430,7 @@ def download_id_via_ui(token: str, user_id: str | None, bind_id: str, id_no: str
                 {
                     "name": "userId",
                     "value": str(user_id),
-                    "domain": ".xbinder.net",
+                    "domain": COOKIE_DOMAIN,
                     "path": "/",
                     "httpOnly": False,
                     "secure": True,
@@ -438,7 +440,7 @@ def download_id_via_ui(token: str, user_id: str | None, bind_id: str, id_no: str
         context.add_cookies(cookies)
 
         page = context.new_page()
-        page.goto("https://xbinder.net/active-binds", wait_until="networkidle", timeout=60000)
+        page.goto(f"{SITE}/active-binds", wait_until="networkidle", timeout=60000)
         page.wait_for_timeout(3000)
 
         click_target = None
