@@ -240,6 +240,46 @@ def scan_tracked(r: Results) -> None:
             + "; ".join(cred_hits))
 
 
+def check_credential_files_ignored(r: Results) -> None:
+    """The files the deploy scripts leave beside .env must be ignored.
+
+    set_ch_key.sh:82 and set_ibenty_env.sh:85 copy .env to
+    .env.bak.<timestamp> in the repository root, and stage the replacement
+    as .env.new.XXXXXX. Each is a verbatim copy of every production
+    credential. Untracked is not safe: `git add -A` stages them, and this
+    repository is public.
+
+    Asked of git itself rather than by reading .gitignore, because what
+    matters is the rule's EFFECT - a pattern can be present and still not
+    match, and a later rule can negate an earlier one.
+    """
+    print("\n-- the deploy scripts' credential files are ignored --")
+    # Names in the shapes the scripts actually produce.
+    for name in (".env.bak.20260101-000000", ".env.new.aB3xYz", ".env"):
+        p = subprocess.run(["git", "check-ignore", "-q", name], cwd=REPO)
+        r.check(f"git ignores {name}", p.returncode == 0,
+                f"check-ignore exited {p.returncode} - this file would be "
+                f"staged by `git add -A` and published on push")
+
+    # The check must be able to fail, or it says nothing about the rules.
+    p = subprocess.run(["git", "check-ignore", "-q", "api_v2.py"], cwd=REPO)
+    r.check("...and does NOT ignore a source file",
+            p.returncode != 0,
+            "check-ignore claims to ignore api_v2.py, so the four results "
+            "above prove nothing")
+
+    # The scripts must keep producing the names that are ignored. If one
+    # changes its backup name, the rule above silently stops covering it.
+    for script, needle in (("set_ch_key.sh", '"${ENV_FILE}.new.XXXXXX"'),
+                           ("set_ibenty_env.sh", '"${ENV_FILE}.new.XXXXXX"')):
+        src = (REPO / "deploy" / script).read_text(encoding="utf-8")
+        r.check(f"{script} still names its temp file .env.new.*",
+                needle in src, f"the ignore rule no longer covers it")
+        r.check(f"{script} still names its backup .env.bak.*",
+                '"$ENV_FILE.bak.$(date' in src,
+                "the ignore rule no longer covers it")
+
+
 def check_markers(r: Results) -> None:
     print("\n-- the generator can still write its block --")
     if not r.check("build.gradle.kts exists", BUILD_GRADLE.exists(),
@@ -263,6 +303,7 @@ def main() -> int:
     print(f"repo: {REPO}")
     self_test(r)
     scan_tracked(r)
+    check_credential_files_ignored(r)
     check_markers(r)
     return r.report()
 

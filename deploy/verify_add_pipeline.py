@@ -80,8 +80,17 @@ try:
     print(f"    HEAD: {head.stdout.strip() or head.stderr.strip()}")
     dirty = subprocess.run(["git", "-C", str(APP_DIR), "status", "--short"],
                            capture_output=True, text=True, timeout=30)
-    check("the working tree matches the commit", not dirty.stdout.strip(),
-          f"uncommitted changes on the server:\n{dirty.stdout}")
+    # The file list goes in the check's own NAME, not only its detail.
+    # Measured on the server: the detail printed at the top of a long run
+    # and scrolled away, so the summary said the tree was dirty without
+    # saying what was in it - which is the only part anyone can act on.
+    dirty_files = [ln for ln in dirty.stdout.splitlines() if ln.strip()]
+    check("the working tree matches the commit"
+          + (f" — DIRTY: {'; '.join(dirty_files)}" if dirty_files else ""),
+          not dirty_files,
+          "a file differing from the commit means the running code is not "
+          "the code that was reviewed. An untracked .env.bak.* is a "
+          "credential copy - see .gitignore.")
 except Exception as e:                                   # noqa: BLE001
     print(f"    could not read git state: {e}")
 

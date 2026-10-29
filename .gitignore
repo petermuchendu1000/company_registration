@@ -1,5 +1,15 @@
 # Secrets
 .env
+# deploy/set_ch_key.sh:82 and deploy/set_ibenty_env.sh:85 back .env up to
+# .env.bak.<timestamp> IN THE REPOSITORY ROOT before rewriting it, and the
+# same scripts stage the new file as .env.new.XXXXXX. Both are verbatim
+# copies of every production credential. Without these two lines they show
+# up as untracked, which is one `git add -A` away from being published in
+# a public repository - measured: the file is staged, and the secrets scan
+# in test_no_committed_secrets.py then reports both keys. That scan is the
+# second line of defence; this is the first.
+.env.bak.*
+.env.new.*
 apps/generator/.master_secret
 apps/template-shift-journal/app/keystores/
 pipeline_output/apps/*/signing.json
