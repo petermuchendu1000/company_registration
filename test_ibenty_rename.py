@@ -26,6 +26,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import types
@@ -283,6 +284,28 @@ def check_user_facing_text(r: Results) -> None:
 
 
 # ── the deploy script ───────────────────────────────────────────────────
+def _run_deploy(tmp: Path, py_exit: int, env_body: str):
+    """Run the real deploy script in a sandbox with a stub interpreter.
+
+    APP_DIR and PY are overridable precisely so this can happen. Checking
+    the script by grepping its source is how a broken one shipped: the
+    source contained "rc=$?" and the check passed, while under `set -e` the
+    shell terminated at the failing command and that line never ran.
+    """
+    (tmp / ".env").write_text(env_body, encoding="utf-8")
+    argv_log = tmp / "argv.txt"
+    stub = tmp / "stubpy"
+    stub.write_text(f'#!/bin/sh\nprintf "%s" "$*" > {argv_log}\nexit {py_exit}\n',
+                    encoding="utf-8")
+    stub.chmod(0o755)
+    proc = subprocess.run(
+        ["bash", str(REPO / "deploy" / "set_ibenty_env.sh"), "a@b.c", "pw"],
+        env={**os.environ, "APP_DIR": str(tmp), "PY": str(stub)},
+        capture_output=True, text=True, timeout=120)
+    argv = argv_log.read_text(encoding="utf-8").strip() if argv_log.exists() else ""
+    return proc.returncode, proc.stdout + proc.stderr, argv
+
+
 def check_deploy_script(r: Results) -> None:
     print("\n-- deploy/set_ibenty_env.sh --")
     p = REPO / "deploy" / "set_ibenty_env.sh"
@@ -292,36 +315,78 @@ def check_deploy_script(r: Results) -> None:
     r.check("it is executable", bool(p.stat().st_mode & stat.S_IXUSR),
             f"mode {oct(stat.S_IMODE(p.stat().st_mode))}")
     src = p.read_text(encoding="utf-8")
-    r.check("it writes the current variable names",
-            "IBENTY_EMAIL=%s" in src and "IBENTY_PASSWORD=%s" in src)
-    # Asserted on the rewrite line itself. A bare "XBINDER_EMAIL|..." match
-    # is also satisfied by the two grep -c guards further down, so a mutant
-    # that dropped the old names from THIS filter still passed.
-    r.check("it removes the superseded ones, leaving one source of truth",
-            "grep -v -E '^[[:space:]]*(IBENTY_EMAIL|IBENTY_PASSWORD|"
-            "XBINDER_EMAIL|XBINDER_PASSWORD)='" in src,
-            "the rewrite filter must drop the old names too, or .env keeps "
-            "two credentials that can disagree")
-    r.check("...and refuses to finish if any survived",
-            '[[ "$left" -eq 0 ]]' in src)
-    # Likewise: "/auth/login" alone is satisfied by the wrong-password
-    # control below it, so a mutant that pointed the real check at another
-    # endpoint survived. Assert the call that carries the credentials.
-    r.check("it verifies the login rather than just writing the file",
-            'json={"email": email, "password": password}, timeout=30' in src,
-            "the verification must POST the real credentials to /auth/login")
-    r.check("...and proves the endpoint authenticates, with a wrong password",
-            "-wrong" in src,
-            "a 200 from an endpoint that accepts anything proves nothing")
-    r.check("it reads the verification status directly, not through a pipe",
-            "rc=$?" in src,
-            "this project has been bitten by a pipe swallowing an exit code")
-    r.check("it keeps .env at mode 600",
-            'chmod 600 "$ENV_FILE"' in src)
-    r.check("it backs the file up before rewriting it", "cp -a" in src)
     r.check("no credential is baked into the script",
             "@" not in src.split("say()")[0].replace("#!/usr/bin/env bash", ""),
             "a credential in the repository is published when it is pushed")
+
+    ENV_BEFORE = ("DATABASE_URL=postgresql://app:s3cret@db/company\n"
+                  "FLASK_SECRET_KEY=keep-me\n"
+                  "XBINDER_EMAIL=old@example.com\n"
+                  "XBINDER_PASSWORD=oldpw\n")
+
+    print("\n   the verification step actually runs")
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        rc, out, argv = _run_deploy(tmp, 0, ENV_BEFORE)
+        # load_dotenv() walks back through the CALLER's frames to find .env,
+        # and a script piped in on stdin has no caller frame - it dies on
+        # `assert frame.f_back is not None`. The interpreter must therefore
+        # be handed a real file, which is also how the app loads it.
+        r.check("the interpreter is given a real file, not stdin",
+                argv.endswith(".py") and argv != "-",
+                f"the verification was invoked as {argv!r}; '-' means stdin, "
+                f"which makes load_dotenv() raise AssertionError")
+        r.check("...inside APP_DIR, where .env is",
+                argv.startswith(str(tmp)), f"invoked with {argv!r}")
+        r.check("a successful verification exits 0", rc == 0, f"rc={rc}\n{out}")
+        r.check("...and the temp verification file is cleaned up",
+                not list(tmp.glob(".verify_ibenty*")),
+                f"left behind: {[x.name for x in tmp.glob('.verify_ibenty*')]}")
+
+        body = (tmp / ".env").read_text(encoding="utf-8")
+        r.check("the current names are written",
+                "IBENTY_EMAIL=a@b.c" in body and "IBENTY_PASSWORD=pw" in body,
+                f"got {body!r}")
+        r.check("the superseded names are removed",
+                "XBINDER_EMAIL=" not in body and "XBINDER_PASSWORD=" not in body,
+                f"two credentials that can disagree. got {body!r}")
+        r.check("every other key survives",
+                "DATABASE_URL=postgresql://app:s3cret@db/company" in body
+                and "FLASK_SECRET_KEY=keep-me" in body, f"got {body!r}")
+        r.check("...and .env is left at mode 600",
+                stat.S_IMODE((tmp / ".env").stat().st_mode) == 0o600,
+                f"mode {oct(stat.S_IMODE((tmp / '.env').stat().st_mode))}")
+        r.check("the original is backed up",
+                any(x.name.startswith(".env.bak.") for x in tmp.iterdir()),
+                f"files: {[x.name for x in tmp.iterdir()]}")
+
+    print("\n   a FAILED verification is caught and reported")
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        rc, out, argv = _run_deploy(tmp, 1, ENV_BEFORE)
+        # This is the check that a source grep could not make. `rc=$?` on
+        # its own line is unreachable under `set -e`: the shell exits at the
+        # failing command, so the operator gets a bare traceback and no
+        # guidance about the backup.
+        r.check("a failing verification exits non-zero", rc != 0, f"rc={rc}")
+        r.check("...and says so, rather than dying silently",
+                "verification failed" in out,
+                f"the failure path must reach its own message. out={out!r}")
+        r.check("...and points at the backup", ".env backup" in out,
+                f"out={out!r}")
+        r.check("...and leaves no temp verification file",
+                not list(tmp.glob(".verify_ibenty*")),
+                f"left behind: {[x.name for x in tmp.glob('.verify_ibenty*')]}")
+
+    print("\n   what the verification itself asserts")
+    r.check("it posts the real credentials to /auth/login",
+            'json={"email": email, "password": password}, timeout=30' in src)
+    r.check("...and proves the endpoint authenticates, with a wrong password",
+            '"-wrong"' in src,
+            "a 200 from an endpoint that accepts anything proves nothing")
+    r.check("it refuses to finish if an old key survived",
+            '[[ "$left" -eq 0 ]]' in src)
+
 
 
 def main() -> int:

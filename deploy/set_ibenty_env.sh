@@ -25,9 +25,14 @@
 # they silently decide which value wins.
 set -euo pipefail
 
-APP_DIR="/opt/company_registration"
+# Overridable so the whole script can be exercised in a sandbox. Both
+# default to what the server actually uses; test_ibenty_rename.py sets them
+# to run this file end to end without a network or a real .env, which is the
+# only way to check the control flow below rather than grep for it.
+APP_DIR="${APP_DIR:-/opt/company_registration}"
 ENV_FILE="$APP_DIR/.env"
-SITE_API="https://apis.ibenty.com/api"
+SITE_API="${SITE_API:-https://apis.ibenty.com/api}"
+PY="${PY:-}"
 
 say() { printf '\n=== %s\n' "$*"; }
 ok()  { printf '    [ok] %s\n' "$*"; }
@@ -94,11 +99,12 @@ left=$(grep -c -E '^[[:space:]]*(XBINDER_EMAIL|XBINDER_PASSWORD)=' "$ENV_FILE" |
 
 # ── 3. pick the interpreter the app itself uses ──────────────────────────
 say "3. interpreter"
-PY=""
-for cand in "$APP_DIR/.venv/bin/python" "$APP_DIR/venv/bin/python" "$(command -v python3 || true)"; do
-  [[ -n "$cand" && -x "$cand" ]] && { PY="$cand"; break; }
-done
-[[ -n "$PY" ]] || { bad "no python found"; exit 1; }
+if [[ -z "$PY" ]]; then
+  for cand in "$APP_DIR/.venv/bin/python" "$APP_DIR/venv/bin/python" "$(command -v python3 || true)"; do
+    [[ -n "$cand" && -x "$cand" ]] && { PY="$cand"; break; }
+  done
+fi
+[[ -n "$PY" && -x "$PY" ]] || { bad "no python found"; exit 1; }
 ok "using $PY"
 
 # ── 4. prove it ─────────────────────────────────────────────────────────
@@ -108,7 +114,19 @@ ok "using $PY"
 # same time. The token is never printed, only its length.
 say "4. does the server log in to ibenty with these values"
 cd "$APP_DIR"
-IB_API="$SITE_API" "$PY" - <<'PY'
+# Written to a real file rather than piped in on stdin. load_dotenv() with
+# no argument calls find_dotenv(), which walks back through the CALLER's
+# stack frames to locate .env - and a script read from stdin has no caller
+# frame, so it dies on `assert frame.f_back is not None`. Measured: the
+# identical code fails from stdin and succeeds from a file beside .env.
+#
+# A file in APP_DIR is also the faithful test. The point of this step is
+# whether the app, loading .env the way it actually loads it, can log in;
+# passing an explicit path instead would skip the discovery the app relies
+# on.
+VERIFY="$(mktemp "$APP_DIR/.verify_ibenty.XXXXXX.py")"
+trap 'rm -f "$VERIFY"' EXIT
+cat > "$VERIFY" <<'PY'
 import os, sys
 from dotenv import load_dotenv
 load_dotenv()
@@ -146,9 +164,18 @@ if r2.status_code == 200:
 print(f"    [ok] a wrong password is refused (HTTP {r2.status_code}), so "
       f"the success above is real")
 PY
-rc=$?
-# Read the status directly. A pipe here would hand back the status of the
-# last stage instead, which this project has already been bitten by.
+
+# `rc=$?` on its own line does not work here. Under `set -e` the shell
+# terminates at the failing command itself, so that line never runs and the
+# message below never prints - the operator gets a bare traceback and no
+# guidance. Measured both ways. `|| rc=$?` lets the failure be caught.
+#
+# Still not a pipe: a pipe would hand back the status of the last stage,
+# which this project has already been bitten by.
+rc=0
+IB_API="$SITE_API" "$PY" "$VERIFY" || rc=$?
+rm -f "$VERIFY"
+trap - EXIT
 [[ $rc -eq 0 ]] || { bad "verification failed - .env backup is beside the file"; exit 1; }
 
 # ── 5. restart ──────────────────────────────────────────────────────────
