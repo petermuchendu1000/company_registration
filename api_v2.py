@@ -796,6 +796,157 @@ def v2_job(cn, stage):
     return jsonify(j if j else {"status": "idle"})
 
 
+# ── Kenyan-director admission rule ──────────────────────────────────────────
+# Only companies with a Kenyan director may enter the pipeline.
+#
+# Companies House cannot answer this in a search. Measured against the live
+# API: /search/companies returns no officer data at all (its item keys are
+# address, address_snippet, company_number, company_status, company_type,
+# date_of_creation, description, description_identifier, kind, links,
+# matches, snippet, title), and /advanced-search/companies silently IGNORES
+# a nationality parameter - hits came back 20075 with `nationality`,
+# `officer_nationality`, `director_nationality` and with none. Nationality
+# exists only on /company/{cn}/officers, so deciding this costs one extra
+# request per candidate.
+#
+# That is expensive and the cost is deliberate, so it is bounded and
+# reported rather than hidden:
+#   - the budget is 600 requests per 5 minutes (X-Ratelimit-Limit 600,
+#     X-Ratelimit-Window 5m, read from a live response header), and it is
+#     shared with the pipeline stages, so enrichment stops at a floor
+#     instead of starving them;
+#   - gunicorn runs workers=1 / threads=8, and workers=1 is a correctness
+#     constraint (gunicorn.conf.py:26-32), so eight threads are the whole
+#     app. run_pipeline.ch_get sleeps up to 30s per 429 retry, five times -
+#     150s with a request thread held - so enrichment uses its own
+#     short-timeout, no-retry fetch and treats a failure as "unknown";
+#   - verdicts are cached, because a company's directors do not change
+#     between keystrokes.
+_KENYAN = "kenyan"
+_NAT_TTL = 24 * 3600          # a directorship does not change hourly
+_NAT_MAX_PER_SEARCH = 12      # hard ceiling on requests one search may spend
+_NAT_MIN_REMAIN = 150         # leave this much of the window for the stages
+_nat_cache: dict[str, tuple[float, bool, str]] = {}
+_nat_lock = threading.Lock()
+_ch_remain: list[int | None] = [None]   # last seen X-Ratelimit-Remain
+
+
+def _nationalities(officer: dict) -> list[str]:
+    """An officer's nationalities, lowercased.
+
+    Companies House records this as free text. Observed live: 'British',
+    'Kenyan', 'South African' (a space INSIDE one value), 'British,Kenyan'
+    and 'British,Irish' (comma-joined for dual nationals), and None. So the
+    split is on commas only - splitting on whitespace would turn
+    'South African' into two bogus nationalities.
+    """
+    raw = officer.get("nationality")
+    if raw is None:
+        return []
+    return [p.strip().lower() for p in str(raw).split(",") if p.strip()]
+
+
+def _kenyan_verdict(items: list[dict]) -> tuple[bool, str]:
+    """Admit iff at least one ACTIVE DIRECTOR is Kenyan, and no active
+    director's nationality is unrecorded.
+
+    Both halves were chosen deliberately. "At least one" admits
+    KENYA AIRWAYS PLC, whose active directors are Kenyan, Canadian and
+    Swedish, and admits a dual national ('British,Kenyan'). The second half
+    is why a company with a Kenyan director and another whose nationality is
+    blank is refused: unknown is not Kenyan, and 2 of 60 sampled directors
+    had no nationality on record, so this is a real case and not a
+    hypothetical.
+
+    Change this function to change the rule; nothing else encodes it.
+    """
+    actives = [o for o in items
+               if not o.get("resigned_on")
+               and "director" in str(o.get("officer_role") or "").lower()]
+    if not actives:
+        return False, "no active directors on record"
+    unknown = sum(1 for o in actives if not _nationalities(o))
+    if unknown:
+        return False, (f"{unknown} of {len(actives)} active directors have no "
+                       f"nationality recorded")
+    kenyan = sum(1 for o in actives if _KENYAN in _nationalities(o))
+    if not kenyan:
+        return False, f"no Kenyan director among {len(actives)} active"
+    return True, f"{kenyan} of {len(actives)} active directors Kenyan"
+
+
+def _fetch_kenyan(cn: str) -> tuple[bool, str]:
+    """Is this company admissible? Cached; never blocks for long.
+
+    Deliberately NOT run_pipeline.ch_get: that retries a 429 five times with
+    sleeps up to 30s, which would hold one of the eight request threads for
+    up to 150s. Here a failure is simply "unknown", which the rule refuses -
+    an admission must be positively established, not assumed on an error.
+    """
+    now = time.time()
+    with _nat_lock:
+        hit = _nat_cache.get(cn)
+        if hit and hit[0] > now:
+            return hit[1], hit[2]
+
+    import requests as _rq
+    key = os.getenv("COMPANIES_HOUSE_API_KEY", "")
+    if not key:
+        return False, "COMPANIES_HOUSE_API_KEY is not set"
+    try:
+        r = _rq.get(
+            f"https://api.company-information.service.gov.uk/company/{cn}/officers",
+            params={"items_per_page": 50}, auth=(key, ""), timeout=8)
+    except Exception as e:
+        return False, f"officers lookup failed: {type(e).__name__}"
+    rem = r.headers.get("X-Ratelimit-Remain")
+    if rem is not None:
+        try:
+            _ch_remain[0] = int(rem)
+        except ValueError:
+            pass
+    if r.status_code != 200:
+        # Not cached: a 429 or a 502 says nothing about the company, and
+        # caching it would keep refusing a company that is in fact eligible.
+        return False, f"officers lookup returned HTTP {r.status_code}"
+
+    ok, why = _kenyan_verdict(r.json().get("items") or [])
+    with _nat_lock:
+        _nat_cache[cn] = (now + _NAT_TTL, ok, why)
+    return ok, why
+
+
+def _apply_kenyan_filter(cands: list[dict]) -> tuple[list[dict], int, str]:
+    """Keep only admissible candidates. Returns (kept, excluded, note)."""
+    if not cands:
+        return [], 0, ""
+    budget = min(len(cands), _NAT_MAX_PER_SEARCH)
+    examined, kept = cands[:budget], []
+    unexamined = len(cands) - budget
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        verdicts = list(pool.map(lambda c: _fetch_kenyan(c["cn"]), examined))
+
+    for cand, (ok, why) in zip(examined, verdicts):
+        cand["kenyan_reason"] = why
+        if ok:
+            kept.append(cand)
+
+    excluded = len(examined) - len(kept)
+    bits = []
+    if excluded:
+        bits.append(f"{excluded} hidden (no Kenyan director)")
+    if unexamined:
+        bits.append(f"{unexamined} not checked (limit {_NAT_MAX_PER_SEARCH} "
+                    f"per search)")
+    rem = _ch_remain[0]
+    if rem is not None and rem < _NAT_MIN_REMAIN:
+        bits.append(f"Companies House quota low ({rem} left this 5-minute "
+                    f"window)")
+    return kept, excluded, "; ".join(bits)
+
+
 @api_v2.route("/api/v2/company/search")
 def v2_search():
     q = request.args.get("q", "").strip()
@@ -835,6 +986,9 @@ def v2_search():
 
     # Fall back to CH API if nothing found locally
     ch_error = None
+    kenyan_note = ""
+    kenyan_excluded = 0
+    ch_candidates: list[dict] = []
     if not results:
         try:
             sys.path.insert(0, str(ROOT))
@@ -848,7 +1002,7 @@ def v2_search():
                 yr  = inc[:4] if inc else ""
                 if year_filter and yr not in year_filter:
                     continue
-                results.append({
+                ch_candidates.append({
                     "cn":        item_cn,
                     "name":      item.get("title", ""),
                     "directors": "",
@@ -862,9 +1016,28 @@ def v2_search():
             ch_error = str(e)
             print(f"  CH search error: {e}")
 
+        # Only companies with a Kenyan director may enter the pipeline, so
+        # only Companies House candidates are filtered. Local rows are
+        # companies ALREADY in the pipeline - filtering those would make an
+        # operator unable to find their own companies, which is a different
+        # and worse bug than showing one that no longer qualifies.
+        kept, kenyan_excluded, kenyan_note = _apply_kenyan_filter(ch_candidates)
+        results.extend(kept)
+
     resp: dict = {"results": results[:10]}
     if ch_error:
         resp["ch_error"] = ch_error
+    # Said out loud, always. An empty list that means "none of the matches
+    # had a Kenyan director" must not read as "no such company" - that is
+    # the same silent-empty-result failure this pipeline has already had in
+    # stage 1 and stage 2.
+    if kenyan_excluded or kenyan_note:
+        resp["kenyan_filtered"] = kenyan_excluded
+        resp["kenyan_note"] = kenyan_note
+    if ch_candidates:
+        resp["kenyan_rule"] = ("only companies with at least one Kenyan "
+                               "director, and none whose nationality is "
+                               "unrecorded")
     return jsonify(resp)
 
 

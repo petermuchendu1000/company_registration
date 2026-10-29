@@ -2561,15 +2561,33 @@ async function doAddSearch(q) {
     const results = Array.isArray(resp) ? resp : (resp.results || []);
     const chErr   = Array.isArray(resp) ? null  : resp.ch_error;
 
+    // Only companies with a Kenyan director may be added, so most ordinary
+    // searches legitimately return nothing. Saying "No results found" there
+    // would be a lie: the company exists, it is not eligible. An empty list
+    // that reads as "no such company" is the same silent-empty failure this
+    // pipeline has already had in two stages.
+    const kFiltered = Array.isArray(resp) ? 0  : (resp.kenyan_filtered || 0);
+    const kNote     = Array.isArray(resp) ? "" : (resp.kenyan_note || "");
+    const kRule     = Array.isArray(resp) ? "" : (resp.kenyan_rule || "");
+    const kLine = kNote
+      ? `<br><span style="color:var(--orange);font-size:11px">${x(kNote)}</span>`
+      : "";
+
     if (!results.length) {
-      const errNote = chErr
-        ? `<span style="color:var(--red);font-size:11px">⚠ CH API: ${x(chErr)}</span><br>Enter the 8-digit company number directly to add manually.`
-        : `No results found. Try the company number (e.g. <code>01234567</code>).`;
-      status.innerHTML = errNote;
+      let note;
+      if (chErr) {
+        note = `<span style="color:var(--red);font-size:11px">⚠ CH API: ${x(chErr)}</span><br>Enter the 8-digit company number directly to add manually.`;
+      } else if (kFiltered) {
+        note = `<b>${kFiltered}</b> match${kFiltered > 1 ? "es" : ""} found, but none can be added.<br>`
+             + `<span style="font-size:11px">Rule: ${x(kRule)}.</span>${kLine}`;
+      } else {
+        note = `No results found. Try the company number (e.g. <code>01234567</code>).`;
+      }
+      status.innerHTML = note;
       el.innerHTML = "";
       return;
     }
-    status.textContent = `${results.length} result${results.length > 1 ? "s" : ""} — click to add`;
+    status.innerHTML = `${results.length} result${results.length > 1 ? "s" : ""} — click to add${kLine}`;
     if (chErr) status.innerHTML += ` <span style="color:var(--orange);font-size:11px">(local only — CH: ${x(chErr)})</span>`;
     el.innerHTML = results.map(r => {
       const badge = r.source === "local"
