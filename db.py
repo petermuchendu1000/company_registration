@@ -189,6 +189,31 @@ def _norm(value):
     return s if s != "" else None
 
 
+def _derive_developer_email(set_cols: dict) -> None:
+    """Fill developer_email from domain, in place.
+
+    Developer Email is dev@ the company's own domain - the same formula
+    play_console_readiness.developer_email_for_domain uses - so it is
+    derived once here rather than at each of the places that write a
+    domain: pipeline.py:251 (the match stage), run_pipeline.py:688 (after
+    a purchase), wizard_routes.py:248 and :576, and an Excel import. Only
+    one of those ever set it, so a company whose domain the match stage
+    assigned carried no developer address at all until somebody saved the
+    Play Console form by hand.
+
+    A value already present always wins, so save_play_console's own
+    developer_email and a spreadsheet's own column are untouched. Where
+    only the domain is given, the derived address is correct by
+    construction: dev@ the PREVIOUS domain does not exist any more.
+
+    Values here have been through _norm, so "" is already None and a blank
+    domain derives nothing.
+    """
+    domain = set_cols.get("domain")
+    if domain and not set_cols.get("developer_email"):
+        set_cols["developer_email"] = "dev@" + str(domain).strip().lower()
+
+
 # ── Schema ──────────────────────────────────────────────────────────────────
 def ensure_schema() -> None:
     cols_sql = []
@@ -332,6 +357,9 @@ def update_row(cn: str, updates: dict) -> None:
         if col is None or col == "company_number":
             continue
         set_cols[col] = _norm(value)
+
+    _derive_developer_email(set_cols)
+
     if not set_cols:
         return
     # One statement instead of two, and atomic with it. This used to SELECT
@@ -451,7 +479,7 @@ def _result_to_headers(r: dict) -> dict:
     pc  = r.get("play_console", {}) or {}
     ph  = r.get("phone", {}) or {}
     cert_ok = (ce.get("status") == "downloaded") or bool(ce.get("path"))
-    return {
+    out = {
         "Company Number":         r.get("company_number", ""),
         "Company Name":           d.get("company_name", ""),
         "Status":                 d.get("company_status", ""),
@@ -478,6 +506,16 @@ def _result_to_headers(r: dict) -> dict:
         "Google TXT Status":      (pc.get("google_txt", {}) or {}).get("status", ""),
         "Organization Phone":     ph.get("phone_number", ""),
     }
+
+    # get_company_details now carries the exact company-row columns
+    # Companies House can fill (run_pipeline.company_row_updates): the
+    # Kenyan director only, plus the DOB and gender none of the flat keys
+    # above ever held. Preferring it means a full pipeline run writes the
+    # same thing an add writes - without it, save_results would put every
+    # active director back over the one the add chose. Absent on a result
+    # rebuilt by _headers_to_result, where the flat keys above stand.
+    out.update(d.get("row_updates") or {})
+    return out
 
 
 def _headers_to_result(row: dict) -> dict:
@@ -617,6 +655,12 @@ def _excel_records(path: str):
                     # function did not.
                     continue
                 set_cols[col] = value
+            # A sheet that brings a domain brings the developer address
+            # with it. Derived here rather than in import_from_excel so
+            # diff_from_excel, which reads the same generator, SHOWS it in
+            # the preview instead of writing a field the operator never
+            # saw. A Developer Email column in the sheet wins.
+            _derive_developer_email(set_cols)
             yield cn, set_cols
     finally:
         wb.close()

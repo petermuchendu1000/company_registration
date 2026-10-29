@@ -59,9 +59,23 @@ def _split_director_name(raw_name: str) -> dict[str, str]:
 
 
 def _first_director(details: dict) -> dict[str, str]:
+    """The director the Play Console account is opened in the name of.
+
+    The KENYAN director, not simply the first one Companies House listed.
+    This pipeline registers Kenyan-owned companies and only a Kenyan
+    director's ID can be produced (pipeline.stage_director_id), so naming
+    the account after whoever the API happened to return first put the
+    dossier and the ID on two different people. Falls back to the first
+    active director when no nationality says Kenyan, because a dossier
+    naming someone is more use than one naming nobody.
+    """
     directors = details.get("directors") or []
     if directors and isinstance(directors, list):
-        first = directors[0] or {}
+        import directors as directors_mod
+        # pick_kenyan, not kenyan_directors: this list is already reduced
+        # to active directors and has no officer_role to filter on.
+        kenyan = directors_mod.pick_kenyan(directors)
+        first = (kenyan[0] if kenyan else directors[0]) or {}
         parsed = _split_director_name(first.get("name", ""))
         return {
             "name": first.get("name", ""),
@@ -74,16 +88,23 @@ def _first_director(details: dict) -> dict[str, str]:
             "source": "Companies House officers API",
         }
 
-    names = [n.strip() for n in _clean(details.get("director_names")).split(";") if n.strip()]
-    raw = names[0] if names else ""
+    # The ';'-joined form, which the row columns now hold for the Kenyan
+    # director alone. A row written before that change holds every active
+    # director, so the Kenyan one is still selected by index across the two
+    # parallel lists - the same walk pipeline.py:529-537 does. Neither list
+    # is compacted, because dropping a blank from one would shift it out of
+    # step with the other and describe the wrong person.
+    names = [n.strip() for n in _clean(details.get("director_names")).split(";")]
+    nats = [n.strip() for n in _clean(details.get("director_nationalities")).split(";")]
+    idx = next((i for i, n in enumerate(nats) if "kenyan" in n.lower()), 0)
+    raw = names[idx] if idx < len(names) else ""
     parsed = _split_director_name(raw)
-    nationalities = [n.strip() for n in _clean(details.get("director_nationalities")).split(";") if n.strip()]
     return {
         "name": raw,
         "display_name": parsed["display_name"],
         "first_name": parsed["first_name"],
         "last_name": parsed["last_name"],
-        "nationality": nationalities[0] if nationalities else "",
+        "nationality": nats[idx] if idx < len(nats) else "",
         "appointed_on": "",
         "role": "Director",
         "source": "Companies Pipeline Excel",

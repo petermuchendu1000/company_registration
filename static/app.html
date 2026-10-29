@@ -2636,7 +2636,21 @@ async function addCompany(cn, name, doc) {
   }
   try {
     const r = await api("POST", "/api/v2/company/add", { cn, name, date_of_creation: doc || "" });
-    toast(r.status === "added" ? `Added: ${name}` : `Already exists: ${name}`, "success");
+    // The route fills the row from Companies House as it adds it, so r.name
+    // is the registered name - which can differ from the one in the search
+    // list - and r.autofilled says how many columns arrived filled. Saying
+    // so is what tells the operator the details stage is already done.
+    const label = r.name || name;
+    if (r.status !== "added") {
+      toast(`Already exists: ${label}`, "success");
+    } else if (r.autofill_error) {
+      toast(`Added: ${label} — but could not fill it from Companies ` +
+            `House (${r.autofill_error}). Run the Details stage.`, "info");
+    } else {
+      const n = (r.autofilled || []).length;
+      toast(`Added: ${label}` + (n ? ` — ${n} fields filled from Companies House` : ""),
+            "success");
+    }
     closeAddModal();
     await loadCompanies();
     selectCompany(cn);
@@ -2666,7 +2680,9 @@ const EDIT_FIELDS = [
     ["directors","Directors (semicolon-separated)",{ta:true,full:true}],
     ["nationalities","Nationalities (;-sep)"],
     ["genders","Genders (;-sep, M/F)"],
-    ["dobs","DOBs (;-sep, YYYY-MM-DD)"],
+    // Companies House publishes month and year only, so an autofilled row
+    // holds YYYY-MM. A full date is accepted where one is known.
+    ["dobs","DOBs (;-sep, YYYY-MM or YYYY-MM-DD)"],
     ["buvei_first","Buvei First Name"],
     ["buvei_last","Buvei Last Name"],
   ]},

@@ -15,6 +15,7 @@ import openpyxl
 from flask import Blueprint, jsonify, request, send_file, abort
 
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
+import directors  # Companies House officer parsing, shared with run_pipeline
 from safe_path import resolve_within
 
 api_v2 = Blueprint("api_v2", __name__)
@@ -515,18 +516,16 @@ def _exec_stage(cn: str, stage: str, row: dict):
     if stage == "details":
         from run_pipeline import get_company_details
         d = _with_retry(lambda: get_company_details(cn))
-        _update_excel_row(cn, {
-            "Company Name":           d.get("company_name", ""),
-            "Status":                 d.get("company_status", ""),
-            "Type":                   d.get("type", ""),
-            "Date of Creation":       d.get("date_of_incorporation", ""),
-            "SIC Codes":              d.get("sic_codes", ""),
-            "Address":                d.get("address", ""),
-            "Directors":              d.get("director_names", ""),
-            "Director Nationalities": d.get("director_nationalities", ""),
-            "Director DOB":           d.get("director_dobs", ""),
-            "Director Gender":        d.get("director_genders", ""),
-        })
+        # run_pipeline.company_row_updates owns the header -> value mapping.
+        # This call site used to spell it out, and four of its ten keys
+        # ("type", "date_of_incorporation", "director_dobs",
+        # "director_genders") were not keys get_company_details returned -
+        # so Type and both director detail columns were written as "", and
+        # because db._norm("") is None and db.update_row has no blank-skip,
+        # every run of this stage also erased the Date of Creation the add
+        # route had stored. One mapping, in one place, cannot drift from
+        # the function that feeds it.
+        _update_excel_row(cn, d["row_updates"])
         return d
 
     elif stage == "duns":
@@ -825,11 +824,11 @@ def v2_job(cn, stage):
 #     short-timeout, no-retry fetch and treats a failure as "unknown";
 #   - verdicts are cached, because a company's directors do not change
 #     between keystrokes.
-_KENYAN = "kenyan"
 _NAT_TTL = 24 * 3600          # a directorship does not change hourly
 _NAT_MAX_PER_SEARCH = 12      # hard ceiling on requests one search may spend
 _NAT_MIN_REMAIN = 150         # a RESERVATION: never spend below this
 _nat_cache: dict[str, tuple[float, bool, str]] = {}
+_off_cache: dict[str, tuple[float, list]] = {}   # the officer payload itself
 _nat_lock = threading.Lock()
 _ch_remain: list[int | None] = [None]   # last seen X-Ratelimit-Remain
 
@@ -847,19 +846,13 @@ _ch_session.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=8,
                                           max_retries=0))
 
 
-def _nationalities(officer: dict) -> list[str]:
-    """An officer's nationalities, lowercased.
-
-    Companies House records this as free text. Observed live: 'British',
-    'Kenyan', 'South African' (a space INSIDE one value), 'British,Kenyan'
-    and 'British,Irish' (comma-joined for dual nationals), and None. So the
-    split is on commas only - splitting on whitespace would turn
-    'South African' into two bogus nationalities.
-    """
-    raw = officer.get("nationality")
-    if raw is None:
-        return []
-    return [p.strip().lower() for p in str(raw).split(",") if p.strip()]
+# The officer parsing lives in directors.py, imported by run_pipeline too.
+# The console decides who may be ADDED and the pipeline decides what gets
+# WRITTEN, and both answers have to come from the same reading of the same
+# officer list - two readings is how this project got two domain scorers
+# that disagreed. The aliases keep the names at their call sites here.
+_nationalities = directors.nationalities
+_KENYAN = directors.KENYAN
 
 
 def _kenyan_verdict(items: list[dict]) -> tuple[bool, str]:
@@ -876,9 +869,7 @@ def _kenyan_verdict(items: list[dict]) -> tuple[bool, str]:
 
     Change this function to change the rule; nothing else encodes it.
     """
-    actives = [o for o in items
-               if not o.get("resigned_on")
-               and "director" in str(o.get("officer_role") or "").lower()]
+    actives = directors.active_directors(items)
     if not actives:
         return False, "no active directors on record"
     unknown = sum(1 for o in actives if not _nationalities(o))
@@ -925,10 +916,76 @@ def _fetch_kenyan(cn: str) -> tuple[bool, str]:
         # caching it would keep refusing a company that is in fact eligible.
         return False, f"officers lookup returned HTTP {r.status_code}"
 
-    ok, why = _kenyan_verdict(r.json().get("items") or [])
+    items = r.json().get("items") or []
+    ok, why = _kenyan_verdict(items)
     with _nat_lock:
         _nat_cache[cn] = (now + _NAT_TTL, ok, why)
+        # Kept separately from the verdict so the verdict cache stays the
+        # 3-tuple its own tests pin. The point of holding the payload is
+        # that the autofill which follows an add needs the SAME officer
+        # list this admission check just paid for - so filling the four
+        # director columns costs no request at all.
+        _off_cache[cn] = (now + _NAT_TTL, items)
     return ok, why
+
+
+def _autofill_company(cn: str) -> tuple[dict, str]:
+    """Fill everything Companies House knows about a newly added company.
+
+    Returns (what was written, why nothing more was). The pipeline is meant
+    to be autonomous; db.add_company writes three columns, and until now the
+    remaining seven waited for an operator to run the details stage by hand.
+
+    ONE extra request. The officer list is the one the admission check in
+    _fetch_kenyan just fetched and cached, so only the company profile is
+    new - and the profile is where Status, Type, SIC codes and the
+    registered office come from.
+
+    Deliberately NOT run_pipeline.ch_get: that retries a 429 five times
+    with sleeps up to 30s, and this runs on one of eight gunicorn request
+    threads (gunicorn.conf.py:26-32). A failure here leaves the row as
+    db.add_company made it, which the details stage can still fill later,
+    so the add must never fail on it.
+
+    company_row_updates omits anything Companies House does not give, so
+    this cannot blank a column.
+    """
+    now = time.time()
+    with _nat_lock:
+        hit = _off_cache.get(cn)
+    items = hit[1] if hit and hit[0] > now else None
+    if items is None:
+        # Only reachable if the verdict came from somewhere other than a
+        # live fetch; the add route calls _fetch_kenyan first.
+        return {}, "officer list not available"
+
+    key = os.getenv("COMPANIES_HOUSE_API_KEY", "")
+    if not key:
+        return {}, "COMPANIES_HOUSE_API_KEY is not set"
+    try:
+        r = _ch_session.get(
+            f"https://api.company-information.service.gov.uk/company/{cn}",
+            auth=(key, ""), timeout=8)
+    except Exception as e:
+        return {}, f"profile lookup failed: {type(e).__name__}"
+    rem = r.headers.get("X-Ratelimit-Remain")
+    if rem is not None:
+        try:
+            _ch_remain[0] = int(rem)
+        except ValueError:
+            pass
+    if r.status_code != 200:
+        return {}, f"profile lookup returned HTTP {r.status_code}"
+
+    from run_pipeline import company_row_updates
+    updates = company_row_updates(r.json(), items)
+    if not updates:
+        return {}, "Companies House returned nothing to fill"
+    try:
+        db.update_row(cn, updates)
+    except Exception as e:
+        return {}, f"could not write the row: {type(e).__name__}: {e}"
+    return updates, ""
 
 
 def _apply_kenyan_filter(cands: list[dict]) -> tuple[list[dict], int, str]:
@@ -1123,7 +1180,20 @@ def v2_add_company():
         }), 422
 
     _add_company_row(cn, name, doc)
-    return jsonify({"status": "added", "cn": cn, "name": name, "date_of_creation": doc}), 201
+
+    # Fill the row from Companies House straight away rather than leaving
+    # seven columns for an operator to fetch by hand. One extra request -
+    # the officer list came from the admission check above. A failure is
+    # reported and otherwise ignored: the row exists either way, and the
+    # details stage can still fill it.
+    filled, fill_error = _autofill_company(cn)
+    resp = {"status": "added", "cn": cn,
+            "name": filled.get("Company Name") or name,
+            "date_of_creation": filled.get("Date of Creation") or doc,
+            "autofilled": sorted(filled)}
+    if fill_error:
+        resp["autofill_error"] = fill_error
+    return jsonify(resp), 201
 
 
 @api_v2.route("/api/v2/company/<cn>/version", methods=["POST"])

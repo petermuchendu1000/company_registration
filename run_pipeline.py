@@ -35,6 +35,7 @@ except ModuleNotFoundError:
 load_dotenv()
 
 import db  # Supabase (PostgreSQL) data-access layer — source of truth
+import directors as directors_mod  # officer parsing, shared with api_v2
 
 # Audit channel for anything that can spend money. Every billed
 # namecheap.domains.create order and its outcome is recorded here, so there
@@ -225,11 +226,36 @@ _MALE_NAMES = {
     "vincent", "wilson", "isaiah", "jackson", "jacob", "jeremiah", "joshua",
     "julius", "leonard", "lawrence", "mark", "nelson", "oscar", "raphael",
     "reuben", "ronald", "tom", "william", "willy", "abel", "andrew",
+    # Spelling variants of names already above. Measured on live Companies
+    # House records: "WAMBUGU, Phillip" resolved to "" because only
+    # "philip" was listed, so the row's Director Gender went unfilled and
+    # the ID stage fell back to its last-resort default.
+    "phillip", "phillips", "fredrick", "geofrey", "jeffery", "mathew",
+    "steven", "stevens", "antony", "bernards", "nickson", "petter",
+    # Absent entirely, and common among Kenyan company directors - this
+    # whole set resolved to "". "DAGHAR, Mohamed Abdulkarim" is the live
+    # case, on KENYA AIRWAYS PLC.
+    "mohamed", "mohammed", "muhammad", "mohammad", "ahmed", "ahmad",
+    "abdul", "abdullah", "abdalla", "abdi", "abdirahman", "hassan",
+    "hussein", "ibrahim", "ismail", "khalid", "mahmoud", "omar", "osman",
+    "rashid", "salim", "yusuf", "yassin", "jamal",
+    # English given names seen on these same records and not listed above.
+    "jason", "graham", "alexander", "alex", "christopher", "roger",
+    "maurice", "naphtali", "gerald", "edward", "henry", "arthur", "albert",
+    "douglas", "edwin", "frederick", "jonathan", "kenneth", "nathan",
+    "oliver", "ralph", "walter", "wesley", "lucas", "luke", "matthew",
+    "maxwell", "micah", "milton", "elisha", "joel", "justus", "levi",
+    "titus", "jared", "japheth", "gilbert", "dickson", "enock", "erastus",
 }
 
 # Some given names are commonly unisex in Kenya; keep them unresolved so the
 # caller can decide (defaults to "M") rather than mis-gendering.
-_UNISEX_NAMES = {"baraka", "amani", "imani", "neema", "upendo", "furaha"}
+_UNISEX_NAMES = {"baraka", "amani", "imani", "neema", "upendo", "furaha",
+                 # Male Somali, female Arabic and Persian. A wrong guess
+                 # here goes onto an identity document, so it stays
+                 # unresolved rather than being decided by whichever list
+                 # it was put in.
+                 "farah"}
 
 
 def _infer_gender(name):
@@ -391,25 +417,101 @@ def find_companies_by_nationality(nationality, count=1):
 # Step 2: Get detailed company data
 # ============================================================
 
+_ADDRESS_PARTS = ("address_line_1", "address_line_2", "locality", "region",
+                  "postal_code", "country")
+
+
+def format_address(addr):
+    """The registered office as one line.
+
+    Every part is optional: measured across four live profiles, Companies
+    House OMITS the keys it has nothing for - FC009164 carries no
+    postal_code, 08227886 no address_line_2 or region. None of the four
+    returned a key holding null, so that is not an observed shape; the
+    filter is nonetheless on the VALUE rather than the key, because a null
+    or an empty string would otherwise become the literal "None" or a ", ,"
+    gap in the middle of an address, and filtering on the value costs
+    nothing and covers the absent case identically.
+    """
+    addr = addr or {}
+    return ", ".join(str(addr.get(k)).strip() for k in _ADDRESS_PARTS
+                     if addr.get(k))
+
+
+def company_row_updates(profile, officer_items):
+    """The company row columns Companies House can fill, keyed by header.
+
+    The only place that mapping lives. It was previously written out by
+    hand at the one call site that used it (api_v2's details stage), and
+    four of its ten keys did not exist on the dict it read from - so `Type`
+    and both director detail columns were written as "" and the
+    `Date of Creation` the add route had just stored was erased on every
+    run of that stage.
+
+    Two rules here are deliberate.
+
+    A value Companies House does not give is OMITTED, never written as "".
+    db._norm turns "" into None and db.update_row has no blank-skip
+    (db.py:329-336), so a blank in this dict is a NULL over whatever was
+    there before - including a value an operator typed by hand. Absence is
+    the only safe way to say "unknown". sic_codes is the live case: it is
+    simply absent from an oversea-company profile (measured on FC009164,
+    while 08227886 returned ['69201','70221','70229']).
+
+    The four director columns describe the KENYAN director alone, not every
+    active director. This pipeline exists to register Kenyan-owned
+    companies, and pipeline.stage_director_id (pipeline.py:519-537) already
+    reads these four columns as parallel ';'-joined lists purely to find
+    the Kenyan one and drive ibenty from that single person. Storing one
+    director is exactly the data that stage needs, and it keeps reading
+    unchanged, because a one-element list is a list.
+    """
+    profile = profile or {}
+    updates = {
+        "Company Name":     str(profile.get("company_name") or "").strip(),
+        "Status":           str(profile.get("company_status") or "").strip(),
+        "Type":             str(profile.get("type") or "").strip(),
+        "Date of Creation": str(profile.get("date_of_creation") or "").strip(),
+        # A LIST on the wire, and absent entirely on an oversea company.
+        "SIC Codes":        ", ".join(str(s).strip() for s
+                                      in (profile.get("sic_codes") or []) if s),
+        "Address":          format_address(profile.get("registered_office_address")),
+    }
+
+    kenyan = directors_mod.kenyan_directors(officer_items)
+    if kenyan:
+        chosen = kenyan[0]
+        name = str(chosen.get("name") or "").strip()
+        updates.update({
+            "Directors":              name,
+            "Director Nationalities": str(chosen.get("nationality") or "").strip(),
+            "Director DOB":           directors_mod.dob_month(chosen),
+            # Companies House never returns officer gender, so it is
+            # inferred from the name here rather than left for
+            # pipeline.py:637 to infer at ibenty time - same function,
+            # recorded once instead of re-derived per run, and visible to
+            # an operator who can correct it.
+            "Director Gender":        _infer_gender(name),
+        })
+
+    return {k: v for k, v in updates.items() if v}
+
+
 def get_company_details(company_number):
     """Get full company details from Companies House."""
     profile = ch_get(f"/company/{company_number}")
     officers_data = ch_get(f"/company/{company_number}/officers")
+    items = officers_data.get("items") or []
 
-    addr = profile.get("registered_office_address", {})
-    address_parts = [addr.get(k, "") for k in ["address_line_1", "address_line_2", "locality", "region", "postal_code", "country"] if addr.get(k)]
+    addr = profile.get("registered_office_address", {}) or {}
+    actives = directors_mod.active_directors(items)
+    directors = [{
+        "name": o.get("name", ""),
+        "nationality": o.get("nationality", ""),
+        "appointed_on": o.get("appointed_on", ""),
+    } for o in actives]
 
-    # Active directors
-    directors = []
-    for o in officers_data.get("items", []):
-        if not o.get("resigned_on") and "director" in (o.get("officer_role", "") or "").lower():
-            directors.append({
-                "name": o.get("name", ""),
-                "nationality": o.get("nationality", ""),
-                "appointed_on": o.get("appointed_on", ""),
-            })
-
-    sic_codes = profile.get("sic_codes", [])
+    row_updates = company_row_updates(profile, items)
 
     return {
         "company_number": company_number,
@@ -417,14 +519,19 @@ def get_company_details(company_number):
         "company_status": profile.get("company_status", ""),
         "company_type": profile.get("type", ""),
         "date_of_creation": profile.get("date_of_creation", ""),
-        "sic_codes": ", ".join(sic_codes),
-        "address": ", ".join(address_parts),
+        "sic_codes": ", ".join(profile.get("sic_codes", []) or []),
+        "address": format_address(addr),
         "address_line_1": addr.get("address_line_1", ""),
         "locality": addr.get("locality", ""),
         "postal_code": addr.get("postal_code", ""),
+        # Every active director, for the dossier and the console's display.
         "directors": directors,
         "director_names": "; ".join(d["name"] for d in directors),
         "director_nationalities": "; ".join(d["nationality"] for d in directors),
+        # What belongs in the company row: the Kenyan director only, and
+        # nothing Companies House left unsaid. Callers write THIS, not a
+        # dict of their own assembling.
+        "row_updates": row_updates,
     }
 
 
