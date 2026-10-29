@@ -45,8 +45,11 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).parent
-BUILD_GRADLE = (REPO / "apps" / "template-shift-journal" / "app"
-                / "build.gradle.kts")
+APP_DIR = REPO / "apps" / "template-shift-journal" / "app"
+# The TRACKED source. build.gradle.kts beside it is generated and ignored;
+# it is the file that carries the keystore passwords.
+BUILD_GRADLE = APP_DIR / "build.gradle.kts.template"
+GENERATED_GRADLE = APP_DIR / "build.gradle.kts"
 
 # A literal assignment: no { } inside, so the generator's f-string template
 # does not match. Verified against four cases in the self-test below.
@@ -268,6 +271,29 @@ def check_credential_files_ignored(r: Results) -> None:
             "check-ignore claims to ignore api_v2.py, so the four results "
             "above prove nothing")
 
+    # The generated build file. flavor_writer.write_flavors_gradle splices
+    # every flavor's storePassword and keyPassword into it as plaintext
+    # literals, so it must never be tracked - that is how one such password
+    # reached commit 8d0f76f. Tracking it also made every build dirty the
+    # tree, so the next `git pull` conflicted against a file nobody edited.
+    p = subprocess.run(["git", "check-ignore", "-q", str(GENERATED_GRADLE)],
+                       cwd=REPO)
+    r.check("git ignores the generated build.gradle.kts", p.returncode == 0,
+            "it carries the keystore passwords and a build rewrites it")
+    p = subprocess.run(["git", "ls-files", "--error-unmatch",
+                        str(GENERATED_GRADLE.relative_to(REPO))],
+                       cwd=REPO, capture_output=True, text=True)
+    r.check("...and it is not tracked", p.returncode != 0,
+            "it is in the index despite the ignore rule - `git rm --cached` it")
+    r.check("the template IS tracked, so a checkout can still build",
+            subprocess.run(["git", "ls-files", "--error-unmatch",
+                            str(BUILD_GRADLE.relative_to(REPO))],
+                           cwd=REPO, capture_output=True).returncode == 0,
+            f"{BUILD_GRADLE.name} is the only source for the generated file")
+    r.check("...and the template carries no keystore password",
+            not SECRET.search(BUILD_GRADLE.read_text(encoding="utf-8")),
+            "the tracked template must hold no generated content")
+
     # The scripts must keep producing the names that are ignored. If one
     # changes its backup name, the rule above silently stops covering it.
     for script, needle in (("set_ch_key.sh", '"${ENV_FILE}.new.XXXXXX"'),
@@ -282,7 +308,7 @@ def check_credential_files_ignored(r: Results) -> None:
 
 def check_markers(r: Results) -> None:
     print("\n-- the generator can still write its block --")
-    if not r.check("build.gradle.kts exists", BUILD_GRADLE.exists(),
+    if not r.check("the tracked template exists", BUILD_GRADLE.exists(),
                    str(BUILD_GRADLE)):
         return
     src = BUILD_GRADLE.read_text(encoding="utf-8")

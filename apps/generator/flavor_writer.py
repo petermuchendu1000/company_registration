@@ -1,11 +1,19 @@
 """Emit Gradle flavors + per-flavor Android resource overlays.
 
-Writes three things:
-  1. {app}/flavors.gradle.kts          — one productFlavor + signingConfig per company
+Writes two things:
+  1. {app}/build.gradle.kts            — rendered from build.gradle.kts.template,
+                                         one productFlavor + signingConfig per
+                                         company spliced between the markers
   2. {app}/src/c{cn}/res/values/*.xml  — per-flavor colors + strings
-  3. {app}/keystores/{cn}.jks          — via keystore_mint (caller's responsibility)
 
-The static build.gradle.kts applies flavors.gradle.kts via `apply(from=...)`.
+{app}/keystores/{cn}.jks comes from keystore_mint, which is the caller's
+responsibility.
+
+build.gradle.kts is GENERATED and git-ignored; build.gradle.kts.template is
+the tracked source. This docstring used to describe a flavors.gradle.kts
+applied via `apply(from=...)`, which no code here has ever written - the
+markers sit INSIDE the android {} block, so the content could not be a
+separate applied script without also wrapping itself in android {}.
 """
 
 from __future__ import annotations
@@ -138,21 +146,63 @@ _MARKER_START = "// >>> GENERATED FLAVORS START"
 _MARKER_END = "// <<< GENERATED FLAVORS END"
 
 
-def write_flavors_gradle(built: list[BuiltFlavor], app_dir: str) -> str:
-    """Splice flavor + signingConfig blocks into build.gradle.kts between markers.
+_TEMPLATE_NAME = "build.gradle.kts.template"
+_GENERATED_NAME = "build.gradle.kts"
 
-    The build.gradle.kts file must contain a pair of marker lines; everything
-    between them is replaced on every run.
+_GENERATED_HEADER = (
+    "// GENERATED FILE - do not edit, and do not commit.\n"
+    "//\n"
+    f"// Written by apps/generator/flavor_writer.py from {_TEMPLATE_NAME}\n"
+    "// on every build. Edit that template instead; anything written here\n"
+    "// is replaced without warning the next time the generator runs.\n"
+)
+
+
+def write_flavors_gradle(built: list[BuiltFlavor], app_dir: str) -> str:
+    """Render build.gradle.kts from its template, with the flavors spliced in.
+
+    This used to read and rewrite build.gradle.kts ITSELF, and that file was
+    git-tracked. Two consequences, both of which happened:
+
+      - Every build left the repository dirty, so the next `git pull`
+        conflicted against a file nobody had edited.
+      - The block spliced in carries each flavor's keystore storePassword and
+        keyPassword as plaintext literals. Writing them into a tracked file
+        in a PUBLIC repository is how one such password came to sit in
+        commit 8d0f76f. test_no_committed_secrets.py exists because of it.
+
+    So the tracked file is now build.gradle.kts.template, which contains no
+    generated content and no secret, and build.gradle.kts is generated beside
+    it and git-ignored. Gradle is handed the same bytes as before.
+
+    Reading the TEMPLATE rather than the output also makes the run
+    idempotent in a way it was not: the old code parsed the file it had
+    itself last written, so a previously generated file was the input to
+    the next generation.
+
+    Calling this is not optional before a build. The template's marker block
+    is empty, so a project built from it has no product flavors and
+    therefore no BuildConfig fields - measured: 66 unresolved references in
+    MainActivity.kt, COMPANY_NAME and ROLE_NOUN among them. Every caller
+    already does it: generate.py:241 before :256, generate.py:321 before
+    :334, and pipeline.py:773 before :783.
     """
-    build_file = os.path.join(app_dir, "build.gradle.kts")
-    with open(build_file, "r", encoding="utf-8") as f:
+    template_file = os.path.join(app_dir, _TEMPLATE_NAME)
+    build_file = os.path.join(app_dir, _GENERATED_NAME)
+    if not os.path.exists(template_file):
+        raise RuntimeError(
+            f"{template_file} is missing. It is the tracked source for "
+            f"{_GENERATED_NAME}, which is generated and git-ignored; a "
+            f"checkout without it cannot build."
+        )
+    with open(template_file, "r", encoding="utf-8") as f:
         src = f.read()
 
     start = src.find(_MARKER_START)
     end = src.find(_MARKER_END)
     if start < 0 or end < 0 or end < start:
         raise RuntimeError(
-            f"Can't find flavor markers in {build_file}. Expected lines:\n"
+            f"Can't find flavor markers in {template_file}. Expected lines:\n"
             f"    {_MARKER_START}\n    {_MARKER_END}"
         )
 
@@ -216,8 +266,11 @@ def write_flavors_gradle(built: list[BuiltFlavor], app_dir: str) -> str:
     if line_end < 0:
         line_end = len(src)
     new_src = src[:line_start] + block + src[line_end:]
+    # The header is a comment, so it is inert to Gradle: the Kotlin DSL
+    # requires `plugins {}` to be the first STATEMENT, and a comment is not
+    # one. Verified by compiling the generated project.
     with open(build_file, "w", encoding="utf-8") as f:
-        f.write(new_src)
+        f.write(_GENERATED_HEADER + new_src)
     return build_file
 
 

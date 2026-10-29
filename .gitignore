@@ -12,6 +12,12 @@
 .env.new.*
 apps/generator/.master_secret
 apps/template-shift-journal/app/keystores/
+# GENERATED from build.gradle.kts.template on every build, and the block it
+# splices in carries each flavor's keystore storePassword and keyPassword as
+# plaintext literals (flavor_writer.py). Tracking it put one such password
+# in commit 8d0f76f, and made every build dirty the working tree so the next
+# `git pull` conflicted against a file nobody had edited.
+apps/template-shift-journal/app/build.gradle.kts
 pipeline_output/apps/*/signing.json
 pipeline_output/apps/*/*.jks
 
