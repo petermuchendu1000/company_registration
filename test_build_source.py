@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Stage 5 must build from the same store as every other stage.
+
+    python3 test_build_source.py
+
+Hermetic: the database is stubbed, no workbook is read unless a test asks
+for one.
+
+apps/generator/catalog.load_companies used to default to
+pipeline_output/companies_pipeline.xlsx. Nothing writes that sheet from the
+database - db.py's CLI has only --diff and --import, both Excel to
+database, and there is no export - so the app build and the rest of the
+pipeline read two different stores. On a server where the sheet had never
+been produced, stage 5 raised FileNotFoundError. The worse case is the
+quiet one: where an OLD sheet exists, stage 5 would build a stale set of
+companies while every other stage used the database, and nothing would say
+so.
+
+The sheet is still readable when a caller explicitly asks for one, because
+the standalone tools work that way. None of the three in-repo callers does.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).parent
+sys.path.insert(0, str(REPO))
+
+os.environ.setdefault("DATABASE_URL", "postgresql://unused@127.0.0.1:1/none")
+os.environ.setdefault("LOG_LEVEL", "CRITICAL")
+
+import openpyxl  # noqa: E402
+
+from apps.generator import catalog  # noqa: E402
+
+
+class Results:
+    def __init__(self) -> None:
+        self.passed = 0
+        self.failed: list[str] = []
+
+    def check(self, name: str, cond: bool, detail: str = "") -> bool:
+        if cond:
+            self.passed += 1
+            print(f"  PASS  {name}")
+        else:
+            self.failed.append(name)
+            print(f"  FAIL  {name}" + (f"\n          {detail}" if detail else ""))
+        return bool(cond)
+
+    def report(self) -> int:
+        print()
+        print(f"{self.passed} passed / {len(self.failed)} failed")
+        for f in self.failed:
+            print(f"  failed: {f}")
+        return 1 if self.failed else 0
+
+
+HEADERS = ["Company Number", "Company Name", "SIC Codes", "Domain",
+           "Assigned Email", "Short Name", "Address"]
+
+ROWS = [
+    {"Company Number": "16940106",
+     "Company Name": "ACME ADVISORY CONSULTING MANAGEMENT LTD",
+     "SIC Codes": "70229,62012", "Domain": "acmeadvisory.uk",
+     "Assigned Email": "pool@example.com", "Short Name": "Acme Advisory",
+     "Address": "1 Example St, London"},
+    {"Company Number": "123", "Company Name": "SHORT NUMBER LTD",
+     "SIC Codes": "62012", "Domain": "", "Assigned Email": "fallback@example.com",
+     "Short Name": "", "Address": ""},
+    {"Company Number": "", "Company Name": "NO NUMBER LTD", "SIC Codes": "",
+     "Domain": "", "Assigned Email": "", "Short Name": "", "Address": ""},
+]
+
+
+def _workbook(rows) -> Path:
+    tmp = Path(tempfile.mkdtemp()) / "companies_pipeline.xlsx"
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(HEADERS)
+    for r in rows:
+        ws.append([r.get(h, "") for h in HEADERS])
+    wb.save(tmp)
+    return tmp
+
+
+def _shape(cs):
+    return [(c.company_number, c.company_name, c.sic_codes, c.domain,
+             c.support_email, c.archetype, c.short_name, c.address,
+             c.display_name, c.application_id, c.flavor) for c in cs]
+
+
+def check_default_source(r: Results) -> None:
+    print("\n-- with no arguments it reads the database --")
+    saved = catalog._rows_from_db
+    catalog._rows_from_db = lambda: [dict(x) for x in ROWS]
+    try:
+        cs = catalog.load_companies()
+        r.check("companies are returned", len(cs) == 2, f"got {len(cs)}")
+        r.check("...from the database, not a workbook",
+                [c.company_number for c in cs] == ["16940106", "00000123"],
+                f"got {[c.company_number for c in cs]}")
+
+        # The regression guard. If the default path ever reads a workbook
+        # again this raises, which is the whole point: on a server with no
+        # sheet the old code raised FileNotFoundError, and with a STALE
+        # sheet it would silently build the wrong companies.
+        saved_wb = openpyxl.load_workbook
+
+        def _refuse(*a, **k):
+            raise AssertionError("load_companies() opened a workbook")
+
+        openpyxl.load_workbook = _refuse
+        try:
+            cs2 = catalog.load_companies()
+            opened = False
+        except AssertionError:
+            opened = True
+        finally:
+            openpyxl.load_workbook = saved_wb
+        r.check("...and opens NO workbook at all", not opened,
+                "the default source must not touch the filesystem")
+
+        r.check("the default is no longer a path",
+                catalog.load_companies.__defaults__[0] is None,
+                f"default excel_path={catalog.load_companies.__defaults__[0]!r}")
+    finally:
+        catalog._rows_from_db = saved
+
+
+def check_equivalence(r: Results) -> None:
+    print("\n-- the two sources must agree, or the switch changed behaviour --")
+    saved = catalog._rows_from_db
+    catalog._rows_from_db = lambda: [dict(x) for x in ROWS]
+    try:
+        from_db = catalog.load_companies()
+        from_xl = catalog.load_companies(excel_path=str(_workbook(ROWS)))
+        r.check("the database and a workbook give identical companies",
+                _shape(from_db) == _shape(from_xl),
+                f"db={_shape(from_db)}\n          xl={_shape(from_xl)}")
+        r.check("the workbook escape hatch still works", len(from_xl) == 2,
+                f"got {len(from_xl)} - the standalone tools rely on it")
+
+        # The equivalence check above feeds BOTH sources the same rows, so
+        # it passes even if excel_path is ignored and the database is read
+        # both times. This one can tell them apart: the workbook holds a
+        # company the stubbed database does not.
+        other = _workbook([{"Company Number": "99999999",
+                            "Company Name": "ONLY IN THE WORKBOOK LTD",
+                            "SIC Codes": "62012", "Domain": "wb.example",
+                            "Assigned Email": "", "Short Name": "", "Address": ""}])
+        got = catalog.load_companies(excel_path=str(other))
+        r.check("excel_path actually reads THAT workbook",
+                [c.company_number for c in got] == ["99999999"],
+                f"got {[c.company_number for c in got]} - if this is the "
+                f"database's rows, excel_path is being ignored")
+        r.check("...and the database is untouched for that call",
+                [c.company_name for c in got] == ["ONLY IN THE WORKBOOK LTD"],
+                f"got {[c.company_name for c in got]}")
+    finally:
+        catalog._rows_from_db = saved
+
+
+def check_fields(r: Results) -> None:
+    print("\n-- the fields the app build depends on --")
+    saved = catalog._rows_from_db
+    catalog._rows_from_db = lambda: [dict(x) for x in ROWS]
+    try:
+        cs = {c.company_number: c for c in catalog.load_companies()}
+        a, b = cs["16940106"], cs["00000123"]
+
+        # The support address is the dev@ forward stage 3 creates on the
+        # company's own domain, so it carries the domain by construction.
+        r.check("support_email is dev@ the company's own domain",
+                a.support_email == "dev@acmeadvisory.uk", a.support_email)
+        r.check("...falling back to the assigned email with no domain",
+                b.support_email == "fallback@example.com", b.support_email)
+        r.check("a row with no company number is skipped", "" not in cs)
+        r.check("a short number is zero-padded to 8",
+                "00000123" in cs, f"got {sorted(cs)}")
+        r.check("Short Name drives the launcher label",
+                a.display_name == "Acme Advisory", a.display_name)
+        r.check("...and without one it derives from the company name",
+                b.display_name == "Short Number", b.display_name)
+        r.check("the address is carried", a.address == "1 Example St, London")
+        r.check("the SIC codes are carried", a.sic_codes == "70229,62012")
+        r.check("the archetype comes from the primary SIC",
+                a.archetype == catalog.SIC_ARCHETYPE.get("70229",
+                                                         catalog.DEFAULT_ARCHETYPE),
+                a.archetype)
+
+        # No domain means no app can be built for it - stage 5 filters on
+        # c.domain (pipeline.py), so this must stay falsy rather than
+        # becoming a placeholder.
+        r.check("a company with no domain keeps an empty domain",
+                b.domain == "", f"got {b.domain!r}")
+    finally:
+        catalog._rows_from_db = saved
+
+
+def check_filters(r: Results) -> None:
+    print("\n-- limit and company_numbers --")
+    saved = catalog._rows_from_db
+    catalog._rows_from_db = lambda: [dict(x) for x in ROWS]
+    try:
+        r.check("limit caps the result", len(catalog.load_companies(limit=1)) == 1)
+        got = catalog.load_companies(company_numbers=["16940106"])
+        r.check("company_numbers selects one",
+                [c.company_number for c in got] == ["16940106"],
+                f"got {[c.company_number for c in got]}")
+        got = catalog.load_companies(company_numbers=["123"])
+        r.check("...and an unpadded number still matches the padded row",
+                [c.company_number for c in got] == ["00000123"],
+                f"got {[c.company_number for c in got]} - the filter set is "
+                f"padded the same way the rows are")
+        got = catalog.load_companies(company_numbers=["99999999"])
+        r.check("an unknown number selects nothing", got == [], f"got {got}")
+    finally:
+        catalog._rows_from_db = saved
+
+
+def check_callers(r: Results) -> None:
+    print("\n-- no caller pins the old workbook default --")
+    # If one did, that caller would keep reading the stale sheet while the
+    # others read the database, which is the divergence being removed.
+    import re
+    for fn in ("pipeline.py", "apps/generator/generate.py",
+               "apps/generator/catalog.py"):
+        src = (REPO / fn).read_text(encoding="utf-8")
+        # `(?<!def )` so the function DEFINITION in catalog.py is not
+        # mistaken for a call - its own signature names excel_path.
+        calls = re.findall(r"(?<!def )load_companies\((.*?)\)", src, re.S)
+        bad = [c for c in calls if "excel_path" in c]
+        r.check(f"{fn} does not pass excel_path", not bad, f"found {bad}")
+    src = (REPO / "apps/generator/catalog.py").read_text(encoding="utf-8")
+    r.check("EXCEL_PATH_DEFAULT is no longer the function default",
+            "excel_path: str | None = None" in src,
+            "the default must be the database")
+
+
+def main() -> int:
+    r = Results()
+    print(f"target: apps/generator/catalog.load_companies (stage 5's source)")
+    check_default_source(r)
+    check_equivalence(r)
+    check_fields(r)
+    check_filters(r)
+    check_callers(r)
+    return r.report()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

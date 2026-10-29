@@ -75,47 +75,68 @@ class Company:
         return (truncated[:last_space] if last_space > 0 else truncated).rstrip()
 
 
+def _rows_from_db() -> list[dict]:
+    """Company rows from Supabase, keyed by the header labels db.COLUMNS uses.
+
+    db is imported here rather than at module scope because this file lives
+    in apps/generator and the repository root is only on sys.path once a
+    caller has put it there (pipeline.py:750 does). A module-level import
+    would make the package unimportable from anywhere else.
+    """
+    import sys
+    from pathlib import Path as _P
+    root = str(_P(__file__).resolve().parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    import db
+    return db.all_rows()
+
+
+def _rows_from_excel(excel_path: str) -> list[dict]:
+    """The same shape, read from the pipeline workbook."""
+    wb = openpyxl.load_workbook(excel_path, data_only=True, read_only=True)
+    try:
+        ws = wb.active
+        it = ws.iter_rows(values_only=True)
+        header = [(h.strip() if isinstance(h, str) else h) for h in next(it)]
+        return [{h: v for h, v in zip(header, row) if h} for row in it]
+    finally:
+        wb.close()
+
+
 def load_companies(
-    excel_path: str = EXCEL_PATH_DEFAULT,
+    excel_path: str | None = None,
     limit: int | None = None,
     company_numbers: list[str] | None = None,
 ) -> list[Company]:
-    """Read companies from the pipeline Excel. Skips rows without a company number."""
-    wb = openpyxl.load_workbook(excel_path, data_only=True, read_only=True)
-    ws = wb.active
-    rows = ws.iter_rows(values_only=True)
-    header = next(rows)
+    """Companies for the app build. Skips rows without a company number.
 
-    def col(name: str) -> int:
-        for i, h in enumerate(header):
-            if h and h.strip().lower() == name.lower():
-                return i
-        raise KeyError(f"column not found: {name}")
+    Reads the DATABASE by default. It used to read
+    pipeline_output/companies_pipeline.xlsx, which nothing writes from the
+    database - db.py's CLI has only --diff and --import, both Excel to
+    database, and no export - so the app build and the rest of the pipeline
+    were reading two different stores. On a server where the sheet had
+    never been produced, stage 5 raised FileNotFoundError; worse, where an
+    old sheet DID exist it would have built a stale set of companies while
+    every other stage used the database.
 
-    def col_optional(name: str) -> int | None:
-        """Return column index or None if the column doesn't exist yet."""
-        for i, h in enumerate(header):
-            if h and h.strip().lower() == name.lower():
-                return i
-        return None
+    Passing excel_path still reads a workbook, so the standalone tools that
+    work from a sheet keep working. None of the three callers passes it.
+    """
+    rows = _rows_from_excel(excel_path) if excel_path else _rows_from_db()
 
-    idx_num    = col("Company Number")
-    idx_name   = col("Company Name")
-    idx_sic    = col("SIC Codes")
-    idx_domain = col("Domain")
-    idx_email  = col("Assigned Email")
-    idx_short  = col_optional("Short Name")
-    idx_addr   = col_optional("Address")
+    def get(row: dict, name: str) -> str:
+        v = row.get(name)
+        return str(v).strip() if v is not None else ""
 
     # Normalise filter set once
     filter_set = {n.zfill(8) if n.isdigit() and len(n) < 8 else n for n in (company_numbers or [])}
 
     out: list[Company] = []
     for row in rows:
-        if not row or not row[idx_num]:
+        cn = get(row, "Company Number")
+        if not cn:
             continue
-
-        cn = str(row[idx_num]).strip()
         # Pad to 8 digits (Companies House format)
         if cn.isdigit() and len(cn) < 8:
             cn = cn.zfill(8)
@@ -123,37 +144,31 @@ def load_companies(
         if filter_set and cn not in filter_set:
             continue
 
-        sic_raw = (row[idx_sic] or "")
+        sic_raw = get(row, "SIC Codes")
         primary_sic = sic_raw.split(",")[0].strip() if sic_raw else ""
         archetype = SIC_ARCHETYPE.get(primary_sic, DEFAULT_ARCHETYPE)
 
-        domain = (row[idx_domain] or "").strip() if row[idx_domain] else ""
-        email  = (row[idx_email] or "").strip() if row[idx_email] else ""
+        domain = get(row, "Domain")
+        email  = get(row, "Assigned Email")
+        # The support address is the dev@ forward stage 3 creates on the
+        # company's own domain, so it carries the company domain by
+        # construction rather than by being typed in.
         support = f"dev@{domain}" if domain else (email or "support@example.uk")
-
-        short = ""
-        if idx_short is not None:
-            short = (row[idx_short] or "").strip() if row[idx_short] else ""
-
-        addr = ""
-        if idx_addr is not None:
-            addr = (row[idx_addr] or "").strip() if row[idx_addr] else ""
 
         out.append(Company(
             company_number=cn,
-            company_name=(row[idx_name] or "").strip(),
+            company_name=get(row, "Company Name"),
             sic_codes=sic_raw,
             domain=domain,
             support_email=support,
             archetype=archetype,
-            short_name=short,
-            address=addr,
+            short_name=get(row, "Short Name"),
+            address=get(row, "Address"),
         ))
 
         if limit is not None and len(out) >= limit:
             break
 
-    wb.close()
     return out
 
 
