@@ -247,7 +247,11 @@ def check_git(r: Results) -> None:
             "without it a fresh clone cannot build at all")
 
     # The check must be able to fail.
-    p = subprocess.run(["git", "check-ignore", "-q", str(rel_t)], cwd=REPO)
+    # --no-index, because check-ignore consults the index by default and
+    # the template is tracked - so without it this control reports "not
+    # ignored" however broad the pattern is, and cannot fail.
+    p = subprocess.run(["git", "check-ignore", "-q", "--no-index", str(rel_t)],
+                       cwd=REPO)
     r.check("...and the template is NOT ignored", p.returncode != 0,
             "check-ignore claims to ignore the template, so the result "
             "above proves nothing")
@@ -267,6 +271,62 @@ def check_git(r: Results) -> None:
             (APP_DIR / GENERATED_NAME).exists()
             and (APP_DIR / GENERATED_NAME).stat().st_size > 1000,
             "the check above would pass vacuously if nothing was written")
+
+
+def check_flavor_overlays(r: Results) -> None:
+    """The per-flavor res/ overlays are generated too, and were tracked.
+
+    build.gradle.kts was not the only generated file under version
+    control. write_flavor_resources rmtree's src/c<number>/ before
+    rewriting it, and clean_stale_flavors rmtree's any flavor missing from
+    the current catalog - so a build for a different set of companies
+    DELETED them. Measured, before the fix: two ' D' entries for
+    src/c15046885 plus an untracked src/c16940106.
+    """
+    print("\n-- the per-flavor resource overlays are generated, not tracked --")
+    src_dir = APP_DIR / "src"
+    tracked = subprocess.run(
+        ["git", "ls-files", str((src_dir).relative_to(REPO)) + "/c*"],
+        cwd=REPO, capture_output=True, text=True).stdout.split()
+    r.check("no flavor overlay is tracked", not tracked,
+            f"a build would delete or rewrite these: {tracked}")
+    p = subprocess.run(["git", "check-ignore", "-q",
+                        str((src_dir / "c16940106" / "res" / "values" /
+                             "colors.xml").relative_to(REPO))], cwd=REPO)
+    r.check("...and a new one would be ignored", p.returncode == 0,
+            "the next build leaves an untracked directory behind")
+
+    # src/main is hand-written. If the ignore rule reached it, the app's
+    # own source would silently stop being tracked - a far worse failure
+    # than the one being fixed.
+    main_manifest = src_dir / "main" / "AndroidManifest.xml"
+    # --no-index for the same reason: src/main is tracked, so the default
+    # answer is always "not ignored" and a rule of `app/src/` - which WOULD
+    # swallow the app's own source - went undetected by this very check.
+    p = subprocess.run(["git", "check-ignore", "-q", "--no-index",
+                        str(main_manifest.relative_to(REPO))], cwd=REPO)
+    r.check("src/main is NOT ignored", p.returncode != 0,
+            "the rule is too broad and has swallowed the app's own source")
+    p = subprocess.run(["git", "ls-files", "--error-unmatch",
+                        str(main_manifest.relative_to(REPO))],
+                       cwd=REPO, capture_output=True)
+    r.check("...and is still tracked", p.returncode == 0, str(main_manifest))
+
+    # End to end: write an overlay for a company the repo has never seen
+    # and confirm git reports nothing new.
+    c = _company("16940106", "ACME ADVISORY LTD", "acmeadvisory.uk")
+    before = subprocess.run(["git", "status", "--porcelain", str(src_dir)],
+                            cwd=REPO, capture_output=True, text=True).stdout
+    written = Path(fw.write_flavor_resources(c, palette_for(c.company_name),
+                                             str(APP_DIR)))
+    after = subprocess.run(["git", "status", "--porcelain", str(src_dir)],
+                           cwd=REPO, capture_output=True, text=True).stdout
+    r.check("writing an overlay changes nothing git can see", before == after,
+            f"before={before!r}\n          after={after!r}")
+    r.check("...and it really did write one",
+            (written / "res" / "values" / "colors.xml").exists(),
+            "the check above would pass vacuously if nothing was written")
+    shutil.rmtree(written, ignore_errors=True)
 
 
 def check_no_secret_in_template(r: Results) -> None:
@@ -322,6 +382,7 @@ def main() -> int:
     check_renders_from_template(r)
     check_missing_template(r)
     check_git(r)
+    check_flavor_overlays(r)
     check_no_secret_in_template(r)
     return r.report()
 

@@ -18,6 +18,13 @@ apps/template-shift-journal/app/keystores/
 # in commit 8d0f76f, and made every build dirty the working tree so the next
 # `git pull` conflicted against a file nobody had edited.
 apps/template-shift-journal/app/build.gradle.kts
+# Per-flavor resource overlays, also generated. write_flavor_resources
+# rmtree's the directory before rewriting it, and clean_stale_flavors
+# rmtree's any flavor missing from the current catalog - so a build for a
+# different set of companies DELETED these as tracked files. src/main is
+# hand-written and stays tracked; only the c<number> flavor dirs are
+# generated.
+apps/template-shift-journal/app/src/c*/
 pipeline_output/apps/*/signing.json
 pipeline_output/apps/*/*.jks
 

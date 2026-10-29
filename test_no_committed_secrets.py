@@ -265,7 +265,11 @@ def check_credential_files_ignored(r: Results) -> None:
                 f"staged by `git add -A` and published on push")
 
     # The check must be able to fail, or it says nothing about the rules.
-    p = subprocess.run(["git", "check-ignore", "-q", "api_v2.py"], cwd=REPO)
+    # --no-index: check-ignore consults the index by default, so a TRACKED
+    # path such as api_v2.py answers "not ignored" whatever the rules say,
+    # and this control could not fail.
+    p = subprocess.run(["git", "check-ignore", "-q", "--no-index", "api_v2.py"],
+                       cwd=REPO)
     r.check("...and does NOT ignore a source file",
             p.returncode != 0,
             "check-ignore claims to ignore api_v2.py, so the four results "
