@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The contract every deploy script that rewrites .env must keep.
+"""The contract the deploy artifacts must keep.
 
     python3 test_deploy_scripts.py
 
@@ -167,6 +167,41 @@ def check_script(r: Results, script: str) -> None:
         r.check("re-running still exits 0", rc == 0, f"rc={rc}\n{out}")
 
 
+def check_caddyfile(r: Results) -> None:
+    print("\n-- deploy/Caddyfile security headers --")
+    p = DEPLOY / "Caddyfile"
+    if not r.check("the Caddyfile exists", p.is_file()):
+        return
+    src = p.read_text(encoding="utf-8")
+
+    # DENY refuses framing by EVERYONE, including the site itself, and the
+    # console previews a certificate PDF in a same-origin iframe
+    # (static/app.html:2288 builds the root-relative /api/v2/dl?...&inline=1,
+    # framed at :2293). Reproduced in a real browser: with DENY, Chromium
+    # refused - "Refused to display ... because it set 'X-Frame-Options' to
+    # 'deny'" - and with SAMEORIGIN it rendered.
+    r.check("X-Frame-Options is SAMEORIGIN, not DENY",
+            'X-Frame-Options "SAMEORIGIN"' in src,
+            "DENY blocks the certificate preview, which frames this same "
+            "origin")
+    r.check("...and DENY is not still set anywhere",
+            'X-Frame-Options "DENY"' not in src, "two values would conflict")
+    r.check("...with the reason recorded, so it is not reverted blindly",
+            "same-origin" in src.lower() and "preview" in src.lower(),
+            "a future edit will put DENY back unless the file says why")
+
+    # The protection the header exists for must survive: cross-origin
+    # framing stays refused. A CSP frame-ancestors would override
+    # X-Frame-Options, so a permissive one would silently undo this.
+    r.check("no frame-ancestors directive overrides it",
+            "frame-ancestors" not in src.lower(),
+            "CSP frame-ancestors takes precedence over X-Frame-Options")
+    for header in ("X-Content-Type-Options", "Strict-Transport-Security",
+                   "Referrer-Policy"):
+        r.check(f"{header} is still set", header in src,
+                "the other security headers must not be lost in the edit")
+
+
 def main() -> int:
     r = Results()
     print(f"target: the .env-rewriting scripts in {DEPLOY}")
@@ -182,6 +217,7 @@ def main() -> int:
 
     for script in sorted(SCRIPTS):
         check_script(r, script)
+    check_caddyfile(r)
     return r.report()
 
 

@@ -5,6 +5,9 @@ Register with:  from api_v2 import api_v2; app.register_blueprint(api_v2)
 from __future__ import annotations
 
 import io, json, os, re, shutil, sys, threading, time, traceback
+
+import requests
+from requests.adapters import HTTPAdapter
 from datetime import datetime
 from pathlib import Path
 
@@ -825,10 +828,23 @@ def v2_job(cn, stage):
 _KENYAN = "kenyan"
 _NAT_TTL = 24 * 3600          # a directorship does not change hourly
 _NAT_MAX_PER_SEARCH = 12      # hard ceiling on requests one search may spend
-_NAT_MIN_REMAIN = 150         # leave this much of the window for the stages
+_NAT_MIN_REMAIN = 150         # a RESERVATION: never spend below this
 _nat_cache: dict[str, tuple[float, bool, str]] = {}
 _nat_lock = threading.Lock()
 _ch_remain: list[int | None] = [None]   # last seen X-Ratelimit-Remain
+
+# A pooled session, because the cost here was connection setup, not the API.
+# Measured, 12 lookups through a 4-thread pool:
+#     requests.get() per call      2.26s   (a new TCP+TLS handshake each time)
+#     one pooled Session           0.49s
+#     one pooled Session, 12 thr   0.76s
+# So the fix is connection reuse, and MORE concurrency is actively worse -
+# 12 workers came out slower than 4. pool_maxsize covers the 4 enrichment
+# threads with headroom; max_retries=0 because a retry here would hold one
+# of the eight gunicorn threads and a failure must refuse, not wait.
+_ch_session = requests.Session()
+_ch_session.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=8,
+                                          max_retries=0))
 
 
 def _nationalities(officer: dict) -> list[str]:
@@ -889,12 +905,11 @@ def _fetch_kenyan(cn: str) -> tuple[bool, str]:
         if hit and hit[0] > now:
             return hit[1], hit[2]
 
-    import requests as _rq
     key = os.getenv("COMPANIES_HOUSE_API_KEY", "")
     if not key:
         return False, "COMPANIES_HOUSE_API_KEY is not set"
     try:
-        r = _rq.get(
+        r = _ch_session.get(
             f"https://api.company-information.service.gov.uk/company/{cn}/officers",
             params={"items_per_page": 50}, auth=(key, ""), timeout=8)
     except Exception as e:
@@ -920,6 +935,24 @@ def _apply_kenyan_filter(cands: list[dict]) -> tuple[list[dict], int, str]:
     """Keep only admissible candidates. Returns (kept, excluded, note)."""
     if not cands:
         return [], 0, ""
+
+    # A RESERVATION, not a warning. The 600-per-5-minutes window is shared
+    # with the pipeline stages, and the `details` and `duns` stages calling
+    # Companies House matter more than a type-ahead does. Below the floor
+    # this spends nothing at all.
+    #
+    # It returns NOTHING rather than returning the candidates unfiltered.
+    # Unfiltered would mean showing - and letting an operator add - a
+    # company with no Kenyan director, which is the exact thing the rule
+    # exists to prevent. Refusing to answer is recoverable; admitting the
+    # wrong company is not.
+    rem = _ch_remain[0]
+    if rem is not None and rem < _NAT_MIN_REMAIN:
+        return [], 0, (f"not checked: Companies House quota is down to {rem} "
+                       f"for this 5-minute window, and {_NAT_MIN_REMAIN} are "
+                       f"reserved for the pipeline stages. Try again shortly, "
+                       f"or enter the company number.")
+
     budget = min(len(cands), _NAT_MAX_PER_SEARCH)
     examined, kept = cands[:budget], []
     unexamined = len(cands) - budget
@@ -941,9 +974,9 @@ def _apply_kenyan_filter(cands: list[dict]) -> tuple[list[dict], int, str]:
         bits.append(f"{unexamined} not checked (limit {_NAT_MAX_PER_SEARCH} "
                     f"per search)")
     rem = _ch_remain[0]
-    if rem is not None and rem < _NAT_MIN_REMAIN:
-        bits.append(f"Companies House quota low ({rem} left this 5-minute "
-                    f"window)")
+    if rem is not None and rem < _NAT_MIN_REMAIN * 2:
+        bits.append(f"Companies House quota getting low ({rem} left this "
+                    f"5-minute window)")
     return kept, excluded, "; ".join(bits)
 
 
@@ -989,11 +1022,13 @@ def v2_search():
     kenyan_note = ""
     kenyan_excluded = 0
     ch_candidates: list[dict] = []
+    ch_total = 0
     if not results:
         try:
             sys.path.insert(0, str(ROOT))
             from run_pipeline import ch_get
             data = ch_get(f"/search/companies?q={q}&items_per_page=20")
+            ch_total = int(data.get("total_results") or 0)
             for item in (data.get("items") or []):
                 if item.get("company_status", "").lower() != "active": continue
                 item_cn = _cn8(item.get("company_number", ""))
@@ -1038,6 +1073,20 @@ def v2_search():
         resp["kenyan_rule"] = ("only companies with at least one Kenyan "
                                "director, and none whose nationality is "
                                "unrecorded")
+        # How broad the query was. total_results is a top-level key of the
+        # search response (measured: 1 for a company number, 1014 for
+        # "kenya airways", 10000 for "consulting"), so this costs nothing.
+        # Without it, an eligible company sitting past the examine ceiling
+        # is invisible; with it the operator can see the search was broad
+        # and narrow it, or enter the number - which returns exactly one
+        # candidate and so costs two requests in total.
+        resp["ch_total"] = ch_total
+        if ch_total > len(ch_candidates):
+            resp["kenyan_advice"] = (
+                f"{ch_total} companies match. Only the first "
+                f"{min(len(ch_candidates), _NAT_MAX_PER_SEARCH)} were checked "
+                f"for a Kenyan director - narrow the search, or enter the "
+                f"8-character company number to check one exactly.")
     return jsonify(resp)
 
 
@@ -1054,6 +1103,24 @@ def v2_add_company():
     existing = _find_row(cn)
     if existing:
         return jsonify({"status": "exists", "cn": cn, "name": str(existing.get("Company Name") or "")}), 200
+
+    # The rule is enforced HERE as well as in the search, because this is
+    # the route that actually writes the row. Filtering the search list only
+    # hides ineligible companies from the dialog; a direct POST would still
+    # add one, and this is the only place a company enters the pipeline
+    # (_add_company_row is called nowhere else).
+    #
+    # The verdict is cached, so a company picked from a filtered search list
+    # costs no extra request - it was just checked.
+    ok, why = _fetch_kenyan(cn)
+    if not ok:
+        return jsonify({
+            "error": "not eligible",
+            "cn": cn,
+            "reason": why,
+            "rule": ("only companies with at least one Kenyan director, and "
+                     "none whose nationality is unrecorded, may be added"),
+        }), 422
 
     _add_company_row(cn, name, doc)
     return jsonify({"status": "added", "cn": cn, "name": name, "date_of_creation": doc}), 201

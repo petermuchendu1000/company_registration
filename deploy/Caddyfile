@@ -27,7 +27,23 @@ gglabs.tukaze.com {
 		# Raise to this after verification:
 		# Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
+		# SAMEORIGIN, not DENY. DENY refuses framing by EVERYONE, including
+		# the site itself, and the console previews a certificate PDF in an
+		# iframe pointing at its own origin (static/app.html:2288 builds the
+		# root-relative /api/v2/dl?...&inline=1, framed at :2293). With DENY
+		# the operator sees "gglabs.tukaze.com refused to connect" where the
+		# certificate should be.
+		#
+		# Reproduced in a real browser rather than argued from the spec:
+		# serving a same-origin iframe with DENY, Chromium refused it -
+		# "Refused to display ... because it set 'X-Frame-Options' to
+		# 'deny'" - and with SAMEORIGIN it rendered.
+		#
+		# The protection this header exists for is unchanged: SAMEORIGIN
+		# still refuses framing by any OTHER origin, which is the
+		# clickjacking case. The only thing it now permits is the site
+		# framing itself.
+		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "same-origin"
 		-Server
 	}

@@ -35,6 +35,8 @@ sys.path.insert(0, str(REPO))
 os.environ.setdefault("DATABASE_URL", "postgresql://unused@127.0.0.1:1/none")
 os.environ.setdefault("LOG_LEVEL", "CRITICAL")
 
+import requests  # noqa: E402
+
 import api_v2  # noqa: E402
 
 
@@ -183,15 +185,15 @@ def check_fetch(r: Results) -> None:
         def __init__(self, code): self.status_code = code; self.headers = {}
         def json(self): return {}
 
-    saved_get = _rq.get
+    saved_get = api_v2._ch_session.get
     saved_key3 = os.environ.get("COMPANIES_HOUSE_API_KEY")
     try:
         os.environ["COMPANIES_HOUSE_API_KEY"] = "test-key"
 
         # An exception out of requests must not be read as "eligible".
         api_v2._nat_cache.clear()
-        _rq.get = lambda *a, **k: (_ for _ in ()).throw(
-            _rq.exceptions.ConnectTimeout("down"))
+        api_v2._ch_session.get = lambda *a, **k: (_ for _ in ()).throw(
+            requests.exceptions.ConnectTimeout("down"))
         ok, why = api_v2._fetch_kenyan("00000002")
         r.check("a transport failure refuses rather than admits", not ok, why)
         r.check("...and names the failure", "lookup failed" in why, f"said {why!r}")
@@ -200,7 +202,7 @@ def check_fetch(r: Results) -> None:
 
         # A 429 says nothing about the company either.
         api_v2._nat_cache.clear()
-        _rq.get = lambda *a, **k: _Resp(429)
+        api_v2._ch_session.get = lambda *a, **k: _Resp(429)
         ok, why = api_v2._fetch_kenyan("00000003")
         r.check("HTTP 429 refuses", not ok, why)
         r.check("...and reports the status", "429" in why, f"said {why!r}")
@@ -212,14 +214,13 @@ def check_fetch(r: Results) -> None:
         api_v2._nat_cache.clear()
         class _Ok(_Resp):
             def json(self): return {"items": [officer("Kenyan")]}
-        _rq.get = lambda *a, **k: _Ok(200)
+        api_v2._ch_session.get = lambda *a, **k: _Ok(200)
         ok, why = api_v2._fetch_kenyan("00000004")
         r.check("a real verdict is returned", ok, why)
         r.check("...and IS cached", "00000004" in api_v2._nat_cache,
                 "without this the cache check below passes for a cache that "
                 "is never populated")
     finally:
-        _rq.get = saved_get
         if saved_key3 is None:
             os.environ.pop("COMPANIES_HOUSE_API_KEY", None)
         else:
@@ -284,20 +285,150 @@ def check_filter(r: Results) -> None:
         r.check("...and the unchecked remainder is reported",
                 "not checked" in note, f"note={note!r}")
 
-        # A low quota must be visible, not silent.
-        api_v2._ch_remain[0] = 10
+        # A low quota must be visible, not silent. The value sits ABOVE the
+        # reservation floor on purpose: below the floor nothing is spent at
+        # all and the note is the reservation's, which is a different path
+        # (check_quota_reservation covers that one).
+        api_v2._ch_remain[0] = api_v2._NAT_MIN_REMAIN + 1
         kept, excluded, note = api_v2._apply_kenyan_filter(
             [{"cn": "00000001", "name": "x"}])
         r.check("a low Companies House quota is reported",
-                "quota low" in note, f"note={note!r}")
+                "quota getting low" in note, f"note={note!r}")
         api_v2._ch_remain[0] = 600
         kept, excluded, note = api_v2._apply_kenyan_filter(
             [{"cn": "00000001", "name": "x"}])
         r.check("...and is not reported when the quota is healthy",
-                "quota low" not in note, f"note={note!r}")
+                "quota" not in note.lower(), f"note={note!r}")
     finally:
         api_v2._fetch_kenyan = saved
         api_v2._ch_remain[0] = saved_rem
+
+
+def check_quota_reservation(r: Results) -> None:
+    print("\n-- the quota floor is a reservation, not a warning --")
+    # The 600-per-5-minutes window is shared with the pipeline stages. Below
+    # the floor this must spend NOTHING, and it must return nothing rather
+    # than returning candidates unfiltered - unfiltered would let an
+    # operator add a company with no Kenyan director, which is the whole
+    # thing the rule prevents.
+    calls = []
+    saved_fetch, saved_rem = api_v2._fetch_kenyan, api_v2._ch_remain[0]
+    api_v2._fetch_kenyan = lambda cn: (calls.append(cn), (True, "yes"))[1]
+    try:
+        cands = [{"cn": "00000001", "name": "A"}, {"cn": "00000002", "name": "B"}]
+
+        api_v2._ch_remain[0] = api_v2._NAT_MIN_REMAIN - 1
+        kept, excluded, note = api_v2._apply_kenyan_filter(list(cands))
+        r.check("below the floor, NOTHING is spent", calls == [],
+                f"made {len(calls)} lookups - the floor must stop spending, "
+                f"not merely warn")
+        r.check("...and nothing is returned", kept == [], f"kept {kept}")
+        r.check("...rather than returning them unfiltered",
+                len(kept) != len(cands),
+                "returning candidates unchecked would admit a company with "
+                "no Kenyan director")
+        r.check("...and the note says why", "quota" in note.lower(), f"note={note!r}")
+        r.check("...and tells the operator what to do",
+                "company number" in note, f"note={note!r}")
+
+        # Exactly AT the floor must still spend: an off-by-one here silently
+        # disables the filter for a whole window.
+        calls.clear()
+        api_v2._ch_remain[0] = api_v2._NAT_MIN_REMAIN
+        kept, excluded, note = api_v2._apply_kenyan_filter(list(cands))
+        r.check("at the floor exactly, it still runs", calls != [],
+                "the reservation is `< floor`, so the floor itself spends")
+
+        calls.clear()
+        api_v2._ch_remain[0] = 600
+        kept, excluded, note = api_v2._apply_kenyan_filter(list(cands))
+        r.check("with a healthy quota it runs normally",
+                len(calls) == 2 and len(kept) == 2, f"calls={calls} kept={kept}")
+        r.check("...and says nothing about quota", "quota" not in note.lower(),
+                f"note={note!r}")
+
+        # Unknown remaining (nothing fetched yet) must not block the first
+        # search of a process.
+        calls.clear()
+        api_v2._ch_remain[0] = None
+        kept, _, _ = api_v2._apply_kenyan_filter(list(cands))
+        r.check("an unknown quota does not block the first search",
+                len(kept) == 2, f"kept {kept}")
+    finally:
+        api_v2._fetch_kenyan, api_v2._ch_remain[0] = saved_fetch, saved_rem
+
+
+def check_pooled_session(r: Results) -> None:
+    print("\n-- the lookup reuses one connection --")
+    # Measured: 12 lookups took 2.26s through requests.get() (a new TCP+TLS
+    # handshake each) and 0.49s through one pooled Session. The fix is
+    # connection reuse; 12 workers was SLOWER than 4, so concurrency was
+    # never the answer.
+    s = api_v2._ch_session
+    r.check("there is a module-level session", isinstance(s, requests.Session))
+    ad = s.get_adapter("https://api.company-information.service.gov.uk/")
+    r.check("...mounted for https", ad is not None)
+    r.check("...with a connection pool",
+            getattr(ad, "_pool_maxsize", 0) >= 4,
+            f"pool_maxsize={getattr(ad, '_pool_maxsize', None)}")
+    r.check("...and no retries, so a failure cannot park a request thread",
+            getattr(ad.max_retries, "total", None) in (0, False),
+            f"max_retries={ad.max_retries!r}")
+    src = (REPO / "api_v2.py").read_text(encoding="utf-8")
+    r.check("the lookup goes through the session, not requests.get",
+            "_ch_session.get(" in src and "_rq.get(" not in src,
+            "a per-call requests.get re-handshakes TLS every time")
+
+
+def check_add_guard(r: Results) -> None:
+    print("\n-- /company/add enforces the rule, not just the search --")
+    # The search filter only hides ineligible companies from the dialog. This
+    # is the route that writes the row, and _add_company_row is called
+    # nowhere else, so this is the real enforcement point.
+    from flask import Flask
+    saved_fetch, saved_find = api_v2._fetch_kenyan, api_v2._find_row
+    added: list[tuple] = []
+    saved_add = api_v2._add_company_row
+    api_v2._add_company_row = lambda cn, name, doc="": added.append((cn, name))
+    api_v2._find_row = lambda cn: None
+    app = Flask(__name__); app.register_blueprint(api_v2.api_v2)
+    try:
+        api_v2._fetch_kenyan = lambda cn: (False, "no Kenyan director among 2 active")
+        with app.test_client() as c:
+            res = c.post("/api/v2/company/add",
+                         json={"cn": "08227886", "name": "ACME ADVISORY LTD"})
+        r.check("an ineligible company is refused", res.status_code == 422,
+                f"HTTP {res.status_code}")
+        r.check("...and NO row is written", added == [], f"wrote {added}")
+        body = res.get_json()
+        r.check("...and the reason is returned",
+                "no Kenyan director" in (body or {}).get("reason", ""),
+                f"body={body!r}")
+        r.check("...with the rule stated", "rule" in (body or {}), f"body={body!r}")
+
+        api_v2._fetch_kenyan = lambda cn: (True, "3 of 5 active directors Kenyan")
+        with app.test_client() as c:
+            res = c.post("/api/v2/company/add",
+                         json={"cn": "FC009164", "name": "KENYA AIRWAYS PLC"})
+        r.check("an eligible company is added", res.status_code == 201,
+                f"HTTP {res.status_code} body={res.get_json()!r}")
+        r.check("...and the row IS written", added == [("FC009164", "KENYA AIRWAYS PLC")],
+                f"wrote {added}")
+
+        # A company already in the pipeline must not be re-checked or
+        # refused: it is already there, and refusing would strand it.
+        added.clear()
+        api_v2._find_row = lambda cn: {"Company Name": "ALREADY HERE"}
+        api_v2._fetch_kenyan = lambda cn: (False, "would refuse")
+        with app.test_client() as c:
+            res = c.post("/api/v2/company/add", json={"cn": "16940106", "name": "x"})
+        r.check("a company already in the pipeline is not re-judged",
+                res.status_code == 200 and res.get_json().get("status") == "exists",
+                f"HTTP {res.status_code} body={res.get_json()!r}")
+    finally:
+        api_v2._fetch_kenyan = saved_fetch
+        api_v2._find_row = saved_find
+        api_v2._add_company_row = saved_add
 
 
 def check_route(r: Results) -> None:
@@ -326,6 +457,56 @@ def check_route(r: Results) -> None:
         api_v2._all_rows, api_v2._fetch_kenyan = saved_rows, saved_fetch
 
 
+def check_breadth_reported(r: Results) -> None:
+    print("\n-- how broad the search was must reach the operator --")
+    # Without this an eligible company sitting past the examine ceiling is
+    # simply invisible. total_results is a top-level key of the search
+    # response (measured: 1 for a company number, 1014 for "kenya airways",
+    # 10000 for "consulting"), so reporting it costs nothing.
+    import run_pipeline
+    from flask import Flask
+    saved_rows, saved_fetch = api_v2._all_rows, api_v2._fetch_kenyan
+    saved_get, saved_rem = run_pipeline.ch_get, api_v2._ch_remain[0]
+    api_v2._all_rows = lambda: []
+    api_v2._fetch_kenyan = lambda cn: (False, "no Kenyan director among 1 active")
+    api_v2._ch_remain[0] = 600
+    run_pipeline.ch_get = lambda path, params=None: {
+        "total_results": 10000,
+        "items": [{"company_number": f"{i:08d}", "title": f"CO {i}",
+                   "company_status": "active", "date_of_creation": "2020-01-01"}
+                  for i in range(20)]}
+    app = Flask(__name__); app.register_blueprint(api_v2.api_v2)
+    try:
+        with app.test_client() as c:
+            body = c.get("/api/v2/company/search?q=consulting").get_json()
+        r.check("the total number of matches is reported",
+                body.get("ch_total") == 10000, f"got {body.get('ch_total')!r}")
+        adv = body.get("kenyan_advice", "")
+        r.check("...with advice when more matched than were checked",
+                bool(adv), f"body keys {sorted(body)}")
+        r.check("...naming how many matched", "10000" in adv, f"advice={adv!r}")
+        r.check("...and how many were actually checked",
+                str(api_v2._NAT_MAX_PER_SEARCH) in adv, f"advice={adv!r}")
+        r.check("...and what to do about it",
+                "company number" in adv, f"advice={adv!r}")
+
+        # One exact match must NOT nag about narrowing - that is the cheap,
+        # precise path and telling the operator to narrow it is noise.
+        run_pipeline.ch_get = lambda path, params=None: {
+            "total_results": 1,
+            "items": [{"company_number": "08227886", "title": "ACME ADVISORY LTD",
+                       "company_status": "active", "date_of_creation": "2012-09-25"}]}
+        with app.test_client() as c:
+            body = c.get("/api/v2/company/search?q=08227886").get_json()
+        r.check("an exact match reports no advice",
+                "kenyan_advice" not in body, f"body keys {sorted(body)}")
+        r.check("...but still reports the total", body.get("ch_total") == 1,
+                f"got {body.get('ch_total')!r}")
+    finally:
+        api_v2._all_rows, api_v2._fetch_kenyan = saved_rows, saved_fetch
+        run_pipeline.ch_get, api_v2._ch_remain[0] = saved_get, saved_rem
+
+
 def main() -> int:
     r = Results()
     print(f"target: the Kenyan-director admission rule in {REPO / 'api_v2.py'}")
@@ -333,7 +514,11 @@ def main() -> int:
     check_rule(r)
     check_fetch(r)
     check_filter(r)
+    check_quota_reservation(r)
+    check_pooled_session(r)
+    check_add_guard(r)
     check_route(r)
+    check_breadth_reported(r)
     return r.report()
 
 
