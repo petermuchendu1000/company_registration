@@ -315,6 +315,23 @@ def main() -> int:
     r.check("a file came back for the target card", tgt.stat().st_size > 1000,
             f"{tgt.stat().st_size} B")
 
+    # Control for the comparison below. "A different file" only means "a
+    # different record" if a record's bytes are stable within a run. They
+    # are NOT stable across environments - production and a dev container
+    # return different bytes for the same record, because the image is
+    # rendered browser-side and the Chromium build differs - so this is
+    # measured rather than assumed. Without it, a service that re-rendered
+    # per request would make the next check pass even when both downloads
+    # were the same person.
+    again = out / "target-again.jpeg"
+    ib.download_id_via_ui(token, user_id, bind_id, target["idNo"], again,
+                          headless=headless)
+    r.check("the same record downloaded twice is byte-identical",
+            sha(tgt) == sha(again),
+            f"{sha(tgt)} vs {sha(again)} - if a record's bytes vary between "
+            f"downloads, the next check passes even for two copies of the "
+            f"same person, and proves nothing")
+
     first_res = ib.search_bind(sess, token, first["idNo"]).get("results") or []
     first_hit = next((x for x in first_res
                       if str(x.get("idNo")) == first["idNo"]), {})
