@@ -338,8 +338,11 @@ NAMECHEAP_SANDBOX=1      # keep 1 until you have deliberately tested live
 NAMECHEAP_DEFAULT_ADDRESS_ID=
 NAMECHEAP_REFERENCE_DOMAIN=
 
-XBINDER_EMAIL=           # the ibenty.com account - the service used to be
-XBINDER_PASSWORD=        # xbinder.net and the variables kept the old name
+IBENTY_EMAIL=            # the ibenty.com account. The service used to be
+IBENTY_PASSWORD=         # xbinder.net; XBINDER_EMAIL / XBINDER_PASSWORD are
+                         # still read if present, with a notice, so an older
+                         # .env keeps working. deploy/set_ibenty_env.sh writes
+                         # the current names and clears the old ones.
 
 LOG_LEVEL=INFO           # INFO switches on browser_stealth's diagnostics
 DB_POOL_MAX=16           # must exceed gunicorn threads (8) plus stage threads

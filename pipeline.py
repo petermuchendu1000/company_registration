@@ -436,24 +436,60 @@ def stage_email(dry_run: bool = False) -> None:
               f"{failed} failed, of {len(companies)} considered.")
 
 
-# ── Stage 4: Director ID (XBINDER) ──────────────────────────────────────────
+# ── Stage 4: Director ID (ibenty) ───────────────────────────────────────────
+
+def _ibenty_credentials() -> tuple[str, str]:
+    """The ibenty login, preferring the current variable names.
+
+    The service was called xbinder and the variables kept that name for a
+    while, so a .env written before the rename holds XBINDER_EMAIL and
+    XBINDER_PASSWORD. Reading only the new names would turn a configured
+    box into one that prints "SKIP" and does nothing - a silent regression
+    on the one stage that touches a person's identity documents.
+
+    The old names are read second, never first, and using them says so, so
+    the deprecation is visible rather than permanent.
+    """
+    email = os.environ.get("IBENTY_EMAIL", "").strip()
+    password = os.environ.get("IBENTY_PASSWORD", "").strip()
+    if email and password:
+        return email, password
+
+    old_email = os.environ.get("XBINDER_EMAIL", "").strip()
+    old_password = os.environ.get("XBINDER_PASSWORD", "").strip()
+    if old_email and old_password:
+        print("  NOTE — using XBINDER_EMAIL / XBINDER_PASSWORD. The service is "
+              "now ibenty;\n         rename them to IBENTY_EMAIL / "
+              "IBENTY_PASSWORD (deploy/set_ibenty_env.sh does it).")
+        return old_email, old_password
+
+    # Partial configuration is worth naming: "set both" is unhelpful when
+    # one of the two is already there.
+    have = [n for n, v in (("IBENTY_EMAIL", email), ("IBENTY_PASSWORD", password),
+                           ("XBINDER_EMAIL", old_email),
+                           ("XBINDER_PASSWORD", old_password)) if v]
+    if have:
+        print(f"  SKIP — only {', '.join(have)} is set; both an email and a "
+              f"password are required.")
+    else:
+        print("  SKIP — set IBENTY_EMAIL and IBENTY_PASSWORD in .env")
+    return "", ""
+
 
 def stage_director_id(
     company_numbers: list[str] | None = None,
     dry_run: bool = False,
     headless: bool = True,
 ) -> None:
-    _banner("STAGE 4 — Director ID (XBINDER)")
+    _banner("STAGE 4 — Director ID (ibenty)")
 
-    xbinder_email    = os.environ.get("XBINDER_EMAIL", "").strip()
-    xbinder_password = os.environ.get("XBINDER_PASSWORD", "").strip()
-    if not xbinder_email or not xbinder_password:
-        print("  SKIP — set XBINDER_EMAIL and XBINDER_PASSWORD in .env")
+    ibenty_email, ibenty_password = _ibenty_credentials()
+    if not ibenty_email or not ibenty_password:
         return
 
     import requests as req_lib
     sys.path.insert(0, str(BASE_DIR))
-    from xbinder_auto import (
+    from ibenty_auto import (
         login, create_bind, search_bind, download_id_via_ui,
         split_combined_id_image, load_director_profile,
     )
@@ -577,15 +613,15 @@ def stage_director_id(
             print(f"  [{cn}] DRY — would generate ID for: {name}  gender={gender or '?'}")
         return
 
-    # ── Login to XBINDER once ─────────────────────────────────────────────────
+    # ── Login to ibenty once ──────────────────────────────────────────────────
     login_session = req_lib.Session()
     try:
-        auth    = login(login_session, xbinder_email, xbinder_password)
+        auth    = login(login_session, ibenty_email, ibenty_password)
         token   = auth["token"]
         user_id = auth.get("user_id")
-        print("  XBINDER login: OK")
+        print("  ibenty login: OK")
     except Exception as e:
-        print(f"  XBINDER login FAILED: {e}")
+        print(f"  ibenty login FAILED: {e}")
         return
 
     # ── Process each company ──────────────────────────────────────────────────
@@ -609,7 +645,7 @@ def stage_director_id(
         profile_data = {
             cn: {
                 "company_number": cn,
-                "xbinder_profile": {
+                "ibenty_profile": {
                     "fname": "",
                     "lname": "",
                     "sname": "",
@@ -653,7 +689,7 @@ def stage_director_id(
             print(f"  [{cn}] SKIP — no bind_id in response")
             continue
 
-        # Search confirms bind is indexed (mirrors xbinder_auto main() flow)
+        # Search confirms bind is indexed (mirrors ibenty_auto main() flow)
         try:
             search_bind(bind_session, token, id_no[:2] if id_no else "")
         except Exception:
@@ -807,7 +843,7 @@ def main() -> None:
     p.add_argument("--skip-build",  action="store_true", help="Skip Gradle (regenerate assets only)")
     p.add_argument("--artifact",    default="both", choices=["apk", "aab", "both"])
     p.add_argument("--dry-run",     action="store_true", help="Preview changes without writing")
-    p.add_argument("--no-headless", action="store_true", help="Show browser window during XBINDER download (debug)")
+    p.add_argument("--no-headless", action="store_true", help="Show browser window during the ibenty download (debug)")
     args = p.parse_args()
 
     _load_env()

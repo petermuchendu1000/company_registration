@@ -128,7 +128,7 @@ MAX_OFFICERS = 3
 # ============================================================
 #
 # The Companies House "officers" endpoint returns name, date_of_birth,
-# nationality and role — but never a gender field. XBINDER (stage_director_id)
+# nationality and role — but never a gender field. ibenty (stage_director_id)
 # needs an "M"/"F" value, so we infer it from the director's forename.
 #
 # Names arrive in Companies House / Excel format: "SURNAME, Forename Middle".
@@ -235,7 +235,7 @@ _UNISEX_NAMES = {"baraka", "amani", "imani", "neema", "upendo", "furaha"}
 def _infer_gender(name):
     """Infer director gender ("M"/"F") from a name; "" if unknown.
 
-    Companies House never returns officer gender, so XBINDER relies on this.
+    Companies House never returns officer gender, so ibenty relies on this.
     Accepts "SURNAME, Forename Middle" (CH/Excel format) or "Forename Surname".
     """
     if not name:

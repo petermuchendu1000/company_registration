@@ -239,8 +239,17 @@ def load_director_profile(profile_path: Path, company_number: str | None) -> dic
         entry = root
         selected_company_number = _pick(entry, ["company_number"])
 
-    # Supports either a flat explicit profile or DUNS request shape with optional xbinder block.
-    explicit = entry.get("xbinder_profile") or entry.get("xbinder") or entry
+    # A flat explicit profile, or a DUNS-request shape with an optional
+    # profile block. "ibenty_profile" is the current name; "xbinder_profile"
+    # and "xbinder" are what the service was called before and are still
+    # read, because duns_requests.json is a file an operator may have written
+    # by hand and nothing in this application rewrites it - duns_automation.py
+    # never touches these keys.
+    explicit = (entry.get("ibenty_profile")
+                or entry.get("ibenty")
+                or entry.get("xbinder_profile")
+                or entry.get("xbinder")
+                or entry)
     company_data = entry.get("company_data") or {}
     primary_director = company_data.get("primary_director") or {}
 
@@ -310,7 +319,7 @@ def load_director_profile(profile_path: Path, company_number: str | None) -> dic
         raise RuntimeError(
             "Director profile is missing required fields: "
             + ", ".join(missing)
-            + ". Add names under xbinder_profile (or ensure primary_director.name exists)."
+            + ". Add names under ibenty_profile (or ensure primary_director.name exists)."
         )
 
     return profile
@@ -612,10 +621,10 @@ def split_combined_id_image(combined_path: Path) -> tuple[Path, Path]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Automate XBINDER flow end-to-end")
-    parser.add_argument("--email", required=True, help="XBINDER login email")
-    parser.add_argument("--password", required=True, help="XBINDER login password")
-    parser.add_argument("--output-dir", default="downloads/xbinder", help="Where to save downloaded files")
+    parser = argparse.ArgumentParser(description="Automate the ibenty bind flow end-to-end")
+    parser.add_argument("--email", required=True, help="ibenty login email")
+    parser.add_argument("--password", required=True, help="ibenty login password")
+    parser.add_argument("--output-dir", default="downloads/ibenty", help="Where to save downloaded files")
     parser.add_argument("--director-json", default="duns_requests.json", help="Path to director details JSON")
     parser.add_argument("--company-number", help="Company number key in duns_requests-style JSON")
     parser.add_argument("--no-split", action="store_true", help="Do not split combined front/back image")

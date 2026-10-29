@@ -954,7 +954,7 @@ def v2_save_play_console(cn):
 
 @api_v2.route("/api/v2/company/<cn>/rerun-id", methods=["POST"])
 def v2_rerun_id(cn):
-    """Delete existing director ID files and regenerate a new one via Xbinder."""
+    """Delete existing director ID files and regenerate a new one via ibenty."""
     row = _find_row(cn)
     if not row:
         return jsonify({"error": "Company not found"}), 404

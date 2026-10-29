@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Checks that xbinder_auto points at ibenty.com and still fits its API.
+"""Checks that ibenty_auto points at ibenty.com and still fits its API.
 
     python3 test_ibenty_migration.py            # offline checks only
     python3 test_ibenty_migration.py --live      # also hit the real API
 
 The offline half is pure source and constant inspection, so it runs
-anywhere. The live half needs XBINDER_EMAIL / XBINDER_PASSWORD and reaches
+anywhere. The live half needs IBENTY_EMAIL / IBENTY_PASSWORD (or the
+superseded XBINDER_ names) and reaches
 apis.ibenty.com; it authenticates and it reads, and it never calls
 create-bind, because a bind costs money and is not reversible.
 
@@ -30,7 +31,7 @@ import types
 from contextlib import redirect_stderr
 from pathlib import Path
 
-SRC = Path(__file__).with_name("xbinder_auto.py")
+SRC = Path(__file__).with_name("ibenty_auto.py")
 
 OLD_API_HOST = "apis.bestdatabinder.com"
 OLD_SITE_HOST = "xbinder.net"
@@ -186,10 +187,12 @@ def offline(r: Results, mod) -> None:
 def live(r: Results, mod) -> None:
     import requests
 
-    email = os.environ.get("XBINDER_EMAIL", "")
-    password = os.environ.get("XBINDER_PASSWORD", "")
+    email = (os.environ.get("IBENTY_EMAIL", "")
+             or os.environ.get("XBINDER_EMAIL", ""))
+    password = (os.environ.get("IBENTY_PASSWORD", "")
+                or os.environ.get("XBINDER_PASSWORD", ""))
     if not (email and password):
-        print("\n-- live: SKIPPED (XBINDER_EMAIL / XBINDER_PASSWORD not set) --")
+        print("\n-- live: SKIPPED (IBENTY_EMAIL / IBENTY_PASSWORD not set) --")
         return
 
     print("\n-- live: the locations file --")
@@ -279,7 +282,7 @@ def main() -> int:
 
     _stub_playwright()
     sys.path.insert(0, str(SRC.parent))
-    import xbinder_auto as mod
+    import ibenty_auto as mod
 
     r = Results()
     offline(r, mod)
