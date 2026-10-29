@@ -49,8 +49,27 @@ if [[ -n "$EMAIL" || -n "$PASSWORD" ]]; then
   bad "and were visible in 'ps'. Change them later, or re-run with no"
   bad "arguments and type them at the prompt instead."
 else
-  read -r -p "    ibenty email: " EMAIL
-  read -r -s -p "    ibenty password: " PASSWORD; echo
+  # Read from the terminal, not stdin.
+  #
+  # This script was once handed to an operator in the middle of a pasted
+  # block of commands. A plain `read` takes the NEXT pasted line as its
+  # input, so the line after the invocation silently became the credential
+  # and never ran as a command. Measured: a following
+  # "install -m 644 deploy/Caddyfile /etc/caddy/Caddyfile" was swallowed
+  # whole.
+  #
+  # `(exec </dev/tty)` rather than `[[ -r /dev/tty ]]`: the latter is TRUE
+  # even where the device cannot be opened, so it is not a check at all -
+  # measured in a container with no controlling terminal, -r said TRUE while
+  # opening failed.
+  if ! (exec </dev/tty) 2>/dev/null; then
+    bad "this script prompts, so it needs a terminal."
+    bad "Run it on a line of its own - not inside a pasted block, and not"
+    bad "with stdin redirected."
+    exit 2
+  fi
+  read -r -p "    ibenty email: " EMAIL < /dev/tty
+  read -r -s -p "    ibenty password: " PASSWORD < /dev/tty; echo
 fi
 [[ -n "$EMAIL" && -n "$PASSWORD" ]] || { bad "both values are required"; exit 2; }
 # A value containing a newline would corrupt the file into two broken

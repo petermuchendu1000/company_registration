@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import subprocess
 import tempfile
 from pathlib import Path
@@ -167,6 +168,46 @@ def check_script(r: Results, script: str) -> None:
         r.check("re-running still exits 0", rc == 0, f"rc={rc}\n{out}")
 
 
+def check_prompt_safety(r: Results, script: str) -> None:
+    """The prompt must never consume the next line of a pasted block.
+
+    This happened. set_ch_key.sh was handed to an operator in the middle of
+    a block of commands; a plain `read` takes the following pasted line as
+    its input, so "install -m 644 deploy/Caddyfile /etc/caddy/Caddyfile"
+    became the credential and never ran. The script must refuse instead.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        (tmp / ".env").write_text("DATABASE_URL=keep-me\n", encoding="utf-8")
+        proc = subprocess.run(
+            ["bash", str(DEPLOY / script)],            # no args: the prompt path
+            env={**os.environ, "APP_DIR": str(tmp), "PY": sys.executable},
+            input="install -m 644 deploy/Caddyfile /etc/caddy/Caddyfile\n",
+            capture_output=True, text=True, timeout=60)
+        out = proc.stdout + proc.stderr
+        r.check(f"{script}: a non-terminal prompt refuses", proc.returncode == 2,
+                f"rc={proc.returncode} - it must not read a pasted command as "
+                f"a credential. out={out[-200:]!r}")
+        r.check(f"{script}: ...saying it needs a terminal",
+                "needs a terminal" in out, f"out={out[-200:]!r}")
+        body = (tmp / ".env").read_text(encoding="utf-8")
+        r.check(f"{script}: ...and writes nothing",
+                "install -m 644" not in body and body == "DATABASE_URL=keep-me\n",
+                f".env became {body!r}")
+        # The guard must test that /dev/tty can be OPENED. `[[ -r /dev/tty ]]`
+        # is TRUE even where opening fails - measured in a container with no
+        # controlling terminal - so it is not a check at all.
+        src = (DEPLOY / script).read_text(encoding="utf-8")
+        r.check(f"{script}: the guard tests openability, not just existence",
+                "(exec </dev/tty)" in src,
+                "[[ -r /dev/tty ]] passes where the device cannot be opened")
+        r.check(f"{script}: every prompt reads from the terminal",
+                all("< /dev/tty" in ln
+                    for ln in src.splitlines()
+                    if ln.strip().startswith("read -r")),
+                "a prompt left on stdin can still eat a pasted line")
+
+
 def check_caddyfile(r: Results) -> None:
     print("\n-- deploy/Caddyfile security headers --")
     p = DEPLOY / "Caddyfile"
@@ -217,6 +258,7 @@ def main() -> int:
 
     for script in sorted(SCRIPTS):
         check_script(r, script)
+        check_prompt_safety(r, script)
     check_caddyfile(r)
     return r.report()
 

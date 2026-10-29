@@ -49,7 +49,26 @@ if [[ -n "$KEY" ]]; then
   bad "and was visible in 'ps'. Regenerate it later, or re-run with no"
   bad "arguments and type it at the prompt instead."
 else
-  read -r -s -p "    Companies House API key: " KEY; echo
+  # Read from the terminal, not stdin.
+  #
+  # This script was once handed to an operator in the middle of a pasted
+  # block of commands. A plain `read` takes the NEXT pasted line as its
+  # input, so the line after the invocation silently became the credential
+  # and never ran as a command. Measured: a following
+  # "install -m 644 deploy/Caddyfile /etc/caddy/Caddyfile" was swallowed
+  # whole.
+  #
+  # `(exec </dev/tty)` rather than `[[ -r /dev/tty ]]`: the latter is TRUE
+  # even where the device cannot be opened, so it is not a check at all -
+  # measured in a container with no controlling terminal, -r said TRUE while
+  # opening failed.
+  if ! (exec </dev/tty) 2>/dev/null; then
+    bad "this script prompts, so it needs a terminal."
+    bad "Run it on a line of its own - not inside a pasted block, and not"
+    bad "with stdin redirected."
+    exit 2
+  fi
+  read -r -s -p "    Companies House API key: " KEY < /dev/tty; echo
 fi
 [[ -n "$KEY" ]] || { bad "the key is required"; exit 2; }
 case "$KEY" in
