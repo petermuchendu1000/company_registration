@@ -544,11 +544,19 @@ def check_public_ip(r: Results) -> None:
 
 
 # ── defect D: the .env rewrite ──────────────────────────────────────────
+#
+# Every value here is synthetic. This fixture used to carry the REAL
+# Namecheap API key and the real whitelisted client IP, because they were
+# pasted in while the defect was being reproduced - and this repository is
+# public, so committing them published them. The fixture only needs values
+# of the right SHAPE: the test checks that the rewrite preserves unrelated
+# keys and replaces the one it targets, and a 32-hex string does that
+# whether or not any account would accept it.
 ENV_BODY = (
     "# production secrets\n"
     "DATABASE_URL=postgresql://app:s3cret@db.internal:5432/company\n"
-    "NAMECHEAP_API_KEY=f81fa145ea414646babce9f8c98cb860\n"
-    "NAMECHEAP_CLIENT_IP=95.179.203.236\n"
+    "NAMECHEAP_API_KEY=00000000000000000000000000000000\n"
+    "NAMECHEAP_CLIENT_IP=203.0.113.1\n"   # RFC 5737 documentation range
     "FLASK_SECRET_KEY=deadbeefcafebabe\n"
     "SUPERADMIN_PASSWORD=correct-horse\n"
 )
@@ -589,7 +597,14 @@ def check_env_rewrite(r: Results) -> None:
         out = c.path.read_text(encoding="utf-8")
         r.check("the IP line was updated",
                 "NAMECHEAP_CLIENT_IP=203.0.113.7" in out, f"got {out!r}")
-        r.check("the old IP is gone", "95.179.203.236" not in out, f"got {out!r}")
+        # Read out of the fixture rather than written out again. It was a
+        # literal, and when the fixture's IP changed the literal named an
+        # address the file had never contained - so the check passed
+        # without testing anything.
+        old_ip = next(l.split("=", 1)[1] for l in ENV_BODY.splitlines()
+                      if l.startswith("NAMECHEAP_CLIENT_IP="))
+        r.check(f"the old IP ({old_ip}) is gone", old_ip not in out,
+                f"got {out!r}")
         r.check("exactly one NAMECHEAP_CLIENT_IP line",
                 len(re.findall(r"^NAMECHEAP_CLIENT_IP=", out, re.M)) == 1,
                 f"got {out!r}")
@@ -834,7 +849,7 @@ def check_ensure_flow(r: Results) -> None:
 
     print("\n-- a changed IP is recorded before the check, and announced --")
     ret, err, out, written = _run_ensure((True, "OK"), current="198.51.100.9",
-                                         stored="95.179.203.236")
+                                         stored="203.0.113.5")
     r.check("the change is announced", "changed" in out.lower(), f"got {out!r}")
     r.check("the new IP is written to .env",
             "NAMECHEAP_CLIENT_IP=198.51.100.9" in written, f"got {written!r}")

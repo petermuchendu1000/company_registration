@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No tracked file may carry a literal signing password.
+"""No tracked file may carry a credential.
 
     python3 test_no_committed_secrets.py
 
@@ -12,15 +12,29 @@ removed, in a repository whose visibility is public.
 Nothing crashed, which is why it lasted: the value is only read by Gradle at
 sign time, so a leaked password looks exactly like a working build.
 
-This file guards two things:
+The same thing then happened a second time, with a different kind of
+credential, and this file did not catch it: the LIVE Namecheap API key and
+the whitelisted client IP were pasted into test_check_stage.py's ENV_BODY
+fixture while a defect was being reproduced, and committed - because this
+file only ever looked for storePassword and keyPassword, so an API key in
+a .env-shaped fixture was outside everything it scanned. A guard that
+covers one credential and calls itself "no committed secrets" is worse
+than no guard: it is read as having checked.
+
+This file guards three things:
 
   1. No tracked file assigns storePassword/keyPassword to a literal. The
      generator's own f-string at flavor_writer.py:170 is NOT a finding - it
      is the code that produces the value, and it contains a {placeholder},
      which is how the two are told apart.
-  2. Both GENERATED FLAVORS markers survive, in order. Emptying that block
-     is what removed the secret, and flavor_writer.py:151-157 raises if
-     either marker is missing - so a careless cleanup that deleted them
+  2. No tracked file carries a plausible API key or token for any of the
+     services this project uses. A fixture needs a value of the right
+     SHAPE, never a working one, so the scan allows the obviously-synthetic
+     forms (all one repeated character, or a value naming itself a sample)
+     and reports everything else for a human to look at.
+  3. Both GENERATED FLAVORS markers survive, in order. Emptying that block
+     is what removed the first secret, and flavor_writer.py:151-157 raises
+     if either marker is missing - so a careless cleanup that deleted them
      would break every future build.
 """
 from __future__ import annotations
@@ -37,6 +51,44 @@ BUILD_GRADLE = (REPO / "apps" / "template-shift-journal" / "app"
 # A literal assignment: no { } inside, so the generator's f-string template
 # does not match. Verified against four cases in the self-test below.
 SECRET = re.compile(r'(storePassword|keyPassword)\s*=\s*"([^"{}]+)"')
+
+# A credential assigned to one of this project's known secret names. The
+# name list is explicit rather than a generic "anything that looks like a
+# key", because a generic hex scan fires on every git SHA, colour and hash
+# in the tree and a guard that cries wolf gets switched off.
+#
+# The value may be quoted or bare (a .env line is bare), and must be long
+# enough to be a credential rather than a flag - 16 characters, below the
+# 32 of a Namecheap key and the 36 of a Companies House one, so a shorter
+# format still trips it. A {placeholder} or a $VAR is an indirection, not
+# a secret.
+CRED_NAMES = (
+    "NAMECHEAP_API_KEY", "NAMECHEAP_PASSWORD", "COMPANIES_HOUSE_API_KEY",
+    "IBENTY_PASSWORD", "XBINDER_PASSWORD", "FLASK_SECRET_KEY",
+    "SUPERADMIN_PASSWORD", "DNB_API_KEY", "SUPABASE_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
+)
+# [ \t]* around the separator, not \s*: with \s* an EMPTY value lets the
+# match run past the end of the line and read the NEXT key's name as the
+# value, which is how this reported DEPLOYMENT.md's blank .env template as
+# carrying two credentials.
+CRED = re.compile(
+    r'\b(' + "|".join(CRED_NAMES) +
+    r')[ \t]*[=:][ \t]*"?([^"\'\s{}$,)\]]{16,})"?')
+
+# A fixture value that is obviously not real: one character repeated, a
+# value that says what it is, or one of the conventional dummy hex words.
+# These are what a test SHOULD contain.
+SYNTHETIC = re.compile(
+    r'^(?:(.)\1{15,}|.*(?:example|sample|dummy|fake|placeholder|changeme|'
+    r'test[-_]?key|xxx+|your[-_]|deadbeef|cafebabe|0123456789abcdef).*)$',
+    re.I)
+
+# A fixture inside a Python string literal ends with an escaped newline -
+# the two characters backslash and n - which is part of the source, not of
+# the value. Left on, it defeats the repeated-character test: a line of
+# thirty-two zeroes reads as thirty-two zeroes followed by something else.
+_TRAILING_ESCAPE = re.compile(r'(?:\\[nrt])+$')
 
 MARKER_START = "// >>> GENERATED FLAVORS START"
 MARKER_END = "// <<< GENERATED FLAVORS END"
@@ -85,6 +137,55 @@ def self_test(r: Results) -> None:
     for label, text, want in cases:
         r.check(label, bool(SECRET.search(text)) is want)
 
+    # The credential scanner. The real key that was committed is not
+    # reproduced here - any 32-hex value of the same shape exercises the
+    # pattern identically, which is the whole point being made.
+    nc = "NAMECHEAP" + "_API_KEY"
+    cred_cases = [
+        ("fires on a bare .env assignment",
+         f"{nc}=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d", True),
+        ("fires on a quoted one", f'{nc} = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"',
+         True),
+        ("fires on a credential on a line of other text",
+         f'    "{nc}=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d\\n"', True),
+        ("fires on a non-hex token too",
+         "IBENTY" + "_PASSWORD=sUperSecretPassphrase1", True),
+        ("ignores an env-var indirection", f'{nc}=$NAMECHEAP_KEY', False),
+        ("ignores a format placeholder", f'{nc}={{key}}', False),
+        ("ignores an empty value", f"{nc}=", False),
+        ("ignores a value too short to be a credential", f"{nc}=abc123", False),
+        ("ignores a name that is not a credential",
+         "COMPANY_NUMBER=00000000000000000001", False),
+        # The blank .env template in DEPLOYMENT.md. With \\s* around the
+        # separator this matched, taking the NEXT key's name as the value.
+        ("does not read the next line's key as a value",
+         f"COMPANIES_HOUSE_API_KEY=\n{nc}_USER=\n", False),
+        ("...even with several blank lines between",
+         f"COMPANIES_HOUSE_API_KEY=\n\n\n{nc}_USER=\n", False),
+    ]
+    for label, text, want in cred_cases:
+        r.check(label, bool(CRED.search(text)) is want, f"on {text!r}")
+
+    synth_cases = [
+        ("a repeated-character fixture is synthetic",
+         "00000000000000000000000000000000", True),
+        ("...and so is one that names itself", "sample-key-value-here", True),
+        ("...and 'your-key-here'", "your-api-key-here", True),
+        ("a real-looking key is NOT synthetic",
+         "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d", False),
+    ]
+    for label, value, want in synth_cases:
+        r.check(label, bool(SYNTHETIC.match(value)) is want, f"on {value!r}")
+
+    zeros = "0" * 32
+    r.check("a Python-source fixture's escaped newline is stripped first",
+            bool(SYNTHETIC.match(_TRAILING_ESCAPE.sub("", zeros + "\\n"))),
+            "without stripping it, 32 zeroes plus '\\n' is not a repeated "
+            "character and the fixture reports itself")
+    r.check("...and stripping does not make a real key look synthetic",
+            not SYNTHETIC.match(
+                _TRAILING_ESCAPE.sub("", "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d\\n")))
+
 
 def tracked_files() -> list[Path]:
     out = subprocess.run(["git", "ls-files", "-z"], cwd=REPO,
@@ -112,6 +213,31 @@ def scan_tracked(r: Results) -> None:
             hits.append(f"{f.relative_to(REPO)}:{line} {m.group(1)}")
     r.check("no literal storePassword/keyPassword in tracked files",
             not hits, "; ".join(hits))
+
+    # The scan that was missing. This file itself is scanned like any
+    # other, which is why its own fixtures are assembled at runtime.
+    cred_hits: list[str] = []
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError):
+            continue
+        for m in CRED.finditer(text):
+            name = m.group(1)
+            value = _TRAILING_ESCAPE.sub("", m.group(2))
+            if SYNTHETIC.match(value):
+                continue
+            line = text[:m.start()].count("\n") + 1
+            # The value is NOT printed: this output is read in terminals
+            # and pasted into messages, which is one more place for it to
+            # travel. The location and the name are enough to act on.
+            cred_hits.append(f"{f.relative_to(REPO)}:{line} {name} "
+                             f"(<{len(value)} chars>)")
+    r.check("no tracked file carries a credential for a known service",
+            not cred_hits,
+            "a credential in a public repository is published the moment it "
+            "is pushed, and rotating it is the only fix. Found: "
+            + "; ".join(cred_hits))
 
 
 def check_markers(r: Results) -> None:

@@ -49,3 +49,11 @@ Thumbs.db
 .env
 .venv/
 __pycache__/
+
+# Local test environments. The container these are built in is ephemeral,
+# so they get rebuilt from requirements.lock.txt rather than committed -
+# and committing one would put several hundred megabytes of wheels, and
+# every binary in them, into the repository.
+venv/
+venvfresh/
+venv313/
